@@ -10,6 +10,7 @@ mod limits;
 mod message;
 mod parser;
 mod progress;
+mod writer;
 
 pub use chunked::{BodyDecoder, BodyEvent};
 pub use config::{ParserConfig, ParserConfigBuilder};
@@ -21,3 +22,4 @@ pub use message::{
 };
 pub use parser::Parser;
 pub use progress::{Progress, Step};
+pub use writer::{write_exact, BodyEncoder};
