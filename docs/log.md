@@ -7,3 +7,4 @@
 | 2026-10-22 | 4: lenient head diagnostics | 0.4 | 15 head-level codes, bare-LF/mixed terminators, leading-ws skip, obs-fold spans, parser poisoning, bounded head capacity |
 | 2026-10-22 | 6: response status-line parsing | 0.5 | Parser::response + ResponseContext, shared parse_head, status_code(), start_target_range(); version_unusual catch-all for malformed status lines |
 | 2026-10-22 | 5: body framing resolution | 0.6 | framing::resolve, 6 framing codes, Ambiguous with TE-wins/first-CL/HEAD/no-body rules, 101 and CONNECT upgrade |
+| 2026-10-22 | 7: body streaming, chunked decoder, pipelining | 0.7 | BodyState Fixed/Chunked/UntilClose, BodyDecoder (size line, ext peek, trailers, bounded buffering), body_diagnostics, pipelined Done |

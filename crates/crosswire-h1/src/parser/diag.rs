@@ -26,6 +26,10 @@ impl Diagnostics {
         self.items.push(Diagnostic::new(code, span, severity));
     }
 
+    pub(crate) fn as_slice(&self) -> &[Diagnostic] {
+        &self.items
+    }
+
     pub(crate) fn into_vec(self) -> Vec<Diagnostic> {
         self.items
     }

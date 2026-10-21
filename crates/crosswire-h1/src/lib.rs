@@ -3,6 +3,7 @@
 
 extern crate alloc;
 
+mod chunked;
 mod config;
 mod error;
 mod limits;
@@ -10,6 +11,7 @@ mod message;
 mod parser;
 mod progress;
 
+pub use chunked::{BodyDecoder, BodyEvent};
 pub use config::{ParserConfig, ParserConfigBuilder};
 pub use error::ParseError;
 pub use limits::{ParseLimits, ParseLimitsBuilder};

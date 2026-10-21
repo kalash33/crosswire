@@ -4,16 +4,18 @@ mod diag;
 mod framing;
 mod head;
 
-pub(crate) use head::parse_status;
+pub(crate) use diag::Diagnostics;
+pub(crate) use head::{find_line_end, parse_status, split_header};
 
 use bytes::BytesMut;
 
+use crate::chunked::{BodyDecoder, BodyEvent};
 use crate::config::ParserConfig;
 use crate::error::ParseError;
 use crate::limits::ParseLimits;
-use crate::message::{HeadView, Kind, RawMessage, ResponseContext};
+use crate::message::{BodyFraming, HeadView, Kind, RawMessage, ResponseContext};
 use crate::progress::{Progress, Step};
-use crosswire_core::Profile;
+use crosswire_core::{Diagnostic, Profile, Span};
 
 /// Scan state: still skipping whitespace before the start line.
 const LEADING: u8 = 0;
@@ -82,11 +84,17 @@ impl HeadBuf {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 enum State {
     /// Accumulating the message head.
     Head,
-    /// The message is complete. Body states arrive with framing (Task 5).
+    /// A body of known length; `remaining` bytes are still to come.
+    Fixed { remaining: u64 },
+    /// A chunked body, decoded by the parser's [`BodyDecoder`].
+    Chunked,
+    /// A body that runs until the end of the input.
+    UntilClose,
+    /// The message is complete.
     Done,
     /// A fatal error occurred; it is returned until [`Parser::reset`].
     Failed(ParseError),
@@ -106,6 +114,8 @@ pub struct Parser {
     buf: HeadBuf,
     /// The request a response answers; `None` for request parsers.
     ctx: Option<ResponseContext>,
+    /// Decodes chunked bodies; also holds their diagnostics.
+    decoder: BodyDecoder,
 }
 
 impl Parser {
@@ -119,6 +129,7 @@ impl Parser {
             state: State::Head,
             buf: HeadBuf::new(usize::try_from(cfg.limits().head_size).unwrap_or(usize::MAX)),
             ctx: None,
+            decoder: BodyDecoder::with_profile(cfg.limits(), cfg.profile()),
         }
     }
 
@@ -158,6 +169,9 @@ impl Parser {
             }
             State::Failed(e) => return Err(e.clone()),
             State::Head => self.feed_head(input),
+            State::Fixed { remaining } => Ok(self.feed_fixed(*remaining, input)),
+            State::Chunked => self.feed_chunked(input),
+            State::UntilClose => Ok(feed_until_close(input)),
         };
         if let Err(e) = &result {
             self.state = State::Failed(e.clone());
@@ -169,8 +183,9 @@ impl Parser {
     ///
     /// # Errors
     ///
-    /// Returns [`ParseError::UnexpectedEof`] if a head is still incomplete, or
-    /// the earlier error if the parser has already failed.
+    /// Returns [`ParseError::UnexpectedEof`] if the head or a fixed or chunked
+    /// body is still incomplete, or the earlier error if the parser has
+    /// already failed. A body that runs until close completes here.
     pub fn feed_eof(&mut self) -> Result<Step, ParseError> {
         match &self.state {
             State::Done => Ok(Step {
@@ -178,17 +193,71 @@ impl Parser {
                 event: Progress::Done,
             }),
             State::Failed(e) => Err(e.clone()),
-            State::Head => {
+            State::UntilClose => {
+                self.state = State::Done;
+                Ok(Step {
+                    consumed: 0,
+                    event: Progress::Done,
+                })
+            }
+            State::Head | State::Fixed { .. } | State::Chunked => {
                 self.state = State::Failed(ParseError::UnexpectedEof);
                 Err(ParseError::UnexpectedEof)
             }
         }
     }
 
+    /// Diagnostics found while reading the body (chunk framing, trailers).
+    /// They are cleared by [`reset`](Parser::reset).
+    #[must_use]
+    pub fn body_diagnostics(&self) -> &[Diagnostic] {
+        self.decoder.diagnostics()
+    }
+
     /// Discards all state and starts parsing a new message.
     pub fn reset(&mut self) {
         self.state = State::Head;
         self.buf.clear();
+        self.decoder.reset();
+    }
+
+    fn feed_fixed(&mut self, remaining: u64, input: &[u8]) -> Step {
+        let take = usize::try_from(remaining).map_or(input.len(), |r| r.min(input.len()));
+        if take == 0 {
+            return Step {
+                consumed: 0,
+                event: Progress::NeedMore,
+            };
+        }
+        let left = remaining.saturating_sub(take as u64);
+        self.state = if left == 0 {
+            State::Done
+        } else {
+            State::Fixed { remaining: left }
+        };
+        let whole = Span::new(0, u32::try_from(take).unwrap_or(u32::MAX));
+        Step {
+            consumed: take,
+            event: Progress::BodyData {
+                raw: whole,
+                data: whole,
+            },
+        }
+    }
+
+    fn feed_chunked(&mut self, input: &[u8]) -> Result<Step, ParseError> {
+        let (consumed, ev) = self.decoder.feed(input)?;
+        if self.decoder.is_done() {
+            self.state = State::Done;
+        }
+        let event = match ev {
+            BodyEvent::NeedMore => Progress::NeedMore,
+            BodyEvent::Ext(s) => Progress::ChunkExt(s),
+            BodyEvent::Data { raw, data } => Progress::BodyData { raw, data },
+            BodyEvent::Trailers(t) => Progress::Trailers(t),
+            BodyEvent::Done => Progress::Done,
+        };
+        Ok(Step { consumed, event })
     }
 
     fn feed_head(&mut self, input: &[u8]) -> Result<Step, ParseError> {
@@ -218,12 +287,40 @@ impl Parser {
         let view = HeadView::new(start, headers, framing);
         let bytes = self.buf.bytes.split().freeze();
         self.buf.term = LEADING;
-        // Task 7: enter body state from framing
-        self.state = State::Done;
+        self.state = body_state(view.framing());
+        self.decoder.reset();
         Ok(Step {
             consumed: take,
             event: Progress::Head(RawMessage::new(bytes, view, self.kind, diags.into_vec())),
         })
+    }
+}
+
+/// The body state a resolved framing starts in.
+fn body_state(framing: &BodyFraming) -> State {
+    match framing {
+        BodyFraming::Ambiguous { resolved, .. } => body_state(resolved),
+        BodyFraming::ContentLength(n) if *n > 0 => State::Fixed { remaining: *n },
+        BodyFraming::Chunked => State::Chunked,
+        BodyFraming::UntilClose => State::UntilClose,
+        _ => State::Done,
+    }
+}
+
+fn feed_until_close(input: &[u8]) -> Step {
+    if input.is_empty() {
+        return Step {
+            consumed: 0,
+            event: Progress::NeedMore,
+        };
+    }
+    let whole = Span::new(0, u32::try_from(input.len()).unwrap_or(u32::MAX));
+    Step {
+        consumed: input.len(),
+        event: Progress::BodyData {
+            raw: whole,
+            data: whole,
+        },
     }
 }
 
