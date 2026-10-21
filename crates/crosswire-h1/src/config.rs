@@ -6,7 +6,6 @@ use crate::limits::ParseLimits;
 
 /// Configuration for a parser: strictness profile and size limits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[non_exhaustive]
 pub struct ParserConfig {
     profile: Profile,
     limits: ParseLimits,

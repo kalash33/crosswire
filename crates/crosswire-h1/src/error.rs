@@ -48,3 +48,33 @@ impl fmt::Display for ParseError {
 
 #[cfg(feature = "std")]
 impl std::error::Error for ParseError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::string::ToString;
+
+    #[test]
+    fn display_each_variant() {
+        let cases = [
+            (ParseError::HeadTooLarge, "message head too large"),
+            (ParseError::LineTooLong, "line too long"),
+            (ParseError::TooManyHeaders, "too many headers"),
+            (
+                ParseError::NoTerminator,
+                "message head has no terminating blank line",
+            ),
+            (ParseError::UnexpectedEof, "unexpected end of input"),
+            (
+                ParseError::InvalidChunkSize {
+                    span: Span::new(3, 7),
+                },
+                "invalid chunk size at bytes 3..7",
+            ),
+            (ParseError::TrailerTooLarge, "trailer section too large"),
+        ];
+        for (err, msg) in cases {
+            assert_eq!(err.to_string(), msg);
+        }
+    }
+}

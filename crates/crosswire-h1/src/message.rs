@@ -39,7 +39,7 @@ pub struct HeaderSpan {
 }
 
 impl HeaderSpan {
-    #[allow(dead_code)] // used by the parser (Tasks 3-7)
+    #[cfg_attr(not(test), expect(dead_code))] // used by the parser (Tasks 3-7)
     pub(crate) fn new(name: Span, value: Span, line: Span) -> Self {
         HeaderSpan { name, value, line }
     }
@@ -113,7 +113,7 @@ pub struct HeadView {
 }
 
 impl HeadView {
-    #[allow(dead_code)] // used by the parser (Tasks 3-7)
+    #[cfg_attr(not(test), expect(dead_code))] // used by the parser (Tasks 3-7)
     pub(crate) fn new(start: StartLine, headers: Vec<HeaderSpan>, framing: BodyFraming) -> Self {
         HeadView {
             start,
@@ -142,8 +142,12 @@ impl HeadView {
 
     /// Returns the value span of the first header whose name matches `name`
     /// ASCII-case-insensitively. `buf` must be the head bytes the spans index.
+    /// An empty `name` never matches and returns `None`.
     #[must_use]
     pub fn header(&self, buf: &[u8], name: &str) -> Option<Span> {
+        if name.is_empty() {
+            return None;
+        }
         self.headers
             .iter()
             .find(|h| {
@@ -175,7 +179,7 @@ pub struct RawMessage {
 }
 
 impl RawMessage {
-    #[allow(dead_code)] // used by the parser (Tasks 3-7)
+    #[cfg_attr(not(test), expect(dead_code))] // used by the parser (Tasks 3-7)
     pub(crate) fn new(
         head: Bytes,
         view: HeadView,
@@ -261,5 +265,79 @@ impl ResponseContext {
             },
             is_connect: method == b"CONNECT",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sp(a: u32, b: u32) -> Span {
+        Span::new(a, b)
+    }
+
+    fn view(buf: &[u8]) -> HeadView {
+        // Hand-built headers: "Host: x\r\n" then "host: y\r\n".
+        let _ = buf;
+        let start = StartLine::Request {
+            method: sp(0, 0),
+            target: sp(0, 0),
+            version: sp(0, 0),
+        };
+        let headers = alloc::vec![
+            HeaderSpan::new(sp(0, 4), sp(6, 7), sp(0, 9)),
+            HeaderSpan::new(sp(9, 13), sp(15, 16), sp(9, 18)),
+        ];
+        HeadView::new(start, headers, BodyFraming::None)
+    }
+
+    const BUF: &[u8] = b"Host: x\r\nhost: y\r\n";
+
+    #[test]
+    fn header_is_case_insensitive() {
+        assert_eq!(view(BUF).header(BUF, "HOST"), Some(sp(6, 7)));
+    }
+
+    #[test]
+    fn header_returns_first_duplicate() {
+        assert_eq!(view(BUF).header(BUF, "host"), Some(sp(6, 7)));
+    }
+
+    #[test]
+    fn header_missing_is_none() {
+        assert_eq!(view(BUF).header(BUF, "accept"), None);
+    }
+
+    #[test]
+    fn header_empty_name_is_none() {
+        assert_eq!(view(BUF).header(BUF, ""), None);
+    }
+
+    #[test]
+    fn header_out_of_range_span_is_none() {
+        assert_eq!(view(BUF).header(b"Ho", "host"), None);
+    }
+
+    #[test]
+    fn raw_message_accessors_and_inline_body() {
+        let head = Bytes::from_static(BUF);
+        let m = RawMessage::new(head, view(BUF), Kind::Request, Vec::new());
+        assert_eq!(m.kind(), Kind::Request);
+        assert!(m.body().is_none());
+        assert!(m.diagnostics().is_empty());
+        let m = m.with_inline_body(Bytes::from_static(b"hi"));
+        assert_eq!(m.body().map(Bytes::as_ref), Some(&b"hi"[..]));
+        assert_eq!(m.bytes().as_ref(), BUF);
+    }
+
+    #[test]
+    fn for_method_matching() {
+        assert_eq!(ResponseContext::for_method(b"HEAD").method, Method::Head);
+        assert_eq!(ResponseContext::for_method(b"head").method, Method::Other);
+        let c = ResponseContext::for_method(b"CONNECT");
+        assert!(c.is_connect);
+        assert_eq!(c.method, Method::Other);
+        assert!(!ResponseContext::for_method(b"connect").is_connect);
+        assert!(!ResponseContext::for_method(b"GET").is_connect);
     }
 }
