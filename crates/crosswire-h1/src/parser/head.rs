@@ -2,7 +2,9 @@
 
 use alloc::vec::Vec;
 
-use crosswire_core::Span;
+use crosswire_core::{DiagnosticCode, Span};
+
+use super::diag::Diagnostics;
 
 use crate::error::ParseError;
 use crate::limits::ParseLimits;
@@ -32,24 +34,41 @@ impl Line {
     }
 }
 
-/// Finds the line starting at `from`. Only `\r\n` terminates a line for now;
-/// the content and terminator are reported separately so lenient terminators
-/// can be added without changing callers.
+/// Finds the line starting at `from`. A line ends at the first `\n`; a `\r`
+/// directly before it belongs to the terminator (`\r\n`), otherwise the
+/// terminator is a bare `\n` (one byte, so `next - content_end == 1`).
 pub(crate) fn find_line_end(buf: &[u8], from: usize) -> Option<Line> {
     let rest = buf.get(from..)?;
-    let mut i = 0;
-    while let Some(off) = rest.get(i..)?.iter().position(|&b| b == b'\n') {
-        let nl = i + off;
-        if nl > 0 && rest[nl - 1] == b'\r' {
-            return Some(Line {
-                start: from,
-                content_end: from + nl - 1,
-                next: from + nl + 1,
-            });
-        }
-        i = nl + 1;
-    }
-    None
+    let nl = rest.iter().position(|&b| b == b'\n')?;
+    let content = if nl > 0 && rest[nl - 1] == b'\r' {
+        nl - 1
+    } else {
+        nl
+    };
+    Some(Line {
+        start: from,
+        content_end: from + content,
+        next: from + nl + 1,
+    })
+}
+
+/// Whether the line ended with a bare `\n` rather than `\r\n`.
+fn is_bare_lf(line: Line) -> bool {
+    line.next - line.content_end == 1
+}
+
+/// Whether `b` may be skipped before the start line.
+pub(crate) fn is_leading_ws(b: u8) -> bool {
+    matches!(b, b'\r' | b'\n' | b' ' | b'\t')
+}
+
+fn is_ows(b: u8) -> bool {
+    b == b' ' || b == b'\t'
+}
+
+/// RFC 9110 `tchar`.
+fn is_tchar(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&b)
 }
 
 /// Splits a request line into method, target and version at single spaces.
@@ -86,43 +105,208 @@ pub(crate) fn split_header(buf: &[u8], line: Line) -> HeaderSpan {
         );
     };
     let name = span(line.start, line.start + colon);
-    let is_ows = |b: &u8| *b == b' ' || *b == b'\t';
     let after = &text[colon + 1..];
-    let lead = after.iter().take_while(|b| is_ows(b)).count();
-    let trail = after[lead..].iter().rev().take_while(|b| is_ows(b)).count();
+    let lead = after.iter().take_while(|&&b| is_ows(b)).count();
+    let trail = after[lead..]
+        .iter()
+        .rev()
+        .take_while(|&&b| is_ows(b))
+        .count();
     let v_start = line.start + colon + 1 + lead;
     let v_end = line.content_end - trail;
     HeaderSpan::new(name, span(v_start, v_end), whole)
 }
 
+/// Reports a lone `\r` inside the line's content and a bare `\n` terminator.
+fn diagnose_line(buf: &[u8], line: Line, d: &mut Diagnostics) {
+    for (i, &b) in buf[line.start..line.content_end].iter().enumerate() {
+        if b == b'\r' {
+            d.push(
+                DiagnosticCode::BareCr,
+                span(line.start + i, line.start + i + 1),
+            );
+        }
+    }
+    if is_bare_lf(line) {
+        d.push(DiagnosticCode::BareLf, span(line.content_end, line.next));
+    }
+}
+
+/// Whether `target` starts with `scheme://`.
+fn is_absolute_form(target: &[u8]) -> bool {
+    let scheme = target
+        .iter()
+        .take_while(|&&b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'.'))
+        .count();
+    scheme > 0 && target[0].is_ascii_alphabetic() && target[scheme..].starts_with(b"://")
+}
+
+fn diagnose_request_line(buf: &[u8], line: Line, start: &StartLine, d: &mut Diagnostics) {
+    let StartLine::Request {
+        target, version, ..
+    } = start
+    else {
+        return;
+    };
+    let whole = span(line.start, line.content_end);
+    let spaces = buf[line.start..line.content_end]
+        .iter()
+        .filter(|&&b| b == b' ')
+        .count();
+    if spaces < 2 {
+        d.push(DiagnosticCode::Http09Request, whole);
+    } else if !matches!(&buf[version.range()], b"HTTP/1.0" | b"HTTP/1.1") {
+        d.push(DiagnosticCode::VersionUnusual, *version);
+    }
+    if is_absolute_form(&buf[target.range()]) {
+        d.push(DiagnosticCode::AbsoluteFormTarget, *target);
+    }
+}
+
+/// Reports everything odd about one header line (not a fold continuation).
+fn diagnose_header(buf: &[u8], h: &HeaderSpan, d: &mut Diagnostics) {
+    let has_colon = buf.get(h.name().end() as usize) == Some(&b':');
+    let name_start = h.name().start() as usize;
+    let name = &buf[h.name().range()];
+    let trailing = name.iter().rev().take_while(|&&b| is_ows(b)).count();
+    let trimmed = &name[..name.len() - trailing];
+    let trimmed_span = span(name_start, name_start + trimmed.len());
+    if trailing > 0 {
+        d.push(
+            DiagnosticCode::WhitespaceBeforeColon,
+            span(name_start + trimmed.len(), name_start + name.len()),
+        );
+        d.push(DiagnosticCode::TrailingSpaceInName, h.name());
+    }
+    if !has_colon {
+        d.push(DiagnosticCode::InvalidTokenCharInName, h.name());
+        return;
+    }
+    if trimmed.is_empty() || !trimmed.iter().all(|&b| is_tchar(b)) {
+        d.push(DiagnosticCode::InvalidTokenCharInName, trimmed_span);
+    } else if !is_canonical_case(trimmed) {
+        d.push(DiagnosticCode::NonCanonicalHeaderCase, trimmed_span);
+    }
+    let value_start = h.value().start() as usize;
+    // CR is reported as `bare_cr`, so it is not repeated here.
+    let is_ctl = |b: u8| (b < 0x20 && b != b'\t' && b != b'\r') || b == 0x7f;
+    if let Some(i) = buf[h.value().range()].iter().position(|&b| is_ctl(b)) {
+        d.push(
+            DiagnosticCode::InvalidCharInValue,
+            span(value_start + i, value_start + i + 1),
+        );
+    }
+}
+
+/// Whether `name` is in `Title-Case`: each letter after the start or a `-`
+/// uppercase, every other letter lowercase.
+fn is_canonical_case(name: &[u8]) -> bool {
+    let mut upper_next = true;
+    for &b in name {
+        if b.is_ascii_alphabetic() && b.is_ascii_uppercase() != upper_next {
+            return false;
+        }
+        upper_next = b == b'-';
+    }
+    true
+}
+
+/// Extends the previous header over an obsolete-fold continuation line.
+fn fold_into(buf: &[u8], prev: &HeaderSpan, line: Line) -> HeaderSpan {
+    let text = &buf[line.start..line.content_end];
+    let trail = text.iter().rev().take_while(|&&b| is_ows(b)).count();
+    let value_end = line.content_end - trail;
+    let value_start = if prev.value().is_empty() {
+        line.start + text.iter().take_while(|&&b| is_ows(b)).count()
+    } else {
+        prev.value().start() as usize
+    };
+    HeaderSpan::new(
+        prev.name(),
+        span(value_start, value_end.max(value_start)),
+        span(prev.line().start() as usize, line.next),
+    )
+}
+
 /// Parses a complete request head (ending in a blank line) into its start
-/// line and header spans, enforcing `max_line` and `max_headers`.
+/// line, header spans and diagnostics, enforcing `max_line` and `max_headers`.
+/// Malformed input is annotated, never rejected.
 pub(crate) fn parse_request_head(
     buf: &[u8],
     limits: &ParseLimits,
+    d: &mut Diagnostics,
 ) -> Result<(StartLine, Vec<HeaderSpan>), ParseError> {
     let max_line = usize::try_from(limits.max_line).unwrap_or(usize::MAX);
-    let first = find_line_end(buf, 0).ok_or(ParseError::NoTerminator)?;
+    let skip = buf.iter().take_while(|&&b| is_leading_ws(b)).count();
+    if skip > 0 {
+        d.push(
+            DiagnosticCode::LeadingWhitespaceBeforeStartLine,
+            span(0, skip),
+        );
+    }
+    let first = find_line_end(buf, skip).ok_or(ParseError::NoTerminator)?;
     if first.len() > max_line {
         return Err(ParseError::LineTooLong);
     }
     let start = split_request_line(buf, first);
-    let mut headers = Vec::new();
+    diagnose_line(buf, first, d);
+    diagnose_request_line(buf, first, &start, d);
+    let mut headers: Vec<HeaderSpan> = Vec::new();
     let mut pos = first.next;
-    loop {
+    let end = loop {
         let line = find_line_end(buf, pos).ok_or(ParseError::NoTerminator)?;
+        diagnose_line(buf, line, d);
         if line.len() == 0 {
-            return Ok((start, headers));
+            break pos;
         }
         if line.len() > max_line {
             return Err(ParseError::LineTooLong);
         }
-        if headers.len() >= usize::from(limits.max_headers) {
-            return Err(ParseError::TooManyHeaders);
+        let continuation = is_ows(buf[line.start]);
+        if let (true, Some(prev)) = (continuation, headers.last_mut()) {
+            d.push(DiagnosticCode::ObsFold, span(line.start, line.content_end));
+            *prev = fold_into(buf, prev, line);
+        } else {
+            if headers.len() >= usize::from(limits.max_headers) {
+                return Err(ParseError::TooManyHeaders);
+            }
+            let h = split_header(buf, line);
+            diagnose_header(buf, &h, d);
+            headers.push(h);
         }
-        headers.push(split_header(buf, line));
         pos = line.next;
+    };
+    diagnose_fields(buf, &headers, end, d);
+    Ok((start, headers))
+}
+
+/// Cross-header checks: `Host` presence and uniqueness, `Expect`.
+fn diagnose_fields(buf: &[u8], headers: &[HeaderSpan], end: usize, d: &mut Diagnostics) {
+    let mut hosts = 0usize;
+    for h in headers {
+        if buf.get(h.name().end() as usize) != Some(&b':') {
+            continue;
+        }
+        let name = trim_ows_end(&buf[h.name().range()]);
+        if name.eq_ignore_ascii_case(b"host") {
+            hosts += 1;
+            if hosts > 1 {
+                d.push(DiagnosticCode::DuplicateHost, h.name());
+            }
+        } else if name.eq_ignore_ascii_case(b"expect")
+            && buf[h.value().range()].eq_ignore_ascii_case(b"100-continue")
+        {
+            d.push(DiagnosticCode::Expect100Continue, h.value());
+        }
     }
+    if hosts == 0 {
+        d.push(DiagnosticCode::MissingHost, span(end, end));
+    }
+}
+
+fn trim_ows_end(b: &[u8]) -> &[u8] {
+    let n = b.iter().rev().take_while(|&&c| is_ows(c)).count();
+    &b[..b.len() - n]
 }
 
 #[cfg(test)]
@@ -133,7 +317,13 @@ mod tests {
     fn line_end_reports_content_and_terminator() {
         let l = find_line_end(b"ab\r\ncd", 0).unwrap();
         assert_eq!((l.start, l.content_end, l.next), (0, 2, 4));
-        assert_eq!(find_line_end(b"ab\ncd\r\n", 0).unwrap().content_end, 5);
+        // A bare LF terminates a line on its own.
+        let l = find_line_end(b"ab\ncd\r\n", 0).unwrap();
+        assert_eq!((l.content_end, l.next), (2, 3));
+        let l = find_line_end(b"ab\ncd\r\n", 3).unwrap();
+        assert_eq!((l.content_end, l.next), (5, 7));
+        let l = find_line_end(b"\r\n", 0).unwrap();
+        assert_eq!((l.content_end, l.next), (0, 2));
         assert!(find_line_end(b"ab\r", 0).is_none());
         assert!(find_line_end(b"ab", 5).is_none());
     }
