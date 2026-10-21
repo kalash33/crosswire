@@ -1,0 +1,13 @@
+[workspace]
+members = ["crates/*"]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "Apache-2.0 OR MIT"
+rust-version = "1.86"
+repository = "https://github.com/crosswire-rs/crosswire"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "deny"
