@@ -3,12 +3,14 @@
 mod diag;
 mod head;
 
+pub(crate) use head::parse_status;
+
 use bytes::BytesMut;
 
 use crate::config::ParserConfig;
 use crate::error::ParseError;
 use crate::limits::ParseLimits;
-use crate::message::{BodyFraming, HeadView, Kind, RawMessage};
+use crate::message::{BodyFraming, HeadView, Kind, RawMessage, ResponseContext};
 use crate::progress::{Progress, Step};
 use crosswire_core::Profile;
 
@@ -101,6 +103,8 @@ pub struct Parser {
     profile: Profile,
     state: State,
     buf: HeadBuf,
+    /// The request a response answers; `None` for request parsers.
+    ctx: Option<ResponseContext>,
 }
 
 impl Parser {
@@ -113,7 +117,25 @@ impl Parser {
             profile: cfg.profile(),
             state: State::Head,
             buf: HeadBuf::new(usize::try_from(cfg.limits().head_size).unwrap_or(usize::MAX)),
+            ctx: None,
         }
+    }
+
+    /// Creates a parser for response messages. `ctx` describes the request
+    /// being answered, which decides how the body is framed.
+    #[must_use]
+    pub fn response(cfg: &ParserConfig, ctx: ResponseContext) -> Parser {
+        Parser {
+            kind: Kind::Response,
+            ctx: Some(ctx),
+            ..Parser::request(cfg)
+        }
+    }
+
+    /// The request context of a response parser; `None` for a request parser.
+    #[allow(dead_code)] // read by body framing (Task 5)
+    pub(crate) fn response_context(&self) -> Option<&ResponseContext> {
+        self.ctx.as_ref()
     }
 
     /// Feeds input and returns how much was consumed and what it produced.
@@ -183,7 +205,8 @@ impl Parser {
             });
         }
         let mut diags = diag::Diagnostics::new(self.profile);
-        let (start, headers) = head::parse_request_head(&self.buf.bytes, &self.limits, &mut diags)?;
+        let (start, headers) =
+            head::parse_head(self.kind, &self.buf.bytes, &self.limits, &mut diags)?;
         // Task 5: resolve framing from the headers.
         let view = HeadView::new(start, headers, BodyFraming::None);
         let bytes = self.buf.bytes.split().freeze();

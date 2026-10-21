@@ -8,7 +8,7 @@ use super::diag::Diagnostics;
 
 use crate::error::ParseError;
 use crate::limits::ParseLimits;
-use crate::message::{HeaderSpan, StartLine};
+use crate::message::{HeaderSpan, Kind, StartLine};
 
 /// Builds a span from buffer offsets. Offsets never exceed `head_size`, which is a `u32`.
 fn span(start: usize, end: usize) -> Span {
@@ -92,6 +92,31 @@ pub(crate) fn split_request_line(buf: &[u8], line: Line) -> StartLine {
     }
 }
 
+/// Splits a status line into version, status and reason. The version ends at
+/// the first space and the status at the next one; the reason is the rest.
+/// Missing parts become empty spans at the end of the line.
+pub(crate) fn split_status_line(buf: &[u8], line: Line) -> StartLine {
+    let first_space = |from: usize| {
+        buf[from..line.content_end]
+            .iter()
+            .position(|&b| b == b' ')
+            .map(|i| from + i)
+    };
+    let (version_end, status_start) = match first_space(line.start) {
+        Some(i) => (i, i + 1),
+        None => (line.content_end, line.content_end),
+    };
+    let (status_end, reason_start) = match first_space(status_start) {
+        Some(i) => (i, i + 1),
+        None => (line.content_end, line.content_end),
+    };
+    StartLine::Response {
+        version: span(line.start, version_end),
+        status: span(status_start, status_end),
+        reason: span(reason_start, line.content_end),
+    }
+}
+
 /// Splits a header line at the first colon and trims optional whitespace
 /// around the value. A line without a colon yields an empty value.
 pub(crate) fn split_header(buf: &[u8], line: Line) -> HeaderSpan {
@@ -160,6 +185,36 @@ fn diagnose_request_line(buf: &[u8], line: Line, start: &StartLine, d: &mut Diag
     }
     if is_absolute_form(&buf[target.range()]) {
         d.push(DiagnosticCode::AbsoluteFormTarget, *target);
+    }
+}
+
+/// Reports problems in a status line.
+///
+/// The catalogue has no `malformed_status_line` code in v0.1, so
+/// `version_unusual` is the catch-all: it is emitted when the version is not
+/// exactly `HTTP/1.0` or `HTTP/1.1`, and also when the status is missing or is
+/// not exactly three ASCII digits (so `HeadView::status_code` would be `None`).
+/// The code is emitted at most once, on the version span.
+fn diagnose_response_line(buf: &[u8], start: &StartLine, d: &mut Diagnostics) {
+    let StartLine::Response {
+        version, status, ..
+    } = start
+    else {
+        return;
+    };
+    let version_ok = matches!(&buf[version.range()], b"HTTP/1.0" | b"HTTP/1.1");
+    if !version_ok || parse_status(&buf[status.range()]).is_none() {
+        d.push(DiagnosticCode::VersionUnusual, *version);
+    }
+}
+
+/// Parses exactly three ASCII digits.
+pub(crate) fn parse_status(text: &[u8]) -> Option<u16> {
+    match text {
+        [a, b, c] if text.iter().all(u8::is_ascii_digit) => {
+            Some(u16::from(a - b'0') * 100 + u16::from(b - b'0') * 10 + u16::from(c - b'0'))
+        }
+        _ => None,
     }
 }
 
@@ -233,10 +288,12 @@ fn fold_into(buf: &[u8], prev: &HeaderSpan, line: Line) -> HeaderSpan {
     )
 }
 
-/// Parses a complete request head (ending in a blank line) into its start
-/// line, header spans and diagnostics, enforcing `max_line` and `max_headers`.
-/// Malformed input is annotated, never rejected.
-pub(crate) fn parse_request_head(
+/// Parses a complete head (ending in a blank line) into its start line,
+/// header spans and diagnostics, enforcing `max_line` and `max_headers`. The
+/// start line is split and diagnosed according to `kind`; the header scanner is
+/// shared. Malformed input is annotated, never rejected.
+pub(crate) fn parse_head(
+    kind: Kind,
     buf: &[u8],
     limits: &ParseLimits,
     d: &mut Diagnostics,
@@ -253,9 +310,15 @@ pub(crate) fn parse_request_head(
     if first.len() > max_line {
         return Err(ParseError::LineTooLong);
     }
-    let start = split_request_line(buf, first);
+    let start = match kind {
+        Kind::Response => split_status_line(buf, first),
+        _ => split_request_line(buf, first),
+    };
     diagnose_line(buf, first, d);
-    diagnose_request_line(buf, first, &start, d);
+    match kind {
+        Kind::Response => diagnose_response_line(buf, &start, d),
+        _ => diagnose_request_line(buf, first, &start, d),
+    }
     let mut headers: Vec<HeaderSpan> = Vec::new();
     let mut pos = first.next;
     let end = loop {
@@ -282,12 +345,19 @@ pub(crate) fn parse_request_head(
         }
         pos = line.next;
     };
-    diagnose_fields(buf, &headers, end, d);
+    diagnose_fields(kind, buf, &headers, end, d);
     Ok((start, headers))
 }
 
-/// Cross-header checks: `Host` presence and uniqueness, `Expect`.
-fn diagnose_fields(buf: &[u8], headers: &[HeaderSpan], end: usize, d: &mut Diagnostics) {
+/// Cross-header checks: `Host` presence and uniqueness (requests only), `Expect`.
+fn diagnose_fields(
+    kind: Kind,
+    buf: &[u8],
+    headers: &[HeaderSpan],
+    end: usize,
+    d: &mut Diagnostics,
+) {
+    let request = kind != Kind::Response;
     let mut hosts = 0usize;
     for h in headers {
         if buf.get(h.name().end() as usize) != Some(&b':') {
@@ -296,7 +366,7 @@ fn diagnose_fields(buf: &[u8], headers: &[HeaderSpan], end: usize, d: &mut Diagn
         let name = trim_ows_end(&buf[h.name().range()]);
         if name.eq_ignore_ascii_case(b"host") {
             hosts += 1;
-            if hosts > 1 {
+            if request && hosts > 1 {
                 d.push(DiagnosticCode::DuplicateHost, h.name());
             }
         } else if name.eq_ignore_ascii_case(b"expect")
@@ -305,7 +375,7 @@ fn diagnose_fields(buf: &[u8], headers: &[HeaderSpan], end: usize, d: &mut Diagn
             d.push(DiagnosticCode::Expect100Continue, h.value());
         }
     }
-    if hosts == 0 {
+    if request && hosts == 0 {
         d.push(DiagnosticCode::MissingHost, span(end, end));
     }
 }

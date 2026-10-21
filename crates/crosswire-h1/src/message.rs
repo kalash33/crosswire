@@ -126,6 +126,28 @@ impl HeadView {
         &self.start
     }
 
+    /// The request target's byte range in the head; `None` for a response.
+    #[must_use]
+    pub fn start_target_range(&self) -> Option<core::ops::Range<usize>> {
+        match &self.start {
+            StartLine::Request { target, .. } => Some(target.range()),
+            _ => None,
+        }
+    }
+
+    /// The status code of a response, parsed from the status span of `buf`
+    /// (the head bytes the spans index). Returns `None` for a request, an
+    /// out-of-range span, or anything other than exactly three ASCII digits.
+    #[must_use]
+    pub fn status_code(&self, buf: &[u8]) -> Option<u16> {
+        match &self.start {
+            StartLine::Response { status, .. } => {
+                crate::parser::parse_status(buf.get(status.range())?)
+            }
+            _ => None,
+        }
+    }
+
     /// The header fields in wire order.
     #[must_use]
     pub fn headers(&self) -> &[HeaderSpan] {
