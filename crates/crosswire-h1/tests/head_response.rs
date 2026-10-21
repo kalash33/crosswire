@@ -45,7 +45,7 @@ fn normal_status_line() {
     );
     assert_eq!(m.head().status_code(raw), Some(404));
     assert!(m.diagnostics().is_empty());
-    assert!(matches!(m.head().framing(), BodyFraming::None));
+    assert!(matches!(m.head().framing(), BodyFraming::UntilClose));
 }
 
 #[test]

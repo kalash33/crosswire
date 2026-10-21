@@ -1,6 +1,7 @@
 //! The streaming, sans-IO message parser.
 
 mod diag;
+mod framing;
 mod head;
 
 pub(crate) use head::parse_status;
@@ -10,7 +11,7 @@ use bytes::BytesMut;
 use crate::config::ParserConfig;
 use crate::error::ParseError;
 use crate::limits::ParseLimits;
-use crate::message::{BodyFraming, HeadView, Kind, RawMessage, ResponseContext};
+use crate::message::{HeadView, Kind, RawMessage, ResponseContext};
 use crate::progress::{Progress, Step};
 use crosswire_core::Profile;
 
@@ -133,7 +134,6 @@ impl Parser {
     }
 
     /// The request context of a response parser; `None` for a request parser.
-    #[allow(dead_code)] // read by body framing (Task 5)
     pub(crate) fn response_context(&self) -> Option<&ResponseContext> {
         self.ctx.as_ref()
     }
@@ -207,10 +207,18 @@ impl Parser {
         let mut diags = diag::Diagnostics::new(self.profile);
         let (start, headers) =
             head::parse_head(self.kind, &self.buf.bytes, &self.limits, &mut diags)?;
-        // Task 5: resolve framing from the headers.
-        let view = HeadView::new(start, headers, BodyFraming::None);
+        let framing = framing::resolve(
+            &headers,
+            &self.buf.bytes,
+            self.kind,
+            &start,
+            self.response_context(),
+            &mut diags,
+        );
+        let view = HeadView::new(start, headers, framing);
         let bytes = self.buf.bytes.split().freeze();
         self.buf.term = LEADING;
+        // Task 7: enter body state from framing
         self.state = State::Done;
         Ok(Step {
             consumed: take,
