@@ -1,0 +1,9 @@
+{
+  "kind": "response",
+  "ctx": {
+    "method": "GET",
+    "is_connect": false
+  },
+  "framing": "upgrade",
+  "diagnostics": []
+}

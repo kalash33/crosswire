@@ -1,0 +1,7 @@
+{
+  "kind": "request",
+  "framing": "none",
+  "diagnostics": [
+    "invalid_char_in_value"
+  ]
+}

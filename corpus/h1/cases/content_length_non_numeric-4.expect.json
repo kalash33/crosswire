@@ -1,0 +1,7 @@
+{
+  "kind": "request",
+  "framing": "none",
+  "diagnostics": [
+    "content_length_non_numeric"
+  ]
+}

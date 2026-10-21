@@ -1,0 +1,11 @@
+{
+  "kind": "request",
+  "framing": "ambiguous",
+  "resolved": "chunked",
+  "rule": "transfer_encoding_wins",
+  "diagnostics": [
+    "conflicting_framing",
+    "content_length_non_numeric"
+  ],
+  "body": "abc"
+}

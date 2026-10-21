@@ -1,0 +1,6 @@
+{
+  "kind": "request",
+  "framing": "chunked",
+  "diagnostics": [],
+  "body": "hello"
+}

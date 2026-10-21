@@ -1,0 +1,8 @@
+{
+  "kind": "request",
+  "framing": "content_length",
+  "diagnostics": [
+    "duplicate_content_length"
+  ],
+  "body": "{\"a\":\"b\",\"c\":1}"
+}

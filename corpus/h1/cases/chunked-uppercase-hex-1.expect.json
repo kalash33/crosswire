@@ -1,0 +1,6 @@
+{
+  "kind": "request",
+  "framing": "chunked",
+  "diagnostics": [],
+  "body": "0123456789"
+}

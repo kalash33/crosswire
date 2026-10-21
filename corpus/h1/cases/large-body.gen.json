@@ -1,0 +1,1 @@
+{ "kind": "request", "head": "POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 1048577\r\n\r\n", "body_byte": 65, "body_len": 1048577, "framing": "content_length", "diagnostics": [] }

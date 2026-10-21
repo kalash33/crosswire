@@ -1,0 +1,10 @@
+{
+  "kind": "response",
+  "ctx": {
+    "method": "GET",
+    "is_connect": false
+  },
+  "framing": "chunked",
+  "error": "invalid_chunk_size",
+  "diagnostics": []
+}

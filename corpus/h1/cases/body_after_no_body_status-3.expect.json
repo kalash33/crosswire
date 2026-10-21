@@ -1,0 +1,13 @@
+{
+  "kind": "response",
+  "ctx": {
+    "method": "GET",
+    "is_connect": false
+  },
+  "framing": "ambiguous",
+  "resolved": "none",
+  "rule": "no_body_status",
+  "diagnostics": [
+    "body_after_no_body_status"
+  ]
+}

@@ -1,0 +1,7 @@
+{
+  "kind": "request",
+  "framing": "none",
+  "diagnostics": [
+    "non_canonical_header_case"
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "kind": "request",
+  "framing": "ambiguous",
+  "resolved": "content_length",
+  "rule": "first_content_length",
+  "diagnostics": [
+    "duplicate_content_length"
+  ],
+  "body": "{\"a\":\"b\",\"c\":1}"
+}

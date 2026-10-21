@@ -1,0 +1,12 @@
+{
+  "kind": "response",
+  "ctx": {
+    "method": "GET",
+    "is_connect": false
+  },
+  "framing": "until_close",
+  "diagnostics": [
+    "content_length_non_numeric"
+  ],
+  "body": "stream"
+}

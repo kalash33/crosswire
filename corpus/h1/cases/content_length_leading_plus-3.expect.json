@@ -1,0 +1,12 @@
+{
+  "kind": "response",
+  "ctx": {
+    "method": "GET",
+    "is_connect": false
+  },
+  "framing": "content_length",
+  "diagnostics": [
+    "content_length_leading_plus"
+  ],
+  "body": "hi"
+}

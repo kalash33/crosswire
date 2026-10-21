@@ -1,0 +1,8 @@
+{
+  "kind": "request",
+  "framing": "none",
+  "diagnostics": [
+    "duplicate_host",
+    "non_canonical_header_case"
+  ]
+}

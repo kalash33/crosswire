@@ -1,0 +1,10 @@
+{
+  "kind": "response",
+  "ctx": {
+    "method": "GET",
+    "is_connect": false
+  },
+  "framing": "content_length",
+  "diagnostics": [],
+  "body": "hello"
+}

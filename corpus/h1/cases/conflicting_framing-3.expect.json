@@ -1,0 +1,14 @@
+{
+  "kind": "response",
+  "ctx": {
+    "method": "GET",
+    "is_connect": false
+  },
+  "framing": "ambiguous",
+  "resolved": "chunked",
+  "rule": "transfer_encoding_wins",
+  "diagnostics": [
+    "conflicting_framing"
+  ],
+  "body": "abc"
+}

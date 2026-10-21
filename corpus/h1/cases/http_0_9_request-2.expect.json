@@ -1,0 +1,7 @@
+{
+  "kind": "request",
+  "framing": "none",
+  "diagnostics": [
+    "http_0_9_request"
+  ]
+}

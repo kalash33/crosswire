@@ -1,0 +1,6 @@
+{
+  "kind": "request",
+  "framing": "none",
+  "pipelined": true,
+  "diagnostics": []
+}

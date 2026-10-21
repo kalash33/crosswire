@@ -1,0 +1,8 @@
+{
+  "kind": "request",
+  "framing": "content_length",
+  "diagnostics": [
+    "content_length_leading_plus"
+  ],
+  "body": "hello"
+}

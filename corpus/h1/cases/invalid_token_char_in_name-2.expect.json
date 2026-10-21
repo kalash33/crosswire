@@ -1,0 +1,7 @@
+{
+  "kind": "request",
+  "framing": "none",
+  "diagnostics": [
+    "invalid_token_char_in_name"
+  ]
+}

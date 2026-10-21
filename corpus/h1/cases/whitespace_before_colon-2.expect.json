@@ -1,0 +1,8 @@
+{
+  "kind": "request",
+  "framing": "none",
+  "diagnostics": [
+    "trailing_space_in_name",
+    "whitespace_before_colon"
+  ]
+}

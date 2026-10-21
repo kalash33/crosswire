@@ -1,0 +1,8 @@
+{
+  "kind": "request",
+  "framing": "chunked",
+  "diagnostics": [
+    "trailer_present"
+  ],
+  "body": "abc"
+}

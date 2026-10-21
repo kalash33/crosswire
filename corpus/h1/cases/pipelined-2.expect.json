@@ -1,0 +1,7 @@
+{
+  "kind": "request",
+  "framing": "content_length",
+  "pipelined": true,
+  "diagnostics": [],
+  "body": "abc"
+}

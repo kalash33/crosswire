@@ -1,0 +1,11 @@
+{
+  "kind": "response",
+  "ctx": {
+    "method": "GET",
+    "is_connect": false
+  },
+  "framing": "content_length",
+  "diagnostics": [
+    "invalid_char_in_value"
+  ]
+}

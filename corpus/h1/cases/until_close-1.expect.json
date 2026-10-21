@@ -1,0 +1,10 @@
+{
+  "kind": "response",
+  "ctx": {
+    "method": "GET",
+    "is_connect": false
+  },
+  "framing": "until_close",
+  "diagnostics": [],
+  "body": "hello until close"
+}

@@ -1,0 +1,6 @@
+{
+  "kind": "request",
+  "framing": "content_length",
+  "diagnostics": [],
+  "body_hex": "00ff0d0a8001"
+}

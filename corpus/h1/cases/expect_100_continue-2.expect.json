@@ -1,0 +1,8 @@
+{
+  "kind": "request",
+  "framing": "content_length",
+  "diagnostics": [
+    "expect_100_continue"
+  ],
+  "body": "{\"a\":\"b\",\"c\":1}"
+}

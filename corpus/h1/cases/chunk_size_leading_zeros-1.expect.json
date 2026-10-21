@@ -1,0 +1,8 @@
+{
+  "kind": "request",
+  "framing": "chunked",
+  "diagnostics": [
+    "chunk_size_leading_zeros"
+  ],
+  "body": "hello"
+}

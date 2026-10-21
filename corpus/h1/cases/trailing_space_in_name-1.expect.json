@@ -1,0 +1,9 @@
+{
+  "kind": "request",
+  "framing": "content_length",
+  "diagnostics": [
+    "trailing_space_in_name",
+    "whitespace_before_colon"
+  ],
+  "body": "hello"
+}

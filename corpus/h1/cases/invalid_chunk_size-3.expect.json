@@ -1,0 +1,6 @@
+{
+  "kind": "request",
+  "framing": "chunked",
+  "error": "invalid_chunk_size",
+  "diagnostics": []
+}
