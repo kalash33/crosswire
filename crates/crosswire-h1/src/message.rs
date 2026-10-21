@@ -39,7 +39,6 @@ pub struct HeaderSpan {
 }
 
 impl HeaderSpan {
-    #[cfg_attr(not(test), expect(dead_code))] // used by the parser (Tasks 3-7)
     pub(crate) fn new(name: Span, value: Span, line: Span) -> Self {
         HeaderSpan { name, value, line }
     }
@@ -113,7 +112,6 @@ pub struct HeadView {
 }
 
 impl HeadView {
-    #[cfg_attr(not(test), expect(dead_code))] // used by the parser (Tasks 3-7)
     pub(crate) fn new(start: StartLine, headers: Vec<HeaderSpan>, framing: BodyFraming) -> Self {
         HeadView {
             start,
@@ -179,7 +177,6 @@ pub struct RawMessage {
 }
 
 impl RawMessage {
-    #[cfg_attr(not(test), expect(dead_code))] // used by the parser (Tasks 3-7)
     pub(crate) fn new(
         head: Bytes,
         view: HeadView,
