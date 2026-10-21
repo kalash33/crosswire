@@ -311,3 +311,25 @@ fn errors_poison_the_parser_until_reset() {
         Err(ParseError::UnexpectedEof)
     ));
 }
+
+#[test]
+fn spaced_content_length_is_found_by_lookup() {
+    let m = parse(
+        b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length : 5\r\n\r\n",
+        Profile::Lenient,
+    );
+    assert!(has(&m, DiagnosticCode::WhitespaceBeforeColon).is_some());
+    let v = m.head().header(m.bytes(), "Content-Length").unwrap();
+    assert_eq!(&m.bytes()[v.range()], b"5");
+}
+
+#[test]
+fn control_byte_in_folded_value() {
+    let raw = b"GET / HTTP/1.1\r\nHost: x\r\nX-A: 1\r\n \x01\r\n\r\n";
+    let m = parse(raw, Profile::Lenient);
+    assert!(has(&m, DiagnosticCode::ObsFold).is_some());
+    assert_eq!(
+        text(raw, has(&m, DiagnosticCode::InvalidCharInValue).unwrap()),
+        b"\x01"
+    );
+}

@@ -187,13 +187,18 @@ fn diagnose_header(buf: &[u8], h: &HeaderSpan, d: &mut Diagnostics) {
     } else if !is_canonical_case(trimmed) {
         d.push(DiagnosticCode::NonCanonicalHeaderCase, trimmed_span);
     }
-    let value_start = h.value().start() as usize;
-    // CR is reported as `bare_cr`, so it is not repeated here.
+    diagnose_value(buf, h.value(), d);
+}
+
+/// Reports the first control byte in `value`. CR is reported as `bare_cr`, so
+/// it is not repeated here.
+fn diagnose_value(buf: &[u8], value: Span, d: &mut Diagnostics) {
+    let start = value.start() as usize;
     let is_ctl = |b: u8| (b < 0x20 && b != b'\t' && b != b'\r') || b == 0x7f;
-    if let Some(i) = buf[h.value().range()].iter().position(|&b| is_ctl(b)) {
+    if let Some(i) = buf[value.range()].iter().position(|&b| is_ctl(b)) {
         d.push(
             DiagnosticCode::InvalidCharInValue,
-            span(value_start + i, value_start + i + 1),
+            span(start + i, start + i + 1),
         );
     }
 }
@@ -266,6 +271,7 @@ pub(crate) fn parse_request_head(
         if let (true, Some(prev)) = (continuation, headers.last_mut()) {
             d.push(DiagnosticCode::ObsFold, span(line.start, line.content_end));
             *prev = fold_into(buf, prev, line);
+            diagnose_value(buf, span(line.start, line.content_end), d);
         } else {
             if headers.len() >= usize::from(limits.max_headers) {
                 return Err(ParseError::TooManyHeaders);

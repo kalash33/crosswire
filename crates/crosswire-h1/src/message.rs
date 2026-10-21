@@ -140,7 +140,9 @@ impl HeadView {
 
     /// Returns the value span of the first header whose name matches `name`
     /// ASCII-case-insensitively. `buf` must be the head bytes the spans index.
-    /// An empty `name` never matches and returns `None`.
+    /// Trailing spaces and tabs in a stored name (as in `Host : x`) are ignored
+    /// for the comparison; leading bytes are never trimmed. An empty `name`
+    /// never matches and returns `None`.
     #[must_use]
     pub fn header(&self, buf: &[u8], name: &str) -> Option<Span> {
         if name.is_empty() {
@@ -150,6 +152,10 @@ impl HeadView {
             .iter()
             .find(|h| {
                 buf.get(h.name.range())
+                    .map(|n| {
+                        let keep = n.iter().rposition(|&b| b != b' ' && b != b'\t');
+                        &n[..keep.map_or(0, |i| i + 1)]
+                    })
                     .is_some_and(|n| n.eq_ignore_ascii_case(name.as_bytes()))
             })
             .map(HeaderSpan::value)
@@ -289,6 +295,28 @@ mod tests {
     }
 
     const BUF: &[u8] = b"Host: x\r\nhost: y\r\n";
+
+    fn one(name_end: u32, value: (u32, u32)) -> HeadView {
+        let start = StartLine::Request {
+            method: sp(0, 0),
+            target: sp(0, 0),
+            version: sp(0, 0),
+        };
+        let h = HeaderSpan::new(sp(0, name_end), sp(value.0, value.1), sp(0, value.1 + 2));
+        HeadView::new(start, alloc::vec![h], BodyFraming::None)
+    }
+
+    #[test]
+    fn header_lookup_trims_trailing_ows_only() {
+        let b = b"Host : x\r\n";
+        assert_eq!(one(5, (7, 8)).header(b, "Host"), Some(sp(7, 8)));
+        let b = b"Host\t: x\r\n";
+        assert_eq!(one(5, (7, 8)).header(b, "host"), Some(sp(7, 8)));
+        let b = b"Ho st: x\r\n";
+        assert_eq!(one(5, (7, 8)).header(b, "Host"), None);
+        let b = b" Host: x\r\n";
+        assert_eq!(one(5, (7, 8)).header(b, "Host"), None);
+    }
 
     #[test]
     fn header_is_case_insensitive() {
