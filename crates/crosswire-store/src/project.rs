@@ -168,15 +168,31 @@ impl Project {
     }
 
     /// The writer connection; the writer thread uses it to run transactions.
-    #[allow(dead_code)]
-    pub(crate) fn writer_mut(&mut self) -> &mut Connection {
+    pub fn writer_mut(&mut self) -> &mut Connection {
         &mut self.db
     }
 
     /// The path of pack `id`, derived from the id and never read from the database.
-    #[allow(dead_code)]
-    pub(crate) fn pack_path(&self, id: u32) -> PathBuf {
-        self.dir.join("packs").join(format!("{id:06}.pack"))
+    #[must_use]
+    pub fn pack_path(&self, id: u32) -> PathBuf {
+        crate::packs::pack_file(&self.dir, id)
+    }
+
+    /// Records that the first `len` bytes of pack `id` are committed.
+    ///
+    /// Call inside the transaction that commits the batch whose records end at
+    /// `len`, after the pack was fsynced. Never lowers the stored value.
+    pub fn set_pack_committed_len(
+        tx: &rusqlite::Transaction<'_>,
+        id: u32,
+        len: u64,
+    ) -> Result<(), StoreError> {
+        let len = i64::try_from(len).map_err(|_| StoreError::Corrupt("pack too large".into()))?;
+        tx.execute(
+            "UPDATE packs SET committed_len = max(committed_len, ?2) WHERE id = ?1",
+            rusqlite::params![id, len],
+        )?;
+        Ok(())
     }
 }
 
