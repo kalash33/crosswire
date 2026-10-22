@@ -203,7 +203,7 @@ impl Transport {
         let host = target.host.trim_start_matches('[').trim_end_matches(']');
         let ips = self.resolve(host, target.port).await?;
         self.gate
-            .check(&target.host, target.port, &ips)
+            .check(host, target.port, &ips)
             .map_err(ClientError::Refused)?;
 
         let t0 = Instant::now();
@@ -232,7 +232,6 @@ impl Transport {
                 .map_err(|_| ClientError::Tls(format!("invalid server name {host:?}")))?;
             cfg = cfg.with_sni(name);
         }
-        let verify = cfg.verify;
         if let Some(name) = &cfg.sni {
             info = info.with_sni(name.to_str().into_owned());
         }
@@ -243,7 +242,7 @@ impl Transport {
         info = info
             .with_tls(tls.version.clone(), tls.cipher.clone())
             .with_chain_result(tls.chain_result.clone())
-            .with_cert_override(verify == VerifyMode::AcceptInvalid);
+            .with_cert_override(tls.chain_error.is_some());
         if let Some(a) = &tls.alpn {
             info = info.with_alpn(a.clone());
         }

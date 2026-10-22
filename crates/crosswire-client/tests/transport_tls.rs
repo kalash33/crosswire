@@ -104,6 +104,7 @@ async fn accept_invalid_reports_valid_when_chain_was_fine() {
         c.info().upstream_chain_result(),
         ChainResult::Valid
     ));
+    assert!(!c.info().cert_override());
     assert!(c.chain_error().is_none());
 }
 
@@ -270,4 +271,20 @@ async fn invalid_sni_is_an_error_not_a_fallback() {
         .await
         .unwrap_err();
     assert!(matches!(err, ClientError::Tls(_)), "{err:?}");
+}
+
+#[tokio::test]
+async fn bracketed_ipv6_host_matches_unbracketed_allowlist_entry() {
+    let Ok(l) = tokio::net::TcpListener::bind("[::1]:0").await else {
+        return; // no IPv6 loopback on this machine
+    };
+    let port = l.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        let _ = l.accept().await;
+    });
+    let mut g = DestinationGate::new(vec![]);
+    g.allow("::1", port);
+    let t = Transport::new(Arc::new(RustlsBackend::webpki_roots()), Arc::new(g));
+    let c = t.connect(&Target::plain("[::1]", port)).await.unwrap();
+    assert_eq!(c.info().port(), port);
 }
