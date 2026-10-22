@@ -376,6 +376,7 @@ dependencies = [
  "crosswire-core",
  "crosswire-h1",
  "serde",
+ "serde_json",
  "ulid",
 ]
 

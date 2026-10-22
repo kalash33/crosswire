@@ -12,12 +12,15 @@ publish = false
 workspace = true
 
 [dependencies]
-crosswire-core = { path = "../crosswire-core", version = "0.0.0", default-features = false }
-crosswire-h1 = { path = "../crosswire-h1", version = "0.0.0", default-features = false }
+crosswire-core = { path = "../crosswire-core", version = "0.0.0", default-features = false, features = ["serde"] }
+crosswire-h1 = { path = "../crosswire-h1", version = "0.0.0", default-features = false, features = ["serde"] }
 bytes = { version = "1", default-features = false }
 serde = { workspace = true }
-ulid = { workspace = true }
+ulid = { version = "1", default-features = false }
 
 [features]
 default = ["std"]
-std = ["crosswire-core/std", "crosswire-h1/std", "serde/std"]
+std = ["crosswire-core/std", "crosswire-h1/std", "serde/std", "bytes/std", "ulid/std"]
+
+[dev-dependencies]
+serde_json = { workspace = true }
