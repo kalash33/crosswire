@@ -7,6 +7,12 @@ use crate::message::RawMessage;
 /// Appends the message to `out` exactly as it was received: the frozen head
 /// bytes, then the inline body if one is attached. Nothing is normalised,
 /// added or removed.
+///
+/// The inline body is written as is, so it must be the raw framed body bytes
+/// (chunk-size lines, extensions and trailers included), as documented on
+/// [`RawMessage::with_inline_body`]; then the output equals the input
+/// message byte for byte. A decoded payload attached to a chunked message
+/// would not reproduce it.
 pub fn write_exact(msg: &RawMessage, out: &mut BytesMut) {
     out.extend_from_slice(msg.bytes());
     if let Some(body) = msg.body() {

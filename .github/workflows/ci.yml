@@ -29,6 +29,12 @@ jobs:
       - run: just test
       - run: just features
       - run: just bench
+      # Runs rustdoc with RUSTDOCFLAGS=-D warnings.
+      - run: just doc
+      # Only crosswire-core is packaged in CI. crosswire-h1 depends on it by
+      # path + version, and `cargo package` resolves that dependency from
+      # crates.io, so h1 packaging stays local-only until core is published.
+      - run: just package
 
   deny:
     if: github.event_name != 'schedule'
@@ -45,6 +51,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch head
         with:
           toolchain: nightly
-      - run: cargo install cargo-fuzz --locked
+      - run: cargo install cargo-fuzz --locked --version 0.13.2
       - uses: extractions/setup-just@dd310ad5a97d8e7b41793f8ef055398d51ad4de6 # v2
+      # `fuzz-smoke` first seeds the libFuzzer corpora from corpus/h1/cases.
       - run: just fuzz-smoke
+      - if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: fuzz-artifacts
+          path: crates/crosswire-h1/fuzz/artifacts
+          if-no-files-found: ignore

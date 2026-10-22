@@ -17,18 +17,24 @@ Four rules (spec section 5.1):
 
 1. **Feeding.** `Parser::feed(&[u8]) -> Result<Step, ParseError>` returns
    `Step { consumed, event }`. The caller loops until `NeedMore`. After `Done`
-   the unconsumed tail is the next pipelined message (fresh parser or `reset()`).
+   the parser returns `Done` (consuming nothing) until `reset()`; the
+   unconsumed tail is the next pipelined message (fresh parser or `reset()`,
+   or `reset_response(ctx)` for the next response on a connection).
 2. **Ownership.** The parser owns one bounded head buffer (`head_size`); it
    becomes `RawMessage::bytes()` and all head spans index into it. Body-phase
    spans (`BodyData`, `ChunkExt`, `Trailers`) index into the `input` of the
-   `feed` call that produced them. Body-phase tokens (chunk-size line with
-   extension, trailer block) are never buffered across calls.
+   `feed` call that produced them. The head is buffered by the parser;
+   body-phase tokens (chunk-size line with extension, trailer block) are never
+   buffered across calls.
 3. **Obtaining a message.** `Progress::Head(RawMessage)` is the only source of a
-   `RawMessage`; an optional inline body is attached by the caller.
+   `RawMessage`; an optional inline body (the raw framed body bytes, so
+   `write_exact` stays byte-exact) is attached by the caller.
 4. **Lenient contract.** Under `Profile::Lenient`, input with a start-line
    terminator and an empty line within `head_size` never yields `ParseError`;
-   everything else is a `Diagnostic`. Fatal cases: limit exceeded, no terminator
-   within `head_size`, EOF before the empty line, non-hex chunk size.
+   everything else is a `Diagnostic`. Fatal cases: a limit exceeded (head size,
+   line length, header count, trailer size, chunk count), no terminator within
+   `head_size`, EOF before the message is complete, a non-hex chunk size, and a
+   malformed line break after chunk data.
 
 ### Body-phase tokens: re-present, do not buffer (Task 10b)
 

@@ -155,10 +155,10 @@ Arrows: `api → tools` and `api → proxy`; both enqueue through `model::Exchan
 ### 5.1 `crosswire-h1` sans-IO contract
 
 Four rules, then the signatures.
-1. **Feeding.** `feed(&mut self, input: &[u8]) -> Result<Step, ParseError>` returns `Step { consumed: usize, event: Progress }`. The caller loops until `NeedMore`. After `Done`, the unconsumed tail of `input` is the start of the next pipelined message: hand it to a fresh parser or call `reset()`. This is the pipelining path.
-2. **Ownership.** The parser owns one bounded head buffer (`ParseLimits.head_size`). It becomes `RawMessage::bytes()`, and every `HeadView`, `HeaderSpan` and `StartLine` span is an offset into it. `Progress::BodyData`, `ChunkExt` and `Trailers` spans are offsets into the `input` slice of the `feed` call that produced them; the caller retains those bytes if it needs them. Head spans are bounded by `head_size`, body spans by `capture_cap`. Body-phase tokens (the chunk-size line and the trailer block) are never buffered across calls: when one is incomplete, `feed` returns `NeedMore` with `consumed` at the token start and the caller re-presents the unconsumed bytes with new data.
+1. **Feeding.** `feed(&mut self, input: &[u8]) -> Result<Step, ParseError>` returns `Step { consumed: usize, event: Progress }`. The caller loops until `NeedMore`. After `Done` the parser returns `Done` (consuming nothing) until `reset()`; the unconsumed tail of `input` is the start of the next pipelined message: hand it to a fresh parser or call `reset()` (`reset_response(ctx)` for the next response, with the next request's context). This is the pipelining path.
+2. **Ownership.** The parser owns one bounded head buffer (`ParseLimits.head_size`). It becomes `RawMessage::bytes()`, and every `HeadView`, `HeaderSpan` and `StartLine` span is an offset into it. `Progress::BodyData`, `ChunkExt` and `Trailers` spans are offsets into the `input` slice of the `feed` call that produced them; the caller retains those bytes if it needs them. `body_diagnostics()` spans are absolute offsets from the first body byte. Head spans are bounded by `head_size`, body spans by `capture_cap`. The head is buffered by the parser; body-phase tokens (the chunk-size line and the trailer block) are never buffered across calls: when one is incomplete, `feed` returns `NeedMore` with `consumed` at the token start and the caller re-presents the unconsumed bytes with new data.
 3. **Obtaining a message.** `Progress::Head(RawMessage)` is the only way to get a `RawMessage`. It holds the frozen head bytes plus an optional inline body (`body: Option<Bytes>`, attached by the caller through `with_inline_body`). Body edits are defined only when the body is inline.
-4. **Lenient contract.** Under `Profile::Lenient`, input that contains a start-line terminator and an empty line within `head_size` never produces `ParseError`; everything else is a `Diagnostic`. The only fatal cases: a limit exceeded, no terminator within `head_size`, EOF before the empty line, a non-numeric chunk size.
+4. **Lenient contract.** Under `Profile::Lenient`, input that contains a start-line terminator and an empty line within `head_size` never produces `ParseError`; everything else is a `Diagnostic`. The only fatal cases: a limit exceeded (including trailer size and chunk count), no terminator within `head_size`, EOF before the message is complete, a non-hexadecimal chunk size, a malformed line break after chunk data.
 
 ```rust
 // crosswire-core
@@ -189,7 +189,11 @@ impl Parser {
     pub fn response(cfg: &ParserConfig, ctx: ResponseContext /* { method, is_connect } so HEAD, 1xx, 204, 304 and CONNECT frame correctly */) -> Self;
     pub fn feed(&mut self, input: &[u8]) -> Result<Step, ParseError>;
     pub fn feed_eof(&mut self) -> Result<Step, ParseError>;
-    pub fn reset(&mut self);
+    pub fn reset(&mut self);                                // keeps the ResponseContext
+    pub fn reset_response(&mut self, ctx: ResponseContext); // reset + new context (keep-alive relays)
+    pub fn is_idle(&self) -> bool;                          // between messages: a close here is clean
+    pub fn body_diagnostics(&self) -> &[Diagnostic];        // absolute spans from the first body byte; capped
+    pub fn body_diagnostics_dropped(&self) -> usize;
 }
 pub struct Step { consumed: usize, event: Progress }
 #[non_exhaustive] pub enum Progress { NeedMore, Head(RawMessage), BodyData { raw: Span, data: Span }, ChunkExt(Span), Trailers(Vec<HeaderSpan>), Done }
@@ -515,4 +519,4 @@ Frozen feature checklist met; passes the §2.3 fidelity set that normalising too
 - **Misuse:** the tool is for authorized testing; docs say so; strict scope mode exists for shared deployments.
 
 ## 17. Out of scope for v0.1.0
-Intruder, comparer, full query language, FTS, CLI, HTTP/2, HTTP/3, WebSocket editing, plugins, MCP, team mode, site map, HAR/Burp import (waits for v0.2a because the `Message` schema must be proven on live captures first), out-of-band callbacks, session rules, passive checks, multi-role, encryption at rest (ADR, v0.3+), exports beyond copy-as-curl, transparent/invisible proxy mode (decision deferred to v0.3 ADR), AI features, desktop wrapper.
+Intruder, comparer, full query language, FTS, CLI, HTTP/2, HTTP/3, WebSocket editing, plugins, MCP, team mode, site map, HAR/Burp import (waits for v0.2a because the `Message` schema must be proven on live captures first), `ChunkSpan` in `crosswire-h1` (§5.1 lists it; the h1 library plan did not build it; recorded for the proxy plan), out-of-band callbacks, session rules, passive checks, multi-role, encryption at rest (ADR, v0.3+), exports beyond copy-as-curl, transparent/invisible proxy mode (decision deferred to v0.3 ADR), AI features, desktop wrapper.

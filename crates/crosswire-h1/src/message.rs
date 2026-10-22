@@ -238,6 +238,16 @@ impl RawMessage {
     }
 
     /// Attaches an in-memory body to the message.
+    ///
+    /// `body` is the **raw framed body bytes as they were on the wire**: for
+    /// a chunked message that includes the chunk-size lines, extensions,
+    /// line breaks, the last chunk and the trailer block, not the decoded
+    /// payload. That is what keeps [`write_exact`](crate::write_exact)
+    /// byte-exact: head bytes followed by this body reproduce the message.
+    /// The bytes are the concatenation of the `raw` spans of the message's
+    /// [`Progress::BodyData`](crate::Progress::BodyData) events plus, for a
+    /// chunked body, the terminator section (everything up to the step that
+    /// returns `Done`).
     #[must_use]
     pub fn with_inline_body(mut self, body: Bytes) -> Self {
         self.body = Some(body);
@@ -256,7 +266,8 @@ impl RawMessage {
         &self.view
     }
 
-    /// The inline body, if one was attached.
+    /// The inline body, if one was attached: raw framed bytes, see
+    /// [`with_inline_body`](RawMessage::with_inline_body).
     #[must_use]
     pub fn body(&self) -> Option<&Bytes> {
         self.body.as_ref()
