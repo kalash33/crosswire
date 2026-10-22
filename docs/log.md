@@ -16,6 +16,7 @@
 | 2026-10-22 | 12: optional http and serde features | n/m | compat_http (TryFrom<&RawMessage> for http::Request/Response<()>, HttpConvertError with spans; lossy rules documented), serde derives on plain-data types, http implies std; tests/compat_http.rs 17, tests/serde_roundtrip.rs 3 |
 | 2026-10-22 | 13: docs, packaging checks, velocity log | n/m | h1/core READMEs (h1 README is the crate doctest), docs/h1-diagnostics.md with docs_catalogue test, ADR-0001, root README; cargo package of both crates passes with `publish` lifted temporarily; cargo-deny clean |
 | 2026-10-22 | final fix wave (whole-branch review) | n/m | body diagnostics capped (max_body_diagnostics 64) and chunk count limited (max_chunks 1M, TooManyChunks); chunk-size BWS accepted with 26th code chunk_size_whitespace; invalid CL -> Ambiguous/InvalidContentLength; HEAD/304 plain None, 101/CONNECT-2xx with length -> ConnectSuccess; reset_response, is_idle; absolute body-diagnostic spans; linear trailer re-scan; CL candidates capped at 8; Span deserialize validated; one canonical feed loop for corpus and split tests; limit fixtures; fuzz contexts, small limits and corpus seeding; CI doc, package and fuzz artifact steps |
+| 2026-10-22 | recorder foundations 0: workspace additions | n/m | model, ca, client, store, recorder-tests crates scaffolded; workspace deps pinned; justfile features covers crosswire-model; deny.toml gains Zlib and CDLA-Permissive-2.0; lru 0.19 (0.12 has RUSTSEC unsoundness advisories) |
 
 ## Velocity summary, Tasks 0-13 (2026-10-22)
 

@@ -1,0 +1,24 @@
+[package]
+name = "crosswire-recorder-tests"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "Integration tests for the Crosswire recorder crates"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+
+
+[dev-dependencies]
+crosswire-client = { path = "../crosswire-client", version = "0.0.0" }
+crosswire-store = { path = "../crosswire-store", version = "0.0.0" }
+crosswire-ca = { path = "../crosswire-ca", version = "0.0.0" }
+crosswire-model = { path = "../crosswire-model", version = "0.0.0" }
+crosswire-h1 = { path = "../crosswire-h1", version = "0.0.0" }
+tokio = { workspace = true }
+tempfile = { workspace = true }

@@ -12,3 +12,23 @@ repository = "https://github.com/kalash33/crosswire"
 [workspace.lints.rust]
 unsafe_code = "forbid"
 missing_docs = "deny"
+
+[workspace.dependencies]
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "net", "io-util", "time", "sync", "macros"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+tokio-rustls = "0.26"
+webpki-roots = "0.26"
+rustls-pki-types = "1"
+rcgen = { version = "0.14", features = ["pem", "x509-parser"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+zstd = "0.13"
+sha2 = "0.10"
+ulid = "1"
+serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
+serde_json = "1"
+thiserror = "2"
+tracing = "0.1"
+time = "0.3"
+rustix = { version = "0.38", features = ["fs"] }
+lru = "0.19"
+tempfile = "3"
