@@ -756,7 +756,9 @@ fn insert_exchange(
         set_field(&mut json, key, blob)?;
     }
     let (method, path) = request_line(ex.request());
-    let host = Some(ex.request().connection().target_addr()).filter(|h| !h.is_empty());
+    // Lowercased so the exact filter (`req_host = ?`) can use the index.
+    let host = Some(ex.request().connection().target_addr().to_ascii_lowercase())
+        .filter(|h| !h.is_empty());
     let status = ex.response().and_then(status_code);
     let resp_len = ex.response().map(|m| match m.body() {
         Body::Inline { bytes } => bytes.len() as u64,

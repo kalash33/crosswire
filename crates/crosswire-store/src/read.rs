@@ -22,6 +22,10 @@ pub const PAGE_LIMIT_MAX: usize = 1000;
 pub struct ExchangeFilter {
     /// Exact request method, for example `GET`.
     pub method: Option<String>,
+    /// Exact request host, ASCII case-insensitive. The writer stores the
+    /// host lowercased and the bind is lowercased, so this match uses the
+    /// host index.
+    pub host: Option<String>,
     /// Substring of the request host. ASCII case-insensitive (`lower()` on
     /// both sides). This is a substring match, so it scans rather than
     /// using the host index.
@@ -127,6 +131,10 @@ fn list_query(
     if let Some(m) = &filter.method {
         conds.push("req_method = ?");
         params.push(Sql::Text(m.clone()));
+    }
+    if let Some(h) = &filter.host {
+        conds.push("req_host = ?");
+        params.push(Sql::Text(h.to_ascii_lowercase()));
     }
     if let Some(h) = &filter.host_contains {
         conds.push("instr(lower(req_host), lower(?)) > 0");

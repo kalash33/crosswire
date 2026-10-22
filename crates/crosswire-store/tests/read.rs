@@ -262,3 +262,38 @@ fn counts_and_markers() {
         .items
         .is_empty());
 }
+
+#[test]
+fn exact_host_filter_is_indexed_and_case_insensitive() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = open(&tmp);
+    let mut ev = store.subscribe();
+    insert(
+        &store,
+        &mut ev,
+        vec![
+            exchange(b"a", b"a", "Example.COM"),
+            exchange(b"b", b"b", "other.test"),
+        ],
+    );
+    let exact = ExchangeFilter {
+        host: Some("example.com".into()),
+        ..ExchangeFilter::default()
+    };
+    let plan = store.explain_list(&exact).unwrap().join(" | ");
+    println!("exact host plan: {plan}");
+    assert!(plan.contains("exchanges_req_host"), "{plan}");
+    let page = store.list(&exact, None, 10).unwrap();
+    assert_eq!(page.items.len(), 1);
+    assert_eq!(page.items[0].host.as_deref(), Some("example.com"));
+    let upper = ExchangeFilter {
+        host: Some("EXAMPLE.com".into()),
+        ..ExchangeFilter::default()
+    };
+    assert_eq!(store.list(&upper, None, 10).unwrap().items.len(), 1);
+    let sub = ExchangeFilter {
+        host_contains: Some("AMPLE".into()),
+        ..ExchangeFilter::default()
+    };
+    assert_eq!(store.list(&sub, None, 10).unwrap().items.len(), 1);
+}
