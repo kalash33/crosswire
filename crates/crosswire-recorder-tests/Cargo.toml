@@ -18,7 +18,7 @@ crosswire-h1 = { path = "../crosswire-h1", version = "0.0.0" }
 bytes = { version = "1", default-features = false, features = ["std"] }
 thiserror = { workspace = true }
 tokio = { workspace = true }
-ulid = "1"
+ulid = { workspace = true }
 
 [dev-dependencies]
 crosswire-store = { path = "../crosswire-store", version = "0.0.0" }

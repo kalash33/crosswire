@@ -30,9 +30,6 @@ pub enum RecordError {
     /// The sink refused the exchange.
     #[error("sink: {0}")]
     Sink(#[from] SinkError),
-    /// The blocking task that submits to the sink did not finish.
-    #[error("submit task: {0}")]
-    Join(String),
 }
 
 impl From<ParseError> for RecordError {
@@ -61,8 +58,13 @@ impl From<ParseError> for RecordError {
 /// The body is attached as [`Body::Inline`]; the store decides whether it
 /// stays inline or goes to a pack.
 ///
-/// `ExchangeSink::submit` may block on file I/O, so it runs on
-/// `tokio::task::spawn_blocking`; this needs a tokio runtime. A successful
+/// `ExchangeSink::submit` may block on file I/O. The sink is borrowed, so
+/// it cannot move into `spawn_blocking`: on a multi-thread tokio runtime the
+/// call runs under `tokio::task::block_in_place`, and on a current-thread
+/// runtime (where that would panic) it is called directly, which blocks the
+/// executor for the duration. Callers on a current-thread runtime should
+/// instead run this whole function's submit step themselves with an owned
+/// sink (`Arc<dyn ExchangeSink>`) inside `spawn_blocking`. A successful
 /// return means the exchange was accepted, not that it is durable: wait for
 /// the store's `Event::Committed` carrying the returned id.
 ///
@@ -77,6 +79,9 @@ pub async fn record_exchange(
     ctx: ResponseContext,
     sink: &dyn ExchangeSink,
 ) -> Result<Ulid, RecordError> {
+    // A failure partway through the response records nothing: the `?`s below
+    // drop the half-read exchange. Plan 3's relay should record an error
+    // exchange (request plus the failure) instead.
     let started = Instant::now();
     let (connect_ms, tls_ms) = {
         let c = session.connection();

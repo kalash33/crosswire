@@ -756,9 +756,7 @@ fn insert_exchange(
         set_field(&mut json, key, blob)?;
     }
     let (method, path) = request_line(ex.request());
-    // Lowercased so the exact filter (`req_host = ?`) can use the index.
-    let host = Some(ex.request().connection().target_addr().to_ascii_lowercase())
-        .filter(|h| !h.is_empty());
+    let host = request_host(ex.request());
     let status = ex.response().and_then(status_code);
     let resp_len = ex.response().map(|m| match m.body() {
         Body::Inline { bytes } => bytes.len() as u64,
@@ -828,6 +826,34 @@ fn request_line(m: &Message) -> (Option<String>, Option<String>) {
         }
     }
     (None, None)
+}
+
+/// The request's host as stored in `req_host`: the `Host` header value
+/// (the message's identity, spec 4.6), ASCII-lowercased with any port kept so
+/// the exact filter can use the index. Only when the head has no usable
+/// `Host` does it fall back to the connection's target address.
+fn request_host(m: &Message) -> Option<String> {
+    let from_head = match m.head() {
+        Head::Http1Raw { bytes, spans, .. } => spans
+            .headers()
+            .iter()
+            .find(|h| {
+                bytes
+                    .get(h.name().range())
+                    .is_some_and(|n| n.trim_ascii().eq_ignore_ascii_case(b"host"))
+            })
+            .and_then(|h| bytes.get(h.value().range()))
+            .map(|v| String::from_utf8_lossy(v.trim_ascii()).to_ascii_lowercase()),
+        Head::Normalized { map } => map
+            .iter()
+            .find(|(n, _)| n.eq_ignore_ascii_case("host"))
+            .map(|(_, v)| String::from_utf8_lossy(v.trim_ascii()).to_ascii_lowercase()),
+        _ => None,
+    };
+    from_head
+        .filter(|h| !h.is_empty())
+        .or_else(|| Some(m.connection().target_addr().to_ascii_lowercase()))
+        .filter(|h| !h.is_empty())
 }
 
 /// The status code of an HTTP/1 response head.

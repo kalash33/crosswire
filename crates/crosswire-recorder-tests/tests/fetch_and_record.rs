@@ -10,7 +10,7 @@ use crosswire_client::{
 };
 use crosswire_h1::{write_exact, ParserConfig, ResponseContext};
 use crosswire_model::{Body, ChainResult, Event, Head};
-use crosswire_recorder_tests::record_exchange;
+use crosswire_recorder_tests::{record_exchange, RecordError};
 use crosswire_store::{BodySide, EventStream, Project, Store, StoreConfig};
 use ulid::Ulid;
 
@@ -133,6 +133,14 @@ fn check_recorded(store: &Store, id: Ulid, raw_body: &[u8]) {
         ChainResult::Valid
     );
     assert_eq!(store.counts().unwrap().committed, 1);
+    // The Host header, not the connection IP, is the recorded host.
+    let by_host = crosswire_store::ExchangeFilter {
+        host: Some("example.test".into()),
+        ..crosswire_store::ExchangeFilter::default()
+    };
+    let rows = store.list(&by_host, None, 10).unwrap().items;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].id, id);
 }
 
 /// Re-serialises a recorded raw request head with `write_exact`, to prove the
@@ -188,6 +196,14 @@ async fn fetch_plain_with_until_close() {
     wait_committed(&mut ev, id).await;
     let ex = store.get(id).unwrap().unwrap();
     let resp = ex.response().unwrap();
+    assert_eq!(
+        store
+            .list(&crosswire_store::ExchangeFilter::default(), None, 10)
+            .unwrap()
+            .items[0]
+            .status,
+        Some(200)
+    );
     assert_eq!(resp.framing(), &crosswire_model::FramingRecord::UntilClose);
     assert_eq!(
         store.get_body(id, BodySide::Resp).unwrap().unwrap(),
@@ -209,5 +225,33 @@ async fn recorded_exchange_survives_reopen() {
     store.close().unwrap();
     let store = open(&dir);
     check_recorded(&store, id, &raw_body);
+    store.close().unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn response_over_raw_cap_records_nothing() {
+    let (response, _) = chunked_response(&payload(40 * 1024));
+    let addr = common::spawn_plain_scripted(response).await;
+    let t = Transport::new(Arc::new(RustlsBackend::webpki_roots()), gate(addr.port()));
+    let conn = t
+        .connect(&Target::plain("127.0.0.1", addr.port()))
+        .await
+        .unwrap();
+    let mut session = Session::new(conn, ParserConfig::default()).with_raw_cap(1024);
+    let tmp = tempfile::tempdir().unwrap();
+    let store = open(&tmp.path().join("p"));
+    let sink = store.sink();
+    let err = record_exchange(
+        &mut session,
+        WritePlan::raw(Bytes::from_static(REQ)),
+        ResponseContext::for_method(b"GET"),
+        sink.as_ref(),
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(err, RecordError::Truncated(_)), "{err:?}");
+    // Nothing was submitted, so nothing can commit.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(store.counts().unwrap().exchanges, 0);
     store.close().unwrap();
 }

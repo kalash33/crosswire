@@ -411,6 +411,7 @@ version = "0.0.0"
 dependencies = [
  "bytes",
  "crosswire-core",
+ "crosswire-h1",
  "crosswire-model",
  "rusqlite",
  "rustix",

@@ -263,8 +263,24 @@ fn counts_and_markers() {
         .is_empty());
 }
 
+/// A raw HTTP/1 request whose `Host` header is `host`, over a connection to
+/// `target` (so the two can differ, as they do for virtual hosts and IPs).
+fn raw_request(host: &str, target: &str) -> Exchange {
+    let head = format!("GET / HTTP/1.1\r\nHost: {host}\r\n\r\n");
+    let mut p = crosswire_h1::Parser::request(&crosswire_h1::ParserConfig::default());
+    let step = p.feed(head.as_bytes()).unwrap();
+    let crosswire_h1::Progress::Head(raw) = step.event else {
+        panic!("no head");
+    };
+    Exchange::new(Message::http1_raw(
+        &raw,
+        Body::None,
+        ConnectionInfo::new(target, 443),
+    ))
+}
+
 #[test]
-fn exact_host_filter_is_indexed_and_case_insensitive() {
+fn exact_host_filter_uses_host_header_is_indexed_and_case_insensitive() {
     let tmp = tempfile::tempdir().unwrap();
     let store = open(&tmp);
     let mut ev = store.subscribe();
@@ -272,12 +288,12 @@ fn exact_host_filter_is_indexed_and_case_insensitive() {
         &store,
         &mut ev,
         vec![
-            exchange(b"a", b"a", "Example.COM"),
-            exchange(b"b", b"b", "other.test"),
+            raw_request("Example.COM:8443", "203.0.113.7"),
+            raw_request("other.test", "203.0.113.7"),
         ],
     );
     let exact = ExchangeFilter {
-        host: Some("example.com".into()),
+        host: Some("example.com:8443".into()),
         ..ExchangeFilter::default()
     };
     let plan = store.explain_list(&exact).unwrap().join(" | ");
@@ -285,9 +301,9 @@ fn exact_host_filter_is_indexed_and_case_insensitive() {
     assert!(plan.contains("exchanges_req_host"), "{plan}");
     let page = store.list(&exact, None, 10).unwrap();
     assert_eq!(page.items.len(), 1);
-    assert_eq!(page.items[0].host.as_deref(), Some("example.com"));
+    assert_eq!(page.items[0].host.as_deref(), Some("example.com:8443"));
     let upper = ExchangeFilter {
-        host: Some("EXAMPLE.com".into()),
+        host: Some("EXAMPLE.com:8443".into()),
         ..ExchangeFilter::default()
     };
     assert_eq!(store.list(&upper, None, 10).unwrap().items.len(), 1);
@@ -296,4 +312,27 @@ fn exact_host_filter_is_indexed_and_case_insensitive() {
         ..ExchangeFilter::default()
     };
     assert_eq!(store.list(&sub, None, 10).unwrap().items.len(), 1);
+    let by_ip = ExchangeFilter {
+        host: Some("203.0.113.7".into()),
+        ..ExchangeFilter::default()
+    };
+    assert_eq!(
+        store.list(&by_ip, None, 10).unwrap().items.len(),
+        0,
+        "the connection IP is not the host"
+    );
+}
+
+#[test]
+fn host_falls_back_to_target_addr_without_a_host_header() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = open(&tmp);
+    let mut ev = store.subscribe();
+    // `exchange` builds a normalized head with no Host header.
+    insert(&store, &mut ev, vec![exchange(b"a", b"a", "Fallback.TEST")]);
+    let f = ExchangeFilter {
+        host: Some("fallback.test".into()),
+        ..ExchangeFilter::default()
+    };
+    assert_eq!(store.list(&f, None, 10).unwrap().items.len(), 1);
 }
