@@ -5,6 +5,7 @@
 //! [`Session`], read the response, and hand an [`Exchange`] built from the
 //! exact bytes written and read to an [`ExchangeSink`].
 
+use std::sync::Arc;
 use std::time::Instant;
 
 use bytes::Bytes;
@@ -27,6 +28,9 @@ pub enum RecordError {
     /// the retained copy is incomplete and is not recorded as if it were whole.
     #[error("response exceeded the raw cap at {0} bytes")]
     Truncated(u64),
+    /// The blocking task that submits to the sink did not finish.
+    #[error("submit task: {0}")]
+    Join(String),
     /// The sink refused the exchange.
     #[error("sink: {0}")]
     Sink(#[from] SinkError),
@@ -58,13 +62,10 @@ impl From<ParseError> for RecordError {
 /// The body is attached as [`Body::Inline`]; the store decides whether it
 /// stays inline or goes to a pack.
 ///
-/// `ExchangeSink::submit` may block on file I/O. The sink is borrowed, so
-/// it cannot move into `spawn_blocking`: on a multi-thread tokio runtime the
-/// call runs under `tokio::task::block_in_place`, and on a current-thread
-/// runtime (where that would panic) it is called directly, which blocks the
-/// executor for the duration. Callers on a current-thread runtime should
-/// instead run this whole function's submit step themselves with an owned
-/// sink (`Arc<dyn ExchangeSink>`) inside `spawn_blocking`. A successful
+/// `ExchangeSink::submit` may block on file I/O, so it runs on
+/// `tokio::task::spawn_blocking` with a clone of `sink`. That works on
+/// current-thread runtimes, multi-thread runtimes and inside a
+/// `tokio::task::LocalSet`, and never blocks the executor. A successful
 /// return means the exchange was accepted, not that it is durable: wait for
 /// the store's `Event::Committed` carrying the returned id.
 ///
@@ -72,12 +73,13 @@ impl From<ParseError> for RecordError {
 /// [`RecordError::Client`] when the exchange fails on the wire,
 /// [`RecordError::RequestHead`] when the written bytes are not a request
 /// head, [`RecordError::Truncated`] when the response exceeded the
-/// session's raw cap, [`RecordError::Sink`] when the sink refuses the exchange.
+/// session's raw cap, [`RecordError::Sink`] when the sink refuses the exchange,
+/// [`RecordError::Join`] when the submit task panics or is cancelled.
 pub async fn record_exchange(
     session: &mut Session,
     plan: WritePlan,
     ctx: ResponseContext,
-    sink: &dyn ExchangeSink,
+    sink: Arc<dyn ExchangeSink>,
 ) -> Result<Ulid, RecordError> {
     // A failure partway through the response records nothing: the `?`s below
     // drop the half-read exchange. Plan 3's relay should record an error
@@ -129,7 +131,8 @@ pub async fn record_exchange(
     exchange.set_response(response);
     exchange.set_timing(timing);
     let id = exchange.id();
-    submit(sink, exchange).await?;
+    let accepted = tokio::task::spawn_blocking(move || sink.submit(exchange)).await;
+    accepted.map_err(|e| RecordError::Join(e.to_string()))??;
     Ok(id)
 }
 
@@ -139,18 +142,4 @@ fn inline(bytes: Bytes) -> Body {
     } else {
         Body::Inline { bytes }
     }
-}
-
-/// Runs `sink.submit` where blocking is allowed. The sink is borrowed, so
-/// `block_in_place` keeps the borrow on this task (multi-thread runtimes);
-/// a current-thread runtime cannot block in place and calls it directly.
-async fn submit(sink: &dyn ExchangeSink, exchange: Exchange) -> Result<(), RecordError> {
-    use tokio::runtime::{Handle, RuntimeFlavor};
-    match Handle::current().runtime_flavor() {
-        RuntimeFlavor::MultiThread => {
-            tokio::task::block_in_place(|| sink.submit(exchange))?;
-        }
-        _ => sink.submit(exchange)?,
-    }
-    Ok(())
 }

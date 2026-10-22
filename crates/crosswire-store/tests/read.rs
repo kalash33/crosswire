@@ -328,11 +328,43 @@ fn host_falls_back_to_target_addr_without_a_host_header() {
     let tmp = tempfile::tempdir().unwrap();
     let store = open(&tmp);
     let mut ev = store.subscribe();
-    // `exchange` builds a normalized head with no Host header.
-    insert(&store, &mut ev, vec![exchange(b"a", b"a", "Fallback.TEST")]);
-    let f = ExchangeFilter {
-        host: Some("fallback.test".into()),
-        ..ExchangeFilter::default()
+    let on = |host: &str, port: u16, tls: bool| {
+        let mut conn = ConnectionInfo::new(host, port);
+        if tls {
+            conn = conn.with_tls("TLSv1_3", "TLS_AES_128_GCM_SHA256");
+        }
+        let m = Message::new(
+            MessageKind::Normalized,
+            Fidelity::Normalized,
+            Head::Normalized { map: Vec::new() },
+            FramingRecord::None,
+            Body::None,
+            conn,
+        );
+        Exchange::new(m)
     };
-    assert_eq!(store.list(&f, None, 10).unwrap().items.len(), 1);
+    insert(
+        &store,
+        &mut ev,
+        vec![
+            exchange(b"a", b"a", "Fallback.TEST"),
+            on("203.0.113.7", 8443, true),
+            on("203.0.113.8", 80, false),
+            on("203.0.113.9", 443, true),
+            on("203.0.113.10", 443, false),
+        ],
+    );
+    let count = |h: &str| {
+        let f = ExchangeFilter {
+            host: Some(h.into()),
+            ..ExchangeFilter::default()
+        };
+        store.list(&f, None, 10).unwrap().items.len()
+    };
+    // `exchange` has no TLS and port 443: not the plaintext default.
+    assert_eq!(count("fallback.test:443"), 1);
+    assert_eq!(count("203.0.113.7:8443"), 1, "non-default port is kept");
+    assert_eq!(count("203.0.113.8"), 1, "plaintext 80 is the default");
+    assert_eq!(count("203.0.113.9"), 1, "TLS 443 is the default");
+    assert_eq!(count("203.0.113.10:443"), 1, "plaintext 443 is not");
 }

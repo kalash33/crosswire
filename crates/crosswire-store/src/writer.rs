@@ -831,9 +831,12 @@ fn request_line(m: &Message) -> (Option<String>, Option<String>) {
 /// The request's host as stored in `req_host`: the `Host` header value
 /// (the message's identity, spec 4.6), ASCII-lowercased with any port kept so
 /// the exact filter can use the index. Only when the head has no usable
-/// `Host` does it fall back to the connection's target address.
+/// `Host` does it fall back to what a browser would have sent: the target
+/// address, plus `:port` unless the port is the scheme default (443 with TLS,
+/// 80 without). With several `Host` headers the first one wins.
 fn request_host(m: &Message) -> Option<String> {
     let from_head = match m.head() {
+        // `find` takes the first Host header; later duplicates are ignored.
         Head::Http1Raw { bytes, spans, .. } => spans
             .headers()
             .iter()
@@ -850,10 +853,19 @@ fn request_host(m: &Message) -> Option<String> {
             .map(|(_, v)| String::from_utf8_lossy(v.trim_ascii()).to_ascii_lowercase()),
         _ => None,
     };
-    from_head
-        .filter(|h| !h.is_empty())
-        .or_else(|| Some(m.connection().target_addr().to_ascii_lowercase()))
-        .filter(|h| !h.is_empty())
+    from_head.filter(|h| !h.is_empty()).or_else(|| {
+        let c = m.connection();
+        let addr = c.target_addr().to_ascii_lowercase();
+        if addr.is_empty() {
+            return None;
+        }
+        let default = if c.tls_version().is_some() { 443 } else { 80 };
+        Some(if c.port() == default {
+            addr
+        } else {
+            format!("{addr}:{}", c.port())
+        })
+    })
 }
 
 /// The status code of an HTTP/1 response head.

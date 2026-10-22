@@ -40,7 +40,7 @@ Directories are created 0700 and files 0600 on unix. Other platforms use the pla
 | `scope_state` | TEXT NOT NULL | in / out / empty |
 | `created_at` | INTEGER NOT NULL | unix milliseconds |
 | `json` | TEXT NOT NULL | the `Exchange` JSON with `state` `committed`; each inline body is replaced by a `blob` body (`hash` = SHA-256, `len`), its bytes being in `bodies` |
-| `req_method`, `req_host`, `req_path` | TEXT | denormalised for search. `req_host` is the request's `Host` header value, ASCII-lowercased with any port kept (the message identity; HTTP/2 will use `:authority`); only when there is no `Host` does it fall back to the connection's target address, lowercased |
+| `req_method`, `req_host`, `req_path` | TEXT | denormalised for search. `req_host` is the request's `Host` header value, ASCII-lowercased with any port kept (the message identity; HTTP/2 will use `:authority`); with duplicate `Host` headers the first wins; only when there is no `Host` does it fall back to the connection's target address, lowercased, with `:port` appended unless the port is the scheme default (443 with TLS, 80 without), as a browser would have sent it |
 | `resp_status` | INTEGER | NULL when no response |
 | `resp_len` | INTEGER | response body length |
 | `tags` | TEXT NOT NULL DEFAULT '' | |

@@ -3,8 +3,9 @@
 use bytes::Bytes;
 use crosswire_core::Span;
 use crosswire_model::{
-    Body, ConnectionInfo, Event, Exchange, Fidelity, FramingRecord, Head, HeadSpans, Marker,
-    Message, MessageKind, SinkError, StartLineSpans, HTTP1_PARSER_VERSION,
+    Body, ConnectionInfo, Event, Exchange, Fidelity, FramingRecord, Head, HeadSpans,
+    HeaderSpanRecord, Marker, Message, MessageKind, SinkError, StartLineSpans,
+    HTTP1_PARSER_VERSION,
 };
 use crosswire_store::{BodySide, BodyStore, EventStream, Project, Store, StoreConfig};
 use std::collections::BTreeSet;
@@ -607,7 +608,7 @@ fn http1_heads_fill_search_columns() {
     let tmp = tempfile::tempdir().unwrap();
     let (_dir, store) = new_store(&tmp, cfg());
     let mut ev = store.subscribe();
-    let req_head = b"POST /login?x=1 HTTP/1.1\r\nHost: example.test\r\n\r\n";
+    let req_head = b"POST /login?x=1 HTTP/1.1\r\nHost: Shop.Example.TEST\r\n\r\n";
     let resp_head = b"HTTP/1.1 302 Found\r\n\r\n";
     let req = Message::new(
         MessageKind::Http1Raw,
@@ -620,14 +621,18 @@ fn http1_heads_fill_search_columns() {
                     target: Span::new(5, 15),
                     version: Span::new(16, 24),
                 },
-                Vec::new(),
+                vec![HeaderSpanRecord::new(
+                    Span::new(26, 30),
+                    Span::new(32, 49),
+                    Span::new(26, 49),
+                )],
                 FramingRecord::None,
             ),
             parser_version: HTTP1_PARSER_VERSION,
         },
         FramingRecord::None,
         Body::None,
-        ConnectionInfo::new("example.test", 443),
+        ConnectionInfo::new("203.0.113.9", 443),
     );
     let resp = Message::new(
         MessageKind::Http1Raw,
@@ -690,7 +695,10 @@ fn http1_heads_fill_search_columns() {
         )
         .unwrap();
     assert_eq!(row.0, "POST");
-    assert_eq!(row.1, "example.test");
+    assert_eq!(
+        row.1, "shop.example.test",
+        "from the Host header, not the target"
+    );
     assert_eq!(row.2, "/login?x=1");
     assert_eq!((row.3, row.4), (302, 5));
     assert_eq!((row.5.as_str(), row.6.as_str()), ("history", "empty"));

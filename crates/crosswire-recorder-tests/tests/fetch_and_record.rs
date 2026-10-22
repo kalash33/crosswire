@@ -95,7 +95,7 @@ async fn fetch_tls_and_record(dir: &std::path::Path) -> (Ulid, Vec<u8>) {
         &mut session,
         WritePlan::raw(Bytes::from_static(REQ)),
         ResponseContext::for_method(b"GET"),
-        sink.as_ref(),
+        Arc::clone(&sink),
     )
     .await
     .unwrap();
@@ -189,7 +189,7 @@ async fn fetch_plain_with_until_close() {
             b"GET / HTTP/1.1\r\nHost: plain.test\r\n\r\n",
         )),
         ResponseContext::for_method(b"GET"),
-        sink.as_ref(),
+        Arc::clone(&sink),
     )
     .await
     .unwrap();
@@ -245,7 +245,7 @@ async fn response_over_raw_cap_records_nothing() {
         &mut session,
         WritePlan::raw(Bytes::from_static(REQ)),
         ResponseContext::for_method(b"GET"),
-        sink.as_ref(),
+        Arc::clone(&sink),
     )
     .await
     .unwrap_err();
@@ -253,5 +253,50 @@ async fn response_over_raw_cap_records_nothing() {
     // Nothing was submitted, so nothing can commit.
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert_eq!(store.counts().unwrap().exchanges, 0);
+    store.close().unwrap();
+}
+
+/// Fetches a plain response and records it, returning the committed id.
+async fn record_plain(store: &Store) -> Ulid {
+    let addr =
+        common::spawn_plain_scripted(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok".to_vec())
+            .await;
+    let t = Transport::new(Arc::new(RustlsBackend::webpki_roots()), gate(addr.port()));
+    let conn = t
+        .connect(&Target::plain("127.0.0.1", addr.port()))
+        .await
+        .unwrap();
+    let mut session = Session::new(conn, ParserConfig::default());
+    let mut ev = store.subscribe();
+    let id = record_exchange(
+        &mut session,
+        WritePlan::raw(Bytes::from_static(
+            b"GET / HTTP/1.1\r\nHost: plain.test\r\nConnection: close\r\n\r\n",
+        )),
+        ResponseContext::for_method(b"GET"),
+        store.sink(),
+    )
+    .await
+    .unwrap();
+    wait_committed(&mut ev, id).await;
+    id
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn records_inside_a_local_set() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = open(&tmp.path().join("p"));
+    let local = tokio::task::LocalSet::new();
+    let id = local.run_until(record_plain(&store)).await;
+    assert!(store.get(id).unwrap().is_some());
+    store.close().unwrap();
+}
+
+#[tokio::test]
+async fn records_on_a_current_thread_runtime() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = open(&tmp.path().join("p"));
+    let id = record_plain(&store).await;
+    assert!(store.get(id).unwrap().is_some());
     store.close().unwrap();
 }
