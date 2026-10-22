@@ -338,11 +338,14 @@ dependencies = [
 name = "crosswire-client"
 version = "0.0.0"
 dependencies = [
+ "crosswire-ca",
  "crosswire-core",
  "crosswire-h1",
  "crosswire-model",
  "rustls",
+ "rustls-pki-types",
  "tempfile",
+ "thiserror",
  "tokio",
  "tokio-rustls",
  "webpki-roots 0.26.11",

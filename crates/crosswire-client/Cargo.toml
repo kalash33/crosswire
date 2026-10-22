@@ -19,7 +19,9 @@ webpki-roots = { workspace = true }
 crosswire-h1 = { path = "../crosswire-h1", version = "0.0.0" }
 crosswire-core = { path = "../crosswire-core", version = "0.0.0" }
 crosswire-model = { path = "../crosswire-model", version = "0.0.0" }
-
+rustls-pki-types = { workspace = true }
+thiserror = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+crosswire-ca = { path = "../crosswire-ca", version = "0.0.0" }

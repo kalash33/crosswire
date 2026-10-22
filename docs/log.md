@@ -19,6 +19,7 @@
 | 2026-10-22 | recorder foundations 0: workspace additions | n/m | model, ca, client, store, recorder-tests crates scaffolded; workspace deps pinned; justfile features covers crosswire-model; deny.toml gains Zlib and CDLA-Permissive-2.0; lru 0.19 (0.12 has RUSTSEC unsoundness advisories) |
 | 2026-10-22 | recorder foundations 1: crosswire-model | n/m | frozen schema (Message/Head/HeadSpans/FramingRecord/Body/Diff/ConnectionInfo, Exchange, Marker, Event, ExchangeSink, RedactionPolicy); Bytes as base64 under std (own b64 module), Ulid serde adapter (ulid's serde feature is not no_std); redaction rebuilds head by span and re-parses; tests: 3 integration files (15 tests) + 11 unit |
 | 2026-10-22 | recorder foundations 2: crosswire-ca | n/m | P-256 Ca (10y, pathlen 0, keyCertSign/cRLSign), FileKeyStore 0600/0644/0700 via temp+rename, LeafIssuer (one leaf key, LRU, token-bucket mint limit, random serials, rustls CertifiedKey via any_ecdsa_type), SPKI pin; tests: 10 issue + 3 keystore + 1 unit |
+| 2026-10-22 | recorder foundations 3: crosswire-client transport | n/m | TlsBackend + RustlsBackend (TLS1.2+, 15 s handshake timeout, AcceptInvalid = webpki verify then record-and-allow, reason kept in TlsInfo/Connection), DestinationGate (checks resolved set, v4-mapped canonicalised, own ports refused on loopback even if allowlisted), Transport (DNS 5 s / 64 permits, connects to the checked IPs only); tests: gate 5, transport_tls 11 |
 
 ## Velocity summary, Tasks 0-13 (2026-10-22)
 
