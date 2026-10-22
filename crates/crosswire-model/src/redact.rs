@@ -8,7 +8,7 @@ use crosswire_h1::{Parser, ParserConfig, Progress, ResponseContext};
 use serde::{Deserialize, Serialize};
 
 use crate::message::{HeadSpans, HeaderSpanRecord, StartLineSpans};
-use crate::{Fidelity, Head, Message};
+use crate::{Diff, Fidelity, Head, Message};
 
 const REDACTED: &[u8] = b"[REDACTED]";
 
@@ -27,9 +27,13 @@ const REDACTED: &[u8] = b"[REDACTED]";
 /// [`RedactionPolicy::JWT_PATTERN`] (`@jwt`) matches the JWT shape: three
 /// base64url segments separated by dots, the first starting `eyJ`.
 ///
-/// Inline bodies are **not** redacted yet (a later task), blob bodies are
-/// untouched, and recorded diffs are carried over unchanged. Only heads are
-/// rewritten.
+/// The request target of an HTTP/1 request is scanned with the value
+/// patterns too. Each recorded diff's `before` and `after` bytes are scanned
+/// as opaque byte strings: value patterns match anywhere, and a line of the
+/// form `Name: value` whose name is in `header_names` has its value
+/// replaced (a bare value with no header context cannot be recognised).
+/// Inline bodies are **not** redacted yet (a later task); blob bodies are
+/// untouched.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RedactionPolicy {
     #[serde(default)]
@@ -90,8 +94,8 @@ impl RedactionPolicy {
     /// diagnostics, and the original framing record is kept. The result is
     /// labelled [`Fidelity::Normalized`]: it is no longer what was on the
     /// wire. A normalized head is redacted per pair. A tunnel head has
-    /// nothing to redact and the message is returned unchanged. The body and
-    /// diffs are not touched (see the type docs).
+    /// nothing to redact and the message is returned unchanged. Diffs are
+    /// redacted; the body is not (see the type docs).
     #[must_use]
     pub fn redact_message(&self, m: &Message) -> Message {
         match m.head() {
@@ -113,6 +117,7 @@ impl RedactionPolicy {
                         diags,
                     )
                     .with_fidelity(Fidelity::Normalized)
+                    .with_diffs(self.redact_diffs(m.diffs()))
             }
             Head::Normalized { map } => {
                 let map = map
@@ -130,9 +135,60 @@ impl RedactionPolicy {
                 m.clone()
                     .with_head(h, None)
                     .with_fidelity(Fidelity::Normalized)
+                    .with_diffs(self.redact_diffs(m.diffs()))
             }
             _ => m.clone(),
         }
+    }
+
+    fn redact_diffs(&self, diffs: &[Diff]) -> Vec<Diff> {
+        let scrub = |b: &Bytes| {
+            let mut r = self.find_matches(b);
+            r.extend(self.find_header_lines(b));
+            Bytes::from(replace_ranges(b, &r))
+        };
+        diffs
+            .iter()
+            .map(|d| {
+                Diff::new(
+                    d.op(),
+                    d.span(),
+                    scrub(d.before()),
+                    scrub(d.after()),
+                    d.reason().clone(),
+                )
+            })
+            .collect()
+    }
+
+    /// Value ranges of `Name: value` lines in `hay` whose name is listed.
+    fn find_header_lines(&self, hay: &[u8]) -> Vec<Range<usize>> {
+        let mut out = Vec::new();
+        let mut pos = 0;
+        while pos < hay.len() {
+            let end = hay[pos..]
+                .iter()
+                .position(|&b| b == b'\n')
+                .map_or(hay.len(), |i| pos + i);
+            let line = &hay[pos..end];
+            if let Some(c) = line.iter().position(|&b| b == b':') {
+                if self.name_matches(&line[..c]) {
+                    let mut vs = c + 1;
+                    while vs < line.len() && matches!(line[vs], b' ' | b'\t') {
+                        vs += 1;
+                    }
+                    let mut ve = line.len();
+                    if ve > vs && line[ve - 1] == b'\r' {
+                        ve -= 1;
+                    }
+                    if ve > vs {
+                        out.push(pos + vs..pos + ve);
+                    }
+                }
+            }
+            pos = end + 1;
+        }
+        out
     }
 
     fn name_matches(&self, name: &[u8]) -> bool {
@@ -153,6 +209,16 @@ impl RedactionPolicy {
         spans: &HeadSpans,
     ) -> (Vec<u8>, Vec<(Range<usize>, usize)>) {
         let mut reps: Vec<Range<usize>> = Vec::new();
+        if let StartLineSpans::Request { target, .. } = spans.start_line() {
+            if let Some(t) = bytes.get(target.range()) {
+                let base = target.range().start;
+                reps.extend(
+                    self.find_matches(t)
+                        .into_iter()
+                        .map(|r| base + r.start..base + r.end),
+                );
+            }
+        }
         for h in spans.headers() {
             let (Some(name), Some(value)) =
                 (bytes.get(h.name().range()), bytes.get(h.value().range()))
@@ -172,7 +238,7 @@ impl RedactionPolicy {
                 );
             }
         }
-        reps.sort_by_key(|r| r.start);
+        let reps = normalize_ranges(reps, bytes.len());
         let out = replace_ranges(bytes, &reps);
         let deltas = reps
             .into_iter()
@@ -263,12 +329,28 @@ fn find_jwt(hay: &[u8], out: &mut Vec<Range<usize>>) {
     }
 }
 
-/// Replaces each (sorted, non-overlapping) range of `src` with `[REDACTED]`,
-/// working from the end so earlier offsets stay valid.
-fn replace_ranges<R: core::borrow::Borrow<Range<usize>>>(src: &[u8], ranges: &[R]) -> Vec<u8> {
+/// Sorts `ranges`, clamps them to `len`, and drops empty or inverted ones and
+/// any range that starts before the previous one ends. Spans from
+/// deserialised data may overlap or be out of order.
+fn normalize_ranges(mut ranges: Vec<Range<usize>>, len: usize) -> Vec<Range<usize>> {
+    ranges.sort_by_key(|r| (r.start, core::cmp::Reverse(r.end)));
+    let mut out: Vec<Range<usize>> = Vec::new();
+    for r in ranges {
+        let r = r.start.min(len)..r.end.min(len);
+        if r.start >= r.end || out.last().is_some_and(|l| r.start < l.end) {
+            continue;
+        }
+        out.push(r);
+    }
+    out
+}
+
+/// Replaces each range of `src` with `[REDACTED]`, working from the end so
+/// earlier offsets stay valid. Ranges are normalised first, so overlapping
+/// or out-of-order input cannot panic.
+fn replace_ranges(src: &[u8], ranges: &[Range<usize>]) -> Vec<u8> {
     let mut out = src.to_vec();
-    for r in ranges.iter().rev() {
-        let r = r.borrow();
+    for r in normalize_ranges(ranges.to_vec(), src.len()).iter().rev() {
         out.splice(r.start..r.end, REDACTED.iter().copied());
     }
     out

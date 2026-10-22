@@ -105,3 +105,13 @@ fn tunnel_head_and_diff_roundtrip() {
     let s = serde_json::to_string(&d).unwrap();
     assert_eq!(serde_json::from_str::<Diff>(&s).unwrap(), d);
 }
+
+#[test]
+fn normalized_head_values_are_base64() {
+    let h = Head::Normalized {
+        map: vec![("a".into(), b"\x00\xffhi".to_vec())],
+    };
+    let s = serde_json::to_string(&h).unwrap();
+    assert!(s.contains("[\"a\",\"AP9oaQ==\"]"), "{s}");
+    assert_eq!(serde_json::from_str::<Head>(&s).unwrap(), h);
+}

@@ -107,3 +107,42 @@ pub(crate) mod hash {
         <[u8; 32]>::try_from(v.as_slice()).map_err(|_| D::Error::custom("hash must be 32 bytes"))
     }
 }
+
+/// `#[serde(with)]` for ordered `(name, bytes)` pairs: each value is encoded
+/// like any other byte payload.
+pub(crate) mod pairs {
+    use super::{de_bytes, ser_bytes};
+    use alloc::string::String;
+    use alloc::vec::Vec;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    struct Ref<'a>(&'a [u8]);
+
+    impl Serialize for Ref<'_> {
+        fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+            ser_bytes(self.0, s)
+        }
+    }
+
+    struct Own(Vec<u8>);
+
+    impl<'de> Deserialize<'de> for Own {
+        fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Own, D::Error> {
+            de_bytes(d).map(Own)
+        }
+    }
+
+    pub(crate) fn serialize<S: Serializer>(
+        map: &[(String, Vec<u8>)],
+        s: S,
+    ) -> Result<S::Ok, S::Error> {
+        s.collect_seq(map.iter().map(|(n, v)| (n.as_str(), Ref(v))))
+    }
+
+    pub(crate) fn deserialize<'de, D: Deserializer<'de>>(
+        d: D,
+    ) -> Result<Vec<(String, Vec<u8>)>, D::Error> {
+        let v = Vec::<(String, Own)>::deserialize(d)?;
+        Ok(v.into_iter().map(|(n, o)| (n, o.0)).collect())
+    }
+}

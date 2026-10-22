@@ -99,3 +99,108 @@ fn custom_policy_names_are_case_insensitive() {
     };
     assert!(contains(bytes, b"X-Secret : [REDACTED]\r\n"));
 }
+
+fn head_bytes(m: &Message) -> Vec<u8> {
+    let Head::Http1Raw { bytes, .. } = m.head() else {
+        panic!()
+    };
+    bytes.to_vec()
+}
+
+#[test]
+fn request_target_access_token_is_redacted() {
+    let raw = parse_req(b"GET /x?access_token=SECRET&y=2 HTTP/1.1\r\nHost: x\r\n\r\n");
+    let m = Message::http1_raw(&raw, Body::None, conn("x", 80));
+    let r = RedactionPolicy::default_policy().redact_message(&m);
+    let b = head_bytes(&r);
+    assert!(!contains(&b, b"SECRET"));
+    assert!(b.starts_with(b"GET /x?[REDACTED]&y=2 HTTP/1.1\r\n"));
+    let Head::Http1Raw { spans, .. } = r.head() else {
+        panic!()
+    };
+    let StartLineSpans::Request {
+        target, version, ..
+    } = *spans.start_line()
+    else {
+        panic!()
+    };
+    assert_eq!(&b[target.range()], b"/x?[REDACTED]&y=2");
+    assert_eq!(&b[version.range()], b"HTTP/1.1");
+}
+
+#[test]
+fn request_target_jwt_is_redacted() {
+    let raw =
+        parse_req(b"GET /cb/eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.sig HTTP/1.1\r\nHost: x\r\n\r\n");
+    let m = Message::http1_raw(&raw, Body::None, conn("x", 80));
+    let r = RedactionPolicy::default_policy().redact_message(&m);
+    let b = head_bytes(&r);
+    assert!(!contains(&b, b"eyJ"));
+    assert!(b.starts_with(b"GET /cb/[REDACTED] HTTP/1.1\r\n"));
+}
+
+#[test]
+fn request_target_with_two_matches() {
+    let raw = parse_req(b"GET /x?access_token=A1&mid=1&api_key=B2 HTTP/1.1\r\nHost: x\r\n\r\n");
+    let m = Message::http1_raw(&raw, Body::None, conn("x", 80));
+    let r = RedactionPolicy::default_policy().redact_message(&m);
+    let b = head_bytes(&r);
+    assert!(b.starts_with(b"GET /x?[REDACTED]&mid=1&[REDACTED] HTTP/1.1\r\n"));
+    assert!(!contains(&b, b"A1") && !contains(&b, b"B2"));
+}
+
+#[test]
+fn diffs_are_redacted() {
+    use crosswire_core::{ChangeOp, ChangeReason, Span};
+    let raw = parse_req(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n");
+    let d = Diff::new(
+        ChangeOp::Replace,
+        Span::new(0, 4),
+        bytes::Bytes::from_static(b"Host: x\r\nCookie: a=1\r\n"),
+        bytes::Bytes::from_static(b"?access_token=TOK&k=1"),
+        ChangeReason::InterceptEdit,
+    );
+    let m = Message::http1_raw(&raw, Body::None, conn("x", 80)).with_diffs(vec![d]);
+    let r = RedactionPolicy::default_policy().redact_message(&m);
+    let d = &r.diffs()[0];
+    assert_eq!(d.before().as_ref(), b"Host: x\r\nCookie: [REDACTED]\r\n");
+    assert_eq!(d.after().as_ref(), b"?[REDACTED]&k=1");
+    assert_eq!(d.span(), Span::new(0, 4));
+}
+
+#[test]
+fn overlapping_and_out_of_order_spans_do_not_panic() {
+    use crosswire_core::Span;
+    let bytes = bytes::Bytes::from_static(b"GET / HTTP/1.1\r\nCookie: abcdef\r\n\r\n");
+    let sp = Span::new;
+    let spans = HeadSpans::new(
+        StartLineSpans::Request {
+            method: sp(0, 3),
+            target: sp(4, 5),
+            version: sp(6, 14),
+        },
+        vec![
+            HeaderSpanRecord::new(sp(16, 22), sp(26, 29), sp(16, 32)),
+            HeaderSpanRecord::new(sp(16, 22), sp(24, 30), sp(16, 32)),
+            HeaderSpanRecord::new(sp(16, 22), sp(500, 600), sp(16, 32)),
+        ],
+        FramingRecord::None,
+    );
+    let m = Message::new(
+        MessageKind::Http1Raw,
+        Fidelity::Raw,
+        Head::Http1Raw {
+            bytes,
+            spans,
+            parser_version: 1,
+        },
+        FramingRecord::None,
+        Body::None,
+        conn("x", 80),
+    );
+    let r = RedactionPolicy::default_policy().redact_message(&m);
+    assert_eq!(r.fidelity(), Fidelity::Normalized);
+    let b = head_bytes(&r);
+    assert!(!contains(&b, b"abcdef"));
+    assert!(contains(&b, b"Cookie: [REDACTED]\r\n"));
+}

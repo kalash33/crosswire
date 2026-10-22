@@ -244,6 +244,9 @@ pub enum TunnelReason {
     AutoPassthrough,
     /// The stream could not be delimited.
     Undelimitable,
+    /// A reason written by a newer version of Crosswire.
+    #[serde(other)]
+    Unknown,
 }
 
 /// The head of a message.
@@ -267,7 +270,7 @@ pub enum Head {
     /// A translated header list (frames absent, hints null).
     Normalized {
         /// Header name and value pairs in order.
-        #[serde(default)]
+        #[serde(default, with = "crate::bytes_serde::pairs")]
         map: Vec<(String, Vec<u8>)>,
     },
     /// An opaque tunnel.

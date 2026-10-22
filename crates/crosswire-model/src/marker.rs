@@ -15,6 +15,9 @@ pub enum MarkerKind {
     LimitExceeded,
     /// An error interrupted recording.
     Error,
+    /// A kind written by a newer version of Crosswire.
+    #[serde(other)]
+    Unknown,
 }
 
 /// A marker row in the history timeline.

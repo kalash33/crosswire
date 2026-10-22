@@ -17,6 +17,9 @@ pub enum Fidelity {
     Opaque,
     /// Authored by the proxy itself (for example a 502 page).
     Generated,
+    /// A fidelity written by a newer version of Crosswire.
+    #[serde(other)]
+    Unknown,
 }
 
 /// The wire representation a [`Message`](crate::Message) head uses.
@@ -34,4 +37,7 @@ pub enum MessageKind {
     WsFrames,
     /// An opaque tunnel with counters.
     Tunnel,
+    /// A kind written by a newer version of Crosswire.
+    #[serde(other)]
+    Unknown,
 }

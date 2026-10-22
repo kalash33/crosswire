@@ -46,3 +46,27 @@ fn missing_optional_fields_default() {
     assert_eq!(back.scope_state(), ScopeState::Empty);
     assert_eq!(back.namespace().kind(), NamespaceKind::History);
 }
+
+#[test]
+fn unknown_simple_enum_variants_read_as_unknown() {
+    assert_eq!(
+        serde_json::from_str::<Fidelity>("\"quantum\"").unwrap(),
+        Fidelity::Unknown
+    );
+    assert_eq!(
+        serde_json::from_str::<MessageKind>("\"h3\"").unwrap(),
+        MessageKind::Unknown
+    );
+    assert_eq!(
+        serde_json::from_str::<MarkerKind>("\"x\"").unwrap(),
+        MarkerKind::Unknown
+    );
+    assert_eq!(
+        serde_json::from_str::<TunnelReason>("\"x\"").unwrap(),
+        TunnelReason::Unknown
+    );
+    assert_eq!(
+        serde_json::from_str::<Fidelity>("\"raw\"").unwrap(),
+        Fidelity::Raw
+    );
+}

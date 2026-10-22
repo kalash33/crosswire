@@ -8,6 +8,13 @@
 //! with kebab-case wire names, and fields that a later version may add have
 //! `#[serde(default)]`. [`SCHEMA_VERSION`] travels in the API envelope.
 //!
+//! Additive-only applies to fields. A newer writer may add enum variants:
+//! the plain string enums ([`Fidelity`], [`MessageKind`], [`MarkerKind`],
+//! [`TunnelReason`]) read an unrecognised name as `Unknown`; the tagged
+//! enums ([`Head`], [`Body`], [`ChainResult`], [`Event`]) and the remaining
+//! plain enums fail to deserialise on an unrecognised variant, so a reader
+//! must be upgraded before data using new variants reaches it.
+//!
 //! Byte payloads serialise as base64 strings under the default `std`
 //! feature; see the `bytes_serde` module notes in the source for the full
 //! wire choice. [`Exchange::new`] and [`Marker::new`] need `std` (they read
