@@ -66,8 +66,9 @@ async fn content_length_response_roundtrip() {
 async fn split_extension_across_reads() {
     let resp: &'static [u8] =
         b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5;x=yz\r\nhello\r\n0\r\nX-T: 1\r\n\r\n";
-    let split_at = resp.len() - 22 + 3; // inside ";x=yz"
-    let addr = common::spawn_scripted(resp, &[split_at, resp.len() - 6]).await;
+    let split_at = resp.len() - 22 + 3; // inside the chunk data "hello"
+    let ext_at = resp.len() - 22 - 2; // inside ";x=yz"
+    let addr = common::spawn_scripted(resp, &[ext_at, split_at, resp.len() - 6]).await;
     let mut s = Session::new(connect_plain(addr).await, ParserConfig::default());
     let mut r = s
         .send(WritePlan::raw(req()), ResponseContext::for_method(b"GET"))
@@ -101,6 +102,14 @@ async fn every_split_point_yields_identical_raw_response() {
         let body: Vec<u8> = pieces.iter().flat_map(|p| p.data.to_vec()).collect();
         assert_eq!(body, b"helloabc", "cut {cut}");
         assert_eq!(r.raw_response(), RESP, "cut {cut}");
+        let head_len = RESP.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
+        let raws: usize = pieces.iter().map(|p| p.raw.len()).sum();
+        let mut joined = RESP[..head_len].to_vec();
+        joined.extend(pieces.iter().flat_map(|p| p.raw.to_vec()));
+        let terminator = &RESP[head_len + raws..];
+        assert!(terminator.starts_with(b"0"), "cut {cut}");
+        joined.extend_from_slice(terminator);
+        assert_eq!(joined, RESP, "cut {cut}");
         drop(r);
         assert!(s.is_reusable(), "cut {cut}");
     }
@@ -300,4 +309,57 @@ async fn idle_timeout() {
     assert!(matches!(e, ClientError::Timeout), "{e:?}");
     drop(r);
     assert!(!s.is_reusable());
+}
+
+#[tokio::test]
+async fn raw_cap_truncates_the_retained_copy_but_not_the_stream() {
+    static RESP: [u8; 4096 + 41] = {
+        let head = b"HTTP/1.1 200 OK\r\nContent-Length: 4096\r\n\r\n";
+        let mut a = [b'z'; 4096 + 41];
+        let mut i = 0;
+        while i < head.len() {
+            a[i] = head[i];
+            i += 1;
+        }
+        a
+    };
+    assert_eq!(b"HTTP/1.1 200 OK\r\nContent-Length: 4096\r\n\r\n".len(), 41);
+    let addr = common::spawn_scripted(&RESP, &[]).await;
+    let mut s = Session::new(connect_plain(addr).await, ParserConfig::default()).with_raw_cap(1024);
+    let mut r = s
+        .send(WritePlan::raw(req()), ResponseContext::for_method(b"GET"))
+        .await
+        .unwrap();
+    r.head().await.unwrap();
+    let total: usize = collect(&mut r).await.iter().map(|p| p.data.len()).sum();
+    assert_eq!(total, 4096);
+    assert_eq!(r.raw_response().len(), 1024);
+    assert_eq!(r.raw_len(), RESP.len() as u64);
+    assert_eq!(r.raw_truncated_at(), Some(1024));
+    drop(r);
+    assert!(s.is_reusable());
+}
+
+#[tokio::test]
+async fn interim_responses_are_skipped_and_recorded() {
+    const RESP: &[u8] =
+        b"HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok";
+    let addr = common::spawn_scripted(RESP, &[25]).await;
+    let mut s = Session::new(connect_plain(addr).await, ParserConfig::default());
+    let mut r = s
+        .send(WritePlan::raw(req()), ResponseContext::for_method(b"GET"))
+        .await
+        .unwrap();
+    let head = r.head().await.unwrap();
+    assert_eq!(head.head().status_code(head.bytes()), Some(200));
+    assert_eq!(r.interim_responses().len(), 1);
+    let body: Vec<u8> = collect(&mut r)
+        .await
+        .iter()
+        .flat_map(|p| p.data.to_vec())
+        .collect();
+    assert_eq!(body, b"ok");
+    assert_eq!(r.raw_response(), RESP);
+    drop(r);
+    assert!(s.is_reusable());
 }

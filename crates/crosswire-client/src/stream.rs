@@ -5,7 +5,7 @@ use std::time::Instant;
 
 use bytes::{Buf, Bytes};
 use crosswire_core::Diagnostic;
-use crosswire_h1::{BodyFraming, HeadView, Progress, RawMessage, StartLine};
+use crosswire_h1::{BodyFraming, HeadView, Progress, RawMessage, ResponseContext, StartLine};
 use tokio::io::AsyncReadExt;
 
 use crate::error::ClientError;
@@ -126,6 +126,10 @@ pub struct ResponseStream<'a> {
     ttfb_ms: Option<u32>,
     /// Every response byte the parser consumed, in order.
     raw: Vec<u8>,
+    raw_len: u64,
+    raw_truncated_at: Option<u64>,
+    ctx: ResponseContext,
+    interim: Vec<RawMessage>,
     head: Option<RawMessage>,
     until_close: bool,
     ends_in_upgrade: bool,
@@ -146,6 +150,7 @@ impl<'a> ResponseStream<'a> {
         request: Vec<u8>,
         request_closes: bool,
         written: Instant,
+        ctx: ResponseContext,
     ) -> Self {
         ResponseStream {
             session,
@@ -154,6 +159,10 @@ impl<'a> ResponseStream<'a> {
             written,
             ttfb_ms: None,
             raw: Vec::new(),
+            raw_len: 0,
+            raw_truncated_at: None,
+            ctx,
+            interim: Vec::new(),
             head: None,
             until_close: false,
             ends_in_upgrade: false,
@@ -178,11 +187,44 @@ impl<'a> ResponseStream<'a> {
         self.ttfb_ms.unwrap_or(0)
     }
 
-    /// Every response byte the parser has consumed so far, in order. Bytes
-    /// read beyond the end of this response are not included.
+    /// The response bytes the parser has consumed so far, in order, interim
+    /// responses included. Bytes read beyond the end of this response are not
+    /// included. This is the retained prefix: it stops growing at the
+    /// session's raw cap (see [`raw_len`](ResponseStream::raw_len) and
+    /// [`raw_truncated_at`](ResponseStream::raw_truncated_at)).
     #[must_use]
     pub fn raw_response(&self) -> &[u8] {
         &self.raw
+    }
+
+    /// Total response bytes consumed so far, retained or not.
+    #[must_use]
+    pub fn raw_len(&self) -> u64 {
+        self.raw_len
+    }
+
+    /// The length at which [`raw_response`](ResponseStream::raw_response)
+    /// stopped growing, if the cap was reached and bytes were dropped.
+    #[must_use]
+    pub fn raw_truncated_at(&self) -> Option<u64> {
+        self.raw_truncated_at
+    }
+
+    /// The interim (1xx other than 101) responses skipped before the final
+    /// head, in order.
+    #[must_use]
+    pub fn interim_responses(&self) -> &[RawMessage] {
+        &self.interim
+    }
+
+    fn push_raw(&mut self, bytes: &[u8]) {
+        self.raw_len += bytes.len() as u64;
+        let room = self.session.raw_cap.saturating_sub(self.raw.len());
+        let take = room.min(bytes.len());
+        self.raw.extend_from_slice(&bytes[..take]);
+        if take < bytes.len() && self.raw_truncated_at.is_none() {
+            self.raw_truncated_at = Some(self.raw.len() as u64);
+        }
     }
 
     /// Diagnostics found in the body framing so far.
@@ -191,8 +233,10 @@ impl<'a> ResponseStream<'a> {
         self.session.parser.body_diagnostics()
     }
 
-    /// Reads until the response head is complete and returns it. Calling it
-    /// again returns the same head.
+    /// Reads until the final response head is complete and returns it,
+    /// skipping interim 1xx responses (recorded in
+    /// [`interim_responses`](ResponseStream::interim_responses)); `101` is a
+    /// final head. Calling it again returns the same head.
     ///
     /// # Errors
     /// [`ClientError::Timeout`] when a read stalls, [`ClientError::Io`] on a
@@ -202,16 +246,24 @@ impl<'a> ResponseStream<'a> {
         if let Some(h) = &self.head {
             return Ok(h.clone());
         }
-        match self.next_event().await? {
-            Ev::Head(msg) => {
+        loop {
+            let Ev::Head(msg) = self.next_event().await? else {
+                return Err(ClientError::Protocol("body before head".into()));
+            };
+            let status = msg.head().status_code(msg.bytes());
+            if matches!(status, Some(100..=199)) && status != Some(101) {
+                self.interim.push(msg);
+                self.session.parser.reset_response(self.ctx);
+                continue;
+            }
+            {
                 let (until_close, upgrade) = ends_connection(msg.head().framing());
                 self.until_close = until_close;
                 self.ends_in_upgrade = upgrade;
                 self.response_closes = close_semantics(&msg).closes();
                 self.head = Some(msg.clone());
-                Ok(msg)
+                return Ok(msg);
             }
-            _ => Err(ClientError::Protocol("body before head".into())),
         }
     }
 
@@ -309,7 +361,7 @@ impl<'a> ResponseStream<'a> {
                 _ => return Err(ClientError::Protocol("unknown parser event".into())),
             };
             let consumed = step.consumed;
-            self.raw.extend_from_slice(&input[..consumed]);
+            self.push_raw_from_pending(consumed);
             self.session.pending.advance(consumed);
             if let Some(ev) = ev {
                 return Ok(ev);
@@ -318,6 +370,11 @@ impl<'a> ResponseStream<'a> {
                 return Ok(ev);
             }
         }
+    }
+
+    fn push_raw_from_pending(&mut self, n: usize) {
+        let chunk = self.session.pending[..n].to_vec();
+        self.push_raw(&chunk);
     }
 
     /// Reads into `pending` after the unconsumed tail. At end of input,

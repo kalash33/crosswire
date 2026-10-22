@@ -15,6 +15,9 @@ use crate::write_plan::WritePlan;
 /// Idle time allowed for one read or write before [`ClientError::Timeout`].
 const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// Default cap on retained response bytes (the spec's `capture_cap`).
+const DEFAULT_RAW_CAP: usize = 50 * 1024 * 1024;
+
 /// Sends requests over one [`Connection`] and reads their responses with
 /// `crosswire-h1`, one exchange at a time.
 ///
@@ -31,6 +34,7 @@ pub struct Session {
     exchanges: u64,
     info: ConnectionInfo,
     pub(crate) read_timeout: Duration,
+    pub(crate) raw_cap: usize,
     pub(crate) reusable: bool,
     pub(crate) in_flight: bool,
 }
@@ -49,6 +53,7 @@ impl Session {
             exchanges: 0,
             info,
             read_timeout: DEFAULT_READ_TIMEOUT,
+            raw_cap: DEFAULT_RAW_CAP,
             reusable: true,
             in_flight: false,
         }
@@ -58,6 +63,15 @@ impl Session {
     #[must_use]
     pub fn with_read_timeout(mut self, timeout: Duration) -> Session {
         self.read_timeout = timeout;
+        self
+    }
+
+    /// Caps how many response bytes each stream retains for
+    /// [`raw_response`](ResponseStream::raw_response) (default 50 MiB). Body
+    /// pieces keep streaming past the cap; only the retained copy stops.
+    #[must_use]
+    pub fn with_raw_cap(mut self, bytes: usize) -> Session {
+        self.raw_cap = bytes;
         self
     }
 
@@ -79,6 +93,9 @@ impl Session {
 
     /// Writes every segment of `plan` in order and returns the stream that
     /// reads the response. `ctx` describes the request for response framing.
+    ///
+    /// The whole plan is written before any response byte is read, so an
+    /// `Expect: 100-continue` body is still sent up front in this version.
     ///
     /// # Errors
     /// [`ClientError::Protocol`] when the plan has a hold, the previous
@@ -125,7 +142,13 @@ impl Session {
         self.exchanges += 1;
         self.parser.reset_response(ctx);
         let request_closes = request_closes_connection(&request, &self.parser_cfg);
-        Ok(ResponseStream::new(self, request, request_closes, written))
+        Ok(ResponseStream::new(
+            self,
+            request,
+            request_closes,
+            written,
+            ctx,
+        ))
     }
 
     async fn write_all(&mut self, bytes: &[u8]) -> Result<(), ClientError> {
