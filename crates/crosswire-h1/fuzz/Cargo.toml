@@ -1,0 +1,30 @@
+[package]
+name = "crosswire-h1-fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+bytes = "1"
+crosswire-core = { path = "../../crosswire-core" }
+crosswire-h1 = { path = ".." }
+
+[workspace]
+
+[[bin]]
+name = "parse_request"
+path = "fuzz_targets/parse_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "parse_response"
+path = "fuzz_targets/parse_response.rs"
+test = false
+doc = false
+bench = false
