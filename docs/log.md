@@ -14,3 +14,12 @@
 | 2026-10-22 | 10b: remove chunk span clamp | 0.10b | BodyDecoder holds no partial token bytes; incomplete size line / trailer block returns NeedMore (consumed 0), caller re-presents; KNOWN_SPLIT_BUGS removed, split_prop passes all 95 cases |
 | 2026-10-22 | 11: fuzz targets, criterion bench, CI smoke | 0.11 | cargo-fuzz parse_request/parse_response (split vs whole oracle, write_exact round-trip, span bounds), 60 s smoke ~11-13k exec/s no crashes; bench ~977 ns Lenient / ~967 ns Strict vs httparse ~102 ns on a 10-header head, h1/httparse ratio ~9.5x; nightly fuzz-smoke CI job |
 | 2026-10-22 | 12: optional http and serde features | 0.12 | compat_http (TryFrom<&RawMessage> for http::Request/Response<()>, HttpConvertError with spans; lossy rules documented), serde derives on plain-data types, http implies std; tests/compat_http.rs 17, tests/serde_roundtrip.rs 3 |
+| 2026-10-22 | 13: docs, packaging checks, velocity log | 0.5 | h1/core READMEs (h1 README is the crate doctest), docs/h1-diagnostics.md with docs_catalogue test, ADR-0001, root README; cargo package of both crates passes with `publish` lifted temporarily; cargo-deny clean; hours are an estimate |
+
+## Velocity summary, Tasks 0-13 (2026-10-22)
+
+- Hours: 5.63 (sum of the column above, reading `0.10`, `0.10b`, `0.11` and `0.12` as 0.10, 0.10, 0.11 and 0.12).
+- Lines: 4827 lines of Rust code, from `tokei 15.0.0 crates corpus --exclude '*.msg' --exclude target -t Rust` (`src/`, `tests/`, `benches/`, `fuzz/`; blanks and comments excluded; the 95 `.expect.json` corpus files, 827 lines, are data and not counted).
+- LoC/h: 4827 / 5.63 = about 857.
+- Against the spec: 857 is far above the 60 LoC/h assumption (section 5) and the 45 LoC/h re-dating threshold (section 16). The section 16 velocity check is not triggered, and it is not due yet: it starts after 100 logged hours and 5.63 have been logged.
+- Caveat: these hours were logged by AI-paired implementers as rough estimates, and the first column values look like a running index (0.1, 0.2, ... 0.12) more than measurements. The figure is not comparable to the maintainer's part-time hours and must not be used to re-date the roadmap. The roadmap needs a real measurement of the maintainer's own hours against reviewed lines.
