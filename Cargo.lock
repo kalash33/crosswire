@@ -390,13 +390,19 @@ dependencies = [
 name = "crosswire-recorder-tests"
 version = "0.0.0"
 dependencies = [
+ "bytes",
  "crosswire-ca",
  "crosswire-client",
  "crosswire-h1",
  "crosswire-model",
  "crosswire-store",
+ "rustls",
+ "rustls-pki-types",
  "tempfile",
+ "thiserror",
  "tokio",
+ "tokio-rustls",
+ "ulid",
 ]
 
 [[package]]

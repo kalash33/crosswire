@@ -96,6 +96,12 @@ impl Session {
         &self.info
     }
 
+    /// The connection this session runs on (for its connect and TLS timings).
+    #[must_use]
+    pub fn connection(&self) -> &Connection {
+        &self.conn
+    }
+
     /// Whether another request may be sent on this connection. False after
     /// `Connection: close` (either side), HTTP/1.0 without keep-alive,
     /// until-close or upgraded framing, bytes beyond the response, any
