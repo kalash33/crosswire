@@ -18,6 +18,8 @@ rustls-pki-types = { workspace = true }
 time = { workspace = true }
 sha2 = { workspace = true }
 lru = { workspace = true }
+thiserror = { workspace = true }
+x509-parser = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

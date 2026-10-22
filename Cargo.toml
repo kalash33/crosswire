@@ -32,3 +32,4 @@ time = "0.3"
 rustix = { version = "0.38", features = ["fs"] }
 lru = "0.19"
 tempfile = "3"
+x509-parser = "0.18"

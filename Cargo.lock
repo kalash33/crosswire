@@ -329,7 +329,9 @@ dependencies = [
  "rustls-pki-types",
  "sha2",
  "tempfile",
+ "thiserror",
  "time",
+ "x509-parser",
 ]
 
 [[package]]
