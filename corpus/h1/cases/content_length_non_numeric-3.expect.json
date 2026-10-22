@@ -4,7 +4,9 @@
     "method": "GET",
     "is_connect": false
   },
-  "framing": "until_close",
+  "framing": "ambiguous",
+  "resolved": "until_close",
+  "rule": "invalid_content_length",
   "diagnostics": [
     "content_length_non_numeric"
   ],

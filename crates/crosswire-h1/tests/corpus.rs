@@ -25,6 +25,7 @@ fn rule_name(r: &ResolutionRule) -> &'static str {
         ResolutionRule::NoBodyStatus => "no_body_status",
         ResolutionRule::HeadMethod => "head_method",
         ResolutionRule::ConnectSuccess => "connect_success",
+        ResolutionRule::InvalidContentLength => "invalid_content_length",
         _ => "unknown",
     }
 }

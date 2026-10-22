@@ -1,3 +1,5 @@
-HTTP/1.1 100 Continue
-Content-Length: 10
+HTTP/1.1 101 Switching Protocols
+Upgrade: websocket
+Connection: Upgrade
+Content-Length: 0
 

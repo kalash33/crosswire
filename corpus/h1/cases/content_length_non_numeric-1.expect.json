@@ -1,6 +1,8 @@
 {
   "kind": "request",
-  "framing": "none",
+  "framing": "ambiguous",
+  "resolved": "none",
+  "rule": "invalid_content_length",
   "diagnostics": [
     "content_length_non_numeric"
   ]

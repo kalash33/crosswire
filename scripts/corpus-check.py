@@ -19,7 +19,7 @@ CODES = [
     "http_0_9_request", "version_unusual", "chunk_size_whitespace",
 ]
 RULES = {"transfer_encoding_wins", "first_content_length", "no_body_status",
-         "head_method", "connect_success"}
+         "head_method", "connect_success", "invalid_content_length"}
 KINDS = {"request", "response"}
 FRAMINGS = {"none", "content_length", "chunked", "until_close", "upgrade", "ambiguous"}
 

@@ -228,6 +228,8 @@ Raw-mode repeater sends use `WritePlan::raw(Bytes)` with a `ResponseContext` fro
 - Browser-side bytes are recoverable from the stored typed diff list: hop-by-hop strip, `Proxy-*` strip, absolute-form → origin-form rewrite, each match-and-replace hit.
 - "Send to repeater" loads upstream-side bytes.
 - **Connection model:** one browser connection ↔ one upstream connection; keep-alive preserved; requests paired in order; pipelining tolerated serially; `Connection: close` ends recording for that connection.
+- **No-body responses (h1 framing):** a response to HEAD and a 304 are framed as no body, and `Content-Length`/`Transfer-Encoding` there are valid (RFC 9110 §8.6, §9.3.2): plain `None`, no diagnostic. 1xx (other than 101) and 204 with such a header → `Ambiguous { resolved: None, rule: NoBodyStatus }` + `body_after_no_body_status`. 101 and CONNECT-2xx with such a header → `Ambiguous { resolved: Upgrade, rule: ConnectSuccess }` + `body_after_no_body_status`.
+- **Invalid `Content-Length` (h1 framing):** without `Transfer-Encoding`, any invalid `Content-Length` value makes the length unrecoverable (RFC 9112 §6.3 rule 5), even beside a valid one: `Ambiguous { resolved: None (requests) | UntilClose (responses), candidates: the valid values, rule: InvalidContentLength }`.
 - **Framing resolution:** on `Ambiguous`, the relay delimits by RFC 9112 precedence, emits the diagnostic, forwards bytes unchanged, records the framing used. An undelimitable stream falls to a raw tunnel for the rest of that connection plus an error event. `Expect: 100-continue` is relayed as-is. One golden capture per case.
 
 ### 6.1 `Message` schema (frozen in v0.1; shared by API and store; lives in `crosswire-model`)

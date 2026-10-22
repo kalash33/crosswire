@@ -106,6 +106,10 @@ fn fallback(kind: Kind) -> BodyFraming {
     }
 }
 
+/// At most this many distinct `Content-Length` values are kept as
+/// candidates (the first ones, in wire order).
+const MAX_CL_CANDIDATES: usize = 8;
+
 /// The framing implied by the length headers alone, ignoring no-body rules.
 fn from_headers(
     headers: &[HeaderSpan],
@@ -113,15 +117,22 @@ fn from_headers(
     kind: Kind,
     d: &mut Diagnostics,
 ) -> BodyFraming {
-    // Content-Length values, in order, valid ones kept.
-    let mut valid: Vec<u64> = Vec::new();
+    // The first distinct valid Content-Length values, in wire order. Linear
+    // in the number of values: the list never exceeds MAX_CL_CANDIDATES.
+    let mut distinct: Vec<u64> = Vec::new();
     let mut total = 0usize;
+    let mut invalid = false;
     let mut plus_seen = false;
     for h in named(headers, buf, "content-length") {
         for p in pieces(buf, h.value()) {
             total += 1;
-            if let Some(v) = parse_cl(buf, p, &mut plus_seen, d) {
-                valid.push(v);
+            match parse_cl(buf, p, &mut plus_seen, d) {
+                Some(v) => {
+                    if distinct.len() < MAX_CL_CANDIDATES && !distinct.contains(&v) {
+                        distinct.push(v);
+                    }
+                }
+                None => invalid = true,
             }
         }
     }
@@ -129,12 +140,6 @@ fn from_headers(
     if total > 1 {
         if let Some(h) = first_cl {
             d.push(DiagnosticCode::DuplicateContentLength, h.value());
-        }
-    }
-    let mut distinct: Vec<u64> = Vec::new();
-    for &v in &valid {
-        if !distinct.contains(&v) {
-            distinct.push(v);
         }
     }
 
@@ -177,6 +182,19 @@ fn from_headers(
         };
     }
 
+    // RFC 9112 section 6.3 rule 5: an invalid Content-Length makes the
+    // framing unrecoverable, even next to a valid one.
+    if invalid {
+        return BodyFraming::Ambiguous {
+            resolved: Box::new(fallback(kind)),
+            candidates: distinct
+                .iter()
+                .map(|&v| BodyFraming::ContentLength(v))
+                .collect(),
+            rule: ResolutionRule::InvalidContentLength,
+        };
+    }
+
     match distinct.as_slice() {
         [] => fallback(kind),
         [v] => BodyFraming::ContentLength(*v),
@@ -191,9 +209,31 @@ fn from_headers(
     }
 }
 
+/// The framing the length headers imply, with an `Ambiguous` result reduced
+/// to the framing it resolved to.
+fn implied(headers: &[HeaderSpan], buf: &[u8], kind: Kind, d: &mut Diagnostics) -> BodyFraming {
+    match from_headers(headers, buf, kind, d) {
+        BodyFraming::Ambiguous { resolved, .. } => *resolved,
+        other => other,
+    }
+}
+
 /// Decides how the body of the message is delimited, appending any findings
 /// to `d`. Pure over the head bytes: it never reads past `buf`, and
 /// arithmetic on lengths is checked.
+///
+/// Responses (RFC 9110 sections 6.4.1, 8.6, 9.3.2, 15; RFC 9112 section 6.3):
+/// - 101, or 2xx to CONNECT: `Upgrade`. With Content-Length or
+///   Transfer-Encoding present (forbidden there) it is
+///   `Ambiguous { resolved: Upgrade, rule: ConnectSuccess }` plus
+///   `body_after_no_body_status`.
+/// - other 1xx and 204: no body. With length headers (forbidden there) it is
+///   `Ambiguous { resolved: None, rule: NoBodyStatus }` plus
+///   `body_after_no_body_status`.
+/// - a response to HEAD, and 304: no body. Length headers are allowed there
+///   (they describe the representation), so the framing is plain `None`
+///   with no `body_after_no_body_status`; malformed length headers are
+///   still diagnosed.
 pub(crate) fn resolve(
     headers: &[HeaderSpan],
     buf: &[u8],
@@ -206,34 +246,34 @@ pub(crate) fn resolve(
         let code = buf.get(status.range()).and_then(super::parse_status);
         let is_connect = ctx.is_some_and(|c| c.is_connect);
         let is_head = ctx.is_some_and(|c| c.method == Method::Head);
-        if code == Some(101) || (is_connect && code.is_some_and(|c| (200..300).contains(&c))) {
-            return BodyFraming::Upgrade;
-        }
-        let rule = if is_head {
-            Some(ResolutionRule::HeadMethod)
-        } else if code.is_some_and(|c| c < 200 || c == 204 || c == 304) {
-            Some(ResolutionRule::NoBodyStatus)
-        } else {
-            None
-        };
-        if let Some(rule) = rule {
+        let upgrade =
+            code == Some(101) || (is_connect && code.is_some_and(|c| (200..300).contains(&c)));
+        let forbidden = code.is_some_and(|c| c < 200 || c == 204);
+        if upgrade || forbidden {
+            let (resolved, rule) = if upgrade {
+                (BodyFraming::Upgrade, ResolutionRule::ConnectSuccess)
+            } else {
+                (BodyFraming::None, ResolutionRule::NoBodyStatus)
+            };
             let marker = named(headers, buf, "content-length")
                 .chain(named(headers, buf, "transfer-encoding"))
                 .map(HeaderSpan::value)
                 .min_by_key(|s| s.start());
             let Some(marker) = marker else {
-                return BodyFraming::None;
+                return resolved;
             };
             d.push(DiagnosticCode::BodyAfterNoBodyStatus, marker);
-            let implied = match from_headers(headers, buf, kind, d) {
-                BodyFraming::Ambiguous { resolved, .. } => *resolved,
-                other => other,
-            };
+            let implied = implied(headers, buf, kind, d);
             return BodyFraming::Ambiguous {
-                resolved: Box::new(BodyFraming::None),
+                resolved: Box::new(resolved),
                 candidates: vec![implied],
                 rule,
             };
+        }
+        if is_head || code == Some(304) {
+            // Run for the length headers' own diagnostics only.
+            let _ = from_headers(headers, buf, kind, d);
+            return BodyFraming::None;
         }
     }
     from_headers(headers, buf, kind, d)

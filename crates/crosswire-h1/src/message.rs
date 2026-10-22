@@ -73,12 +73,24 @@ pub enum ResolutionRule {
     TransferEncodingWins,
     /// The first of several `Content-Length` values was used.
     FirstContentLength,
-    /// The status code forbids a body (1xx, 204, 304).
+    /// The status code forbids a body (1xx other than 101, and 204) but the
+    /// response carries `Content-Length` or `Transfer-Encoding`; resolved to
+    /// no body.
     NoBodyStatus,
-    /// The response answers a `HEAD` request.
+    /// Reserved; no longer produced. A response to `HEAD` may carry
+    /// `Content-Length` or `Transfer-Encoding` (RFC 9110 section 9.3.2), so
+    /// its framing is a plain [`BodyFraming::None`].
     HeadMethod,
-    /// The response is a successful answer to `CONNECT`.
+    /// A `101` response, or a 2xx answer to `CONNECT`, carries
+    /// `Content-Length` or `Transfer-Encoding`; resolved to
+    /// [`BodyFraming::Upgrade`].
     ConnectSuccess,
+    /// A `Content-Length` value is invalid, so the length is unknown
+    /// (RFC 9112 section 6.3 rule 5) even if another value is valid. The
+    /// candidates are the valid values. Requests resolve to no body,
+    /// responses to until-close; a relay should treat the message as
+    /// undelimitable.
+    InvalidContentLength,
 }
 
 /// How the body of a message is delimited.

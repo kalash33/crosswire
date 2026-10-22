@@ -711,7 +711,7 @@ fn reset_response_replaces_context() {
     else {
         panic!()
     };
-    assert_ne!(m.head().framing(), &BodyFraming::ContentLength(5));
+    assert_eq!(m.head().framing(), &BodyFraming::None);
     p.reset();
     let Progress::Head(m) = p
         .feed(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\n")
@@ -720,9 +720,9 @@ fn reset_response_replaces_context() {
     else {
         panic!()
     };
-    assert_ne!(
+    assert_eq!(
         m.head().framing(),
-        &BodyFraming::ContentLength(5),
+        &BodyFraming::None,
         "reset keeps the context"
     );
     p.reset_response(ResponseContext::for_method(b"GET"));

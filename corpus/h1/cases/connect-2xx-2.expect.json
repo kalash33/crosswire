@@ -4,6 +4,10 @@
     "method": "CONNECT",
     "is_connect": true
   },
-  "framing": "upgrade",
-  "diagnostics": []
+  "framing": "ambiguous",
+  "resolved": "upgrade",
+  "rule": "connect_success",
+  "diagnostics": [
+    "body_after_no_body_status"
+  ]
 }

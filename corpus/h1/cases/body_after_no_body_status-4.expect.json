@@ -5,8 +5,8 @@
     "is_connect": false
   },
   "framing": "ambiguous",
-  "resolved": "none",
-  "rule": "no_body_status",
+  "resolved": "upgrade",
+  "rule": "connect_success",
   "diagnostics": [
     "body_after_no_body_status"
   ]

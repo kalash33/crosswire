@@ -1,0 +1,9 @@
+{
+  "kind": "response",
+  "ctx": {
+    "method": "HEAD",
+    "is_connect": false
+  },
+  "framing": "none",
+  "diagnostics": []
+}

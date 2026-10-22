@@ -106,7 +106,7 @@ fn non_numeric_and_leading_plus() {
         Profile::Lenient,
     );
     assert!(has(&m, DiagnosticCode::ContentLengthNonNumeric).is_some());
-    assert!(matches!(m.head().framing(), BodyFraming::None));
+    assert_eq!(m.head().framing(), &invalid_cl(BodyFraming::None, &[]));
     let m = parse(
         b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: +5\r\n\r\n",
         Profile::Lenient,
@@ -125,29 +125,99 @@ fn unknown_transfer_coding_is_until_close_for_responses() {
     assert!(matches!(m.head().framing(), BodyFraming::UntilClose));
 }
 
+fn invalid_cl(resolved: BodyFraming, valid: &[u64]) -> BodyFraming {
+    BodyFraming::Ambiguous {
+        resolved: Box::new(resolved),
+        candidates: valid
+            .iter()
+            .map(|&v| BodyFraming::ContentLength(v))
+            .collect(),
+        rule: ResolutionRule::InvalidContentLength,
+    }
+}
+
 #[test]
-fn response_context_no_body() {
+fn head_and_304_with_length_are_plain_none() {
+    // RFC 9110 sections 8.6 and 9.3.2: length headers are allowed here.
     for (raw, ctx) in [
         (
             &b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\n"[..],
             ResponseContext::for_method(b"HEAD"),
         ),
         (
-            b"HTTP/1.1 204 No Content\r\nContent-Length: 10\r\n\r\n",
-            ResponseContext::for_method(b"GET"),
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n",
+            ResponseContext::for_method(b"HEAD"),
         ),
         (
             b"HTTP/1.1 304 Not Modified\r\nContent-Length: 10\r\n\r\n",
             ResponseContext::for_method(b"GET"),
         ),
+    ] {
+        let m = parse_response(raw, ctx);
+        assert_eq!(m.head().framing(), &BodyFraming::None);
+        assert!(m.diagnostics().is_empty(), "{:?}", m.diagnostics());
+    }
+    // Malformed length headers are still diagnosed.
+    let m = parse_response(
+        b"HTTP/1.1 304 Not Modified\r\nContent-Length: x\r\n\r\n",
+        ResponseContext::for_method(b"GET"),
+    );
+    assert_eq!(m.head().framing(), &BodyFraming::None);
+    assert!(has(&m, DiagnosticCode::ContentLengthNonNumeric).is_some());
+    assert!(has(&m, DiagnosticCode::BodyAfterNoBodyStatus).is_none());
+}
+
+#[test]
+fn no_body_status_with_length_is_ambiguous() {
+    for raw in [
+        &b"HTTP/1.1 204 No Content\r\nContent-Length: 10\r\n\r\n"[..],
+        b"HTTP/1.1 100 Continue\r\nContent-Length: 10\r\n\r\n",
+    ] {
+        let m = parse_response(raw, ResponseContext::for_method(b"GET"));
+        assert_eq!(
+            m.head().framing(),
+            &BodyFraming::Ambiguous {
+                resolved: Box::new(BodyFraming::None),
+                candidates: vec![BodyFraming::ContentLength(10)],
+                rule: ResolutionRule::NoBodyStatus,
+            }
+        );
+        assert!(has(&m, DiagnosticCode::BodyAfterNoBodyStatus).is_some());
+    }
+    // A 1xx or 204 status wins over a HEAD context.
+    let m = parse_response(
+        b"HTTP/1.1 204 No Content\r\nContent-Length: 10\r\n\r\n",
+        ResponseContext::for_method(b"HEAD"),
+    );
+    assert!(has(&m, DiagnosticCode::BodyAfterNoBodyStatus).is_some());
+}
+
+#[test]
+fn upgrade_with_length_is_ambiguous_connect_success() {
+    let connect = ResponseContext {
+        method: Method::Other,
+        is_connect: true,
+    };
+    for (raw, ctx, implied) in [
         (
-            b"HTTP/1.1 100 Continue\r\nContent-Length: 10\r\n\r\n",
+            &b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\n"[..],
+            connect,
+            BodyFraming::ContentLength(4),
+        ),
+        (
+            b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nTransfer-Encoding: chunked\r\n\r\n",
             ResponseContext::for_method(b"GET"),
+            BodyFraming::Chunked,
         ),
     ] {
         let m = parse_response(raw, ctx);
-        assert!(
-            matches!(m.head().framing(), BodyFraming::Ambiguous { resolved, .. } if matches!(**resolved, BodyFraming::None))
+        assert_eq!(
+            m.head().framing(),
+            &BodyFraming::Ambiguous {
+                resolved: Box::new(BodyFraming::Upgrade),
+                candidates: vec![implied],
+                rule: ResolutionRule::ConnectSuccess,
+            }
         );
         assert!(has(&m, DiagnosticCode::BodyAfterNoBodyStatus).is_some());
     }
@@ -203,10 +273,10 @@ fn no_body_status_without_length_headers_is_plain_none() {
 }
 
 #[test]
-fn head_and_no_body_rules_name_their_rule_and_candidate() {
+fn no_body_rule_names_its_candidate() {
     let m = parse_response(
-        b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n",
-        ResponseContext::for_method(b"HEAD"),
+        b"HTTP/1.1 204 No Content\r\nTransfer-Encoding: chunked\r\n\r\n",
+        ResponseContext::for_method(b"GET"),
     );
     let BodyFraming::Ambiguous {
         candidates, rule, ..
@@ -214,10 +284,10 @@ fn head_and_no_body_rules_name_their_rule_and_candidate() {
     else {
         panic!()
     };
-    assert_eq!(*rule, ResolutionRule::HeadMethod);
+    assert_eq!(*rule, ResolutionRule::NoBodyStatus);
     assert_eq!(candidates, &[BodyFraming::Chunked]);
     let m = parse_response(
-        b"HTTP/1.1 304 Not Modified\r\nContent-Length: 3\r\n\r\n",
+        b"HTTP/1.1 103 Early Hints\r\nContent-Length: 3\r\n\r\n",
         ResponseContext::for_method(b"GET"),
     );
     let BodyFraming::Ambiguous {
@@ -303,13 +373,20 @@ fn overflow_and_empty_content_length_are_non_numeric() {
             has(&m, DiagnosticCode::ContentLengthNonNumeric).is_some(),
             "{v:?}"
         );
-        assert!(matches!(m.head().framing(), BodyFraming::None), "{v:?}");
+        assert_eq!(
+            m.head().framing(),
+            &invalid_cl(BodyFraming::None, &[]),
+            "{v:?}"
+        );
     }
     let m = parse_response(
         b"HTTP/1.1 200 OK\r\nContent-Length: nope\r\n\r\n",
         ResponseContext::for_method(b"GET"),
     );
-    assert!(matches!(m.head().framing(), BodyFraming::UntilClose));
+    assert_eq!(
+        m.head().framing(),
+        &invalid_cl(BodyFraming::UntilClose, &[])
+    );
     assert_eq!(
         framing_of(b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 18446744073709551615\r\n\r\n"),
         BodyFraming::ContentLength(u64::MAX)
@@ -317,14 +394,52 @@ fn overflow_and_empty_content_length_are_non_numeric() {
 }
 
 #[test]
-fn valid_value_survives_an_invalid_duplicate() {
-    let m = parse(
-        b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: x\r\nContent-Length: 7\r\n\r\n",
-        Profile::Lenient,
+fn invalid_value_next_to_a_valid_one_is_unrecoverable() {
+    // RFC 9112 section 6.3 rule 5.
+    for raw in [
+        &b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: x\r\nContent-Length: 7\r\n\r\n"[..],
+        b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 7\r\nContent-Length: abc\r\n\r\n",
+        b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 7, abc\r\n\r\n",
+    ] {
+        let m = parse(raw, Profile::Lenient);
+        assert!(has(&m, DiagnosticCode::ContentLengthNonNumeric).is_some());
+        assert!(has(&m, DiagnosticCode::DuplicateContentLength).is_some());
+        assert_eq!(m.head().framing(), &invalid_cl(BodyFraming::None, &[7]));
+    }
+    let m = parse_response(
+        b"HTTP/1.1 200 OK\r\nContent-Length: abc\r\nContent-Length: 5\r\n\r\n",
+        ResponseContext::for_method(b"GET"),
     );
-    assert!(has(&m, DiagnosticCode::ContentLengthNonNumeric).is_some());
-    assert!(has(&m, DiagnosticCode::DuplicateContentLength).is_some());
-    assert!(matches!(m.head().framing(), BodyFraming::ContentLength(7)));
+    assert_eq!(
+        m.head().framing(),
+        &invalid_cl(BodyFraming::UntilClose, &[5])
+    );
+}
+
+#[test]
+fn content_length_candidates_are_capped_at_eight() {
+    let mut raw = b"POST / HTTP/1.1\r\nHost: x\r\n".to_vec();
+    for v in 1..=12 {
+        raw.extend_from_slice(format!("Content-Length: {v}\r\nContent-Length: {v}\r\n").as_bytes());
+    }
+    raw.extend_from_slice(b"\r\n");
+    let m = parse(&raw, Profile::Lenient);
+    let BodyFraming::Ambiguous {
+        resolved,
+        candidates,
+        rule,
+    } = m.head().framing()
+    else {
+        panic!()
+    };
+    assert_eq!(**resolved, BodyFraming::ContentLength(1));
+    assert_eq!(*rule, ResolutionRule::FirstContentLength);
+    assert_eq!(candidates.len(), 8);
+    assert_eq!(
+        candidates,
+        &(1..=8).map(BodyFraming::ContentLength).collect::<Vec<_>>()
+    );
+    assert_eq!(count(&m, DiagnosticCode::DuplicateContentLength), 1);
 }
 
 #[test]
