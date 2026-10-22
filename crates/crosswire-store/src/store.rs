@@ -118,6 +118,8 @@ pub struct Store {
     audit: Mutex<AuditLog>,
     writer: Option<JoinHandle<Project>>,
     report: OpenReport,
+    /// Idle read-only connections (never a writer), at most four.
+    pub(crate) readers: Mutex<Vec<Connection>>,
 }
 
 impl Store {
@@ -179,6 +181,7 @@ impl Store {
             audit: Mutex::new(audit),
             writer: Some(handle),
             report,
+            readers: Mutex::new(Vec::new()),
         })
     }
 
