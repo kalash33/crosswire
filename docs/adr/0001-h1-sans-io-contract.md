@@ -37,6 +37,13 @@ parser returns `NeedMore` with `consumed` at the start of the token and keeps no
 bytes of it. The caller presents the unconsumed bytes again, followed by the new
 data. Chunk data itself is consumed incrementally and is not subject to this.
 
+Events other than `NeedMore` may also report `consumed == 0`. `ChunkExt` is a
+peek: its span points into the current input, the chunk-size line is not
+consumed, and the caller re-presents the same bytes to receive the chunk's
+`BodyData`. `Trailers` can return with its bytes consumed up to the terminator,
+and `Done` arrives on the next call. "Loop until `NeedMore`" is the correct
+caller shape; a caller must not assume every event advances the input.
+
 **Rejected alternative: internal buffering with clamped spans.** The first
 implementation copied incomplete tokens into a decoder-owned buffer. A span
 reported for a token completed on a later call would then point partly into

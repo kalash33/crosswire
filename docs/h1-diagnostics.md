@@ -20,7 +20,7 @@ This table is checked against the code by
 | `trailing_space_in_name` | The header name span ends in whitespace; always reported together with whitespace_before_colon. The span is the name. | Warning | Error |
 | `leading_whitespace_before_start_line` | Whitespace or blank lines precede the start line and are skipped. The span is the skipped prefix. | Info | Error |
 | `non_canonical_header_case` | A valid header name is not in Title-Case, for example `host` or `X-FOO`. The span is the name. | Info | Info |
-| `invalid_token_char_in_name` | A header name is empty or has a byte that is not an HTTP token character, or the line has no colon. The span is the name. | Warning | Error |
+| `invalid_token_char_in_name` | A header name is empty or has a byte that is not an HTTP token character, or the line has no colon. The span is the name with trailing whitespace trimmed, or the whole line when there is no colon. | Warning | Error |
 | `invalid_char_in_value` | A header value contains a control byte other than HTAB and CR (0x00-0x1F, 0x7F). Only the first such byte is reported. | Warning | Error |
 | `missing_host` | A request has no Host header. The span is empty and sits at the end of the head. | Warning | Error |
 | `duplicate_host` | A request has a second or later Host header. The span is that header's name. | Warning | Error |

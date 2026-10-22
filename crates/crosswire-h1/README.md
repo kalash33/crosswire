@@ -1,7 +1,7 @@
 # crosswire-h1
 
 Sans-IO, byte-exact HTTP/1 for security testing tools. Part of
-[Crosswire](../../README.md), an open-source Rust web security testing platform.
+[Crosswire](https://github.com/crosswire-rs/crosswire/blob/main/README.md), an open-source Rust web security testing platform.
 
 ## Charter
 
@@ -29,6 +29,13 @@ Non-goal: a general-purpose HTTP client.
    trailer block) are never buffered across calls. When one is incomplete,
    `feed` returns `NeedMore` with `consumed` at the token start, and the caller
    must **re-present** the unconsumed bytes together with the new data.
+   Events other than `NeedMore` may also report `consumed == 0`. In particular
+   `ChunkExt` is a peek: its span points into the current input, the chunk-size
+   line is not consumed, and the caller re-presents the same bytes to receive
+   that chunk's `BodyData`. `Trailers` can return with its bytes consumed up to
+   the terminator, and `Done` arrives on the next call. Looping until
+   `NeedMore` (or `Done`) is therefore the correct caller shape; do not assume
+   that every event advances the input.
 3. **Obtaining a message.** `Progress::Head(RawMessage)` is the only way to get
    a `RawMessage`. It holds the frozen head bytes plus an optional inline body
    attached with `with_inline_body`.
@@ -39,7 +46,7 @@ Non-goal: a general-purpose HTTP client.
    empty line, and a chunk size that is not hexadecimal. `Profile::Strict` does
    not make more input fatal; it raises the severity of diagnostics.
 
-See [ADR-0001](../../docs/adr/0001-h1-sans-io-contract.md) for the reasoning
+See [ADR-0001](https://github.com/crosswire-rs/crosswire/blob/main/docs/adr/0001-h1-sans-io-contract.md) for the reasoning
 behind rule 2.
 
 ## Example
@@ -76,7 +83,7 @@ assert!(msg.diagnostics().iter().any(|d| d.code().as_str() == "obs_fold"));
 
 ## Diagnostics and corpus
 
-- [Diagnostic catalogue](../../docs/h1-diagnostics.md): all 25 codes, with
+- [Diagnostic catalogue](https://github.com/crosswire-rs/crosswire/blob/main/docs/h1-diagnostics.md): all 25 codes, with
   severities under each profile.
-- [Fidelity corpus](../../corpus/h1/README.md): odd-but-real HTTP/1 messages,
+- [Fidelity corpus](https://github.com/crosswire-rs/crosswire/blob/main/corpus/h1/README.md): odd-but-real HTTP/1 messages,
   each parsed, diagnosed and written back byte-identical.
