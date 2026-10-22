@@ -1,0 +1,8 @@
+{
+  "kind": "request",
+  "limits": {
+    "max_line": 32
+  },
+  "error": "line_too_long",
+  "diagnostics": []
+}

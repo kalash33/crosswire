@@ -1,9 +1,13 @@
 //! Shared fuzz driver: feeds bytes in pieces with the re-present contract and
 //! checks the parser's invariants after every call.
+//!
+//! The feed loop below is a copy of the canonical loop, `drive` in
+//! `crates/crosswire-h1/tests/common/mod.rs`; the fuzz crate cannot depend on
+//! the test crate. Keep the two in step.
 #![allow(dead_code)]
 
 use bytes::BytesMut;
-use crosswire_core::{Profile, Span};
+use crosswire_core::{Diagnostic, Profile, Span};
 use crosswire_h1::*;
 
 /// What a run observed; compared between the split and the whole-input run.
@@ -12,7 +16,11 @@ pub struct Outcome {
     pub head_bytes: Vec<u8>,
     pub framing: Option<&'static str>,
     pub head_codes: Vec<&'static str>,
+    /// Body diagnostic codes, sorted, with repeats (a multiset).
     pub body_codes: Vec<&'static str>,
+    /// The body diagnostics in order, with their absolute spans.
+    pub body_diags: Vec<Diagnostic>,
+    pub body_dropped: usize,
     pub error: Option<String>,
 }
 
@@ -76,10 +84,14 @@ fn check_head(m: &RawMessage, input: &[u8], consumed: usize) {
 pub fn run(
     resp_ctx: Option<ResponseContext>,
     profile: Profile,
+    limits: ParseLimits,
     data: &[u8],
     piece: usize,
 ) -> Outcome {
-    let cfg = ParserConfig::builder().profile(profile).build();
+    let cfg = ParserConfig::builder()
+        .profile(profile)
+        .limits(limits)
+        .build();
     let mut p = match resp_ctx {
         Some(ctx) => Parser::response(&cfg, ctx),
         None => Parser::request(&cfg),
@@ -89,6 +101,8 @@ pub fn run(
         framing: None,
         head_codes: vec![],
         body_codes: vec![],
+        body_diags: vec![],
+        body_dropped: 0,
         error: None,
     };
     let mut carry: Vec<u8> = vec![];
@@ -181,8 +195,9 @@ pub fn run(
         .map(|d| d.code().as_str())
         .collect();
     b.sort_unstable();
-    b.dedup();
     out.body_codes = b;
+    out.body_diags = p.body_diagnostics().to_vec();
+    out.body_dropped = p.body_diagnostics_dropped();
     out
 }
 
@@ -198,10 +213,29 @@ pub fn fuzz(response: bool, data: &[u8]) {
         Profile::Lenient
     };
     let piece = 1 + usize::from(b0 >> 1) % 64;
-    let ctx =
-        response.then(|| ResponseContext::for_method(if b1 % 4 == 0 { b"HEAD" } else { b"GET" }));
+    // Response context: HEAD, CONNECT (2xx is an upgrade), or another method.
+    let ctx = response.then(|| {
+        ResponseContext::for_method(match b1 % 4 {
+            0 => &b"HEAD"[..],
+            1 => b"CONNECT",
+            _ => b"GET",
+        })
+    });
+    // About a quarter of inputs run with small limits, so the limit paths
+    // and the body-diagnostic cap are reached by short inputs.
+    let limits = if (b1 >> 2) % 4 == 0 {
+        ParseLimits::builder()
+            .head_size(256)
+            .max_chunk_size_line(16)
+            .max_trailer_size(64)
+            .max_chunks(8)
+            .max_body_diagnostics(4)
+            .build()
+    } else {
+        ParseLimits::default()
+    };
     let body = &data[2..];
-    let split = run(ctx, profile, body, piece);
-    let whole = run(ctx, profile, body, usize::MAX);
+    let split = run(ctx, profile, limits, body, piece);
+    let whole = run(ctx, profile, limits, body, usize::MAX);
     assert_eq!(split, whole, "split run differs from whole-input run");
 }

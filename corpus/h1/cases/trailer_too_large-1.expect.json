@@ -1,0 +1,13 @@
+{
+  "kind": "response",
+  "ctx": {
+    "method": "GET",
+    "is_connect": false
+  },
+  "framing": "chunked",
+  "limits": {
+    "max_trailer_size": 32
+  },
+  "error": "trailer_too_large",
+  "diagnostics": []
+}

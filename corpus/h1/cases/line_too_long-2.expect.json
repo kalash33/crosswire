@@ -1,0 +1,9 @@
+{
+  "kind": "request",
+  "framing": "chunked",
+  "limits": {
+    "max_chunk_size_line": 16
+  },
+  "error": "line_too_long",
+  "diagnostics": []
+}

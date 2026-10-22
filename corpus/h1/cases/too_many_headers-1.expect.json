@@ -1,0 +1,8 @@
+{
+  "kind": "request",
+  "limits": {
+    "max_headers": 2
+  },
+  "error": "too_many_headers",
+  "diagnostics": []
+}

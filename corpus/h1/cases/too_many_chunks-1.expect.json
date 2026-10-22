@@ -1,0 +1,9 @@
+{
+  "kind": "request",
+  "framing": "chunked",
+  "limits": {
+    "max_chunks": 2
+  },
+  "error": "too_many_chunks",
+  "diagnostics": []
+}

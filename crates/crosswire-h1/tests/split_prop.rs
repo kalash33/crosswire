@@ -3,193 +3,14 @@
 //! `feed` calls.
 mod common;
 
-use common::{load_cases, parser_for, Case};
-use crosswire_h1::*;
+use common::{drive, load_cases, parser_for, Case, Ev, Trace};
+use crosswire_h1::BodyFraming;
 use proptest::collection::vec as pvec;
 use proptest::test_runner::{Config, TestCaseError, TestRunner};
 
-/// One resolved parser event. Spans are resolved to bytes against the input
-/// of the call that produced them.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum Ev {
-    Head {
-        head_bytes: Vec<u8>,
-        framing_name: String,
-        diag_codes: Vec<&'static str>,
-    },
-    Data(Vec<u8>),
-    Ext(Vec<u8>),
-    Trailers(Vec<(Vec<u8>, Vec<u8>)>),
-    Done,
-    Error(String),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct Trace {
-    events: Vec<Ev>,
-    body_diag_codes: Vec<&'static str>,
-    consumed_total: usize,
-}
-
-fn framing_name(f: &BodyFraming) -> &'static str {
-    match f {
-        BodyFraming::None => "none",
-        BodyFraming::ContentLength(_) => "content_length",
-        BodyFraming::Chunked => "chunked",
-        BodyFraming::UntilClose => "until_close",
-        BodyFraming::Upgrade => "upgrade",
-        BodyFraming::Ambiguous { .. } => "ambiguous",
-        _ => "unknown",
-    }
-}
-
-fn is_until_close(f: &BodyFraming) -> bool {
-    match f {
-        BodyFraming::UntilClose => true,
-        BodyFraming::Ambiguous { resolved, .. } => is_until_close(resolved),
-        _ => false,
-    }
-}
-
-fn variant_name(e: &ParseError) -> String {
-    format!("{e:?}")
-        .chars()
-        .take_while(|c| c.is_alphanumeric() || *c == '_')
-        .collect()
-}
-
-/// Feeds a case's input in the given pieces and records the resolved trace.
-struct Run {
-    p: Parser,
-    events: Vec<Ev>,
-    consumed_total: usize,
-    /// Bytes the parser left unconsumed at `NeedMore`; they lead the next piece.
-    carry: Vec<u8>,
-    until_close: bool,
-    stopped: bool,
-}
-
-impl Run {
-    fn push(&mut self, ev: Ev) {
-        // A body split across feeds legitimately yields more `BodyData`
-        // events: coalesce adjacent ones.
-        if let (Ev::Data(new), Some(Ev::Data(old))) = (&ev, self.events.last_mut()) {
-            old.extend_from_slice(new);
-        } else {
-            self.events.push(ev);
-        }
-    }
-
-    fn piece(&mut self, piece: &[u8]) {
-        if self.stopped {
-            return;
-        }
-        let mut buf = std::mem::take(&mut self.carry);
-        buf.extend_from_slice(piece);
-        let mut off = 0;
-        // Unconsumed bytes are re-presented (`buf[off..]`) with every call:
-        // incomplete size lines and trailer blocks are never buffered by the
-        // parser. Zero-consumption steps (`Ext` peeks) need a bounded re-feed.
-        let mut settled = false;
-        for _ in 0..(buf.len() * 2 + 100) {
-            let rest = &buf[off..];
-            let step = match self.p.feed(rest) {
-                Ok(s) => s,
-                Err(e) => {
-                    self.push(Ev::Error(variant_name(&e)));
-                    self.stopped = true;
-                    return;
-                }
-            };
-            self.consumed_total += step.consumed;
-            let mut finished = false;
-            match step.event {
-                Progress::NeedMore => finished = true,
-                Progress::Head(m) => {
-                    let mut codes: Vec<&'static str> =
-                        m.diagnostics().iter().map(|d| d.code().as_str()).collect();
-                    codes.sort_unstable();
-                    self.until_close |= is_until_close(m.head().framing());
-                    self.push(Ev::Head {
-                        head_bytes: m.bytes()[..].to_vec(),
-                        framing_name: framing_name(m.head().framing()).to_owned(),
-                        diag_codes: codes,
-                    });
-                }
-                Progress::BodyData { data, .. } => {
-                    self.push(Ev::Data(rest[data.range()].to_vec()));
-                }
-                Progress::ChunkExt(s) => self.push(Ev::Ext(rest[s.range()].to_vec())),
-                Progress::Trailers(t) => {
-                    let t = t
-                        .iter()
-                        .map(|h| {
-                            (
-                                rest[h.name().range()].to_vec(),
-                                rest[h.value().range()].to_vec(),
-                            )
-                        })
-                        .collect();
-                    self.push(Ev::Trailers(t));
-                }
-                Progress::Done => {
-                    self.push(Ev::Done);
-                    // Pipelined cases: the tail is the next message.
-                    self.stopped = true;
-                    finished = true;
-                }
-                _ => {}
-            }
-            off += step.consumed;
-            if finished {
-                settled = true;
-                break;
-            }
-        }
-        assert!(settled, "feed loop did not settle");
-        if !self.stopped {
-            self.carry = buf[off..].to_vec();
-        }
-    }
-
-    fn finish(mut self) -> Trace {
-        if !self.stopped && self.until_close {
-            match self.p.feed_eof() {
-                Ok(s) if matches!(s.event, Progress::Done) => self.push(Ev::Done),
-                Ok(s) => panic!("feed_eof returned {:?}", s.event),
-                Err(e) => self.push(Ev::Error(variant_name(&e))),
-            }
-        }
-        let mut codes: Vec<&'static str> = self
-            .p
-            .body_diagnostics()
-            .iter()
-            .map(|d| d.code().as_str())
-            .collect();
-        codes.sort_unstable();
-        codes.dedup();
-        Trace {
-            events: self.events,
-            body_diag_codes: codes,
-            consumed_total: self.consumed_total,
-        }
-    }
-}
-
+/// Feeds a case's input in the given pieces through the canonical loop.
 fn trace(case: &Case, pieces: &[&[u8]]) -> Trace {
-    let cfg = ParserConfig::default();
-    let mut run = Run {
-        p: parser_for(case, &cfg),
-        events: vec![],
-        consumed_total: 0,
-        carry: vec![],
-        until_close: false,
-        stopped: false,
-    };
-    for piece in pieces {
-        run.piece(piece);
-    }
-    run.finish()
+    drive(&mut parser_for(case), pieces)
 }
 
 fn short(ev: &Ev) -> String {
@@ -212,10 +33,18 @@ fn diff(whole: &Trace, got: &Trace) -> Option<String> {
             ));
         }
     }
-    if whole.body_diag_codes != got.body_diag_codes {
+    // Body diagnostics: every code with its count (a multiset, not a
+    // deduplicated set) and its absolute span, in order.
+    if whole.body_diags != got.body_diags {
         return Some(format!(
             "body diagnostics differ: whole {:?}, split {:?}",
-            whole.body_diag_codes, got.body_diag_codes
+            whole.body_diags, got.body_diags
+        ));
+    }
+    if whole.body_diags_dropped != got.body_diags_dropped {
+        return Some(format!(
+            "dropped body diagnostics differ: whole {}, split {}",
+            whole.body_diags_dropped, got.body_diags_dropped
         ));
     }
     // After an error `feed` reports no `consumed`, and bytes a split run
@@ -312,8 +141,9 @@ fn split_invariance() {
     assert!(
         matches!(
             t.events.first(),
-            Some(Ev::Head { head_bytes, framing_name, .. })
-                if head_bytes.starts_with(b"GET / HTTP/1.1") && framing_name == "none"
+            Some(Ev::Head { msg, .. })
+                if msg.bytes().starts_with(b"GET / HTTP/1.1")
+                    && *msg.head().framing() == BodyFraming::None
         ) && t.events.last() == Some(&Ev::Done),
         "sanity: baseline-1 whole-feed trace lacks Head/Done: {:?}",
         t.events
@@ -330,8 +160,10 @@ fn split_invariance() {
             continue;
         }
         let w = trace(case, &[&case.input]);
+        // Only an error case may stop before the head.
         assert!(
-            matches!(w.events.first(), Some(Ev::Head { .. })),
+            matches!(w.events.first(), Some(Ev::Head { .. }))
+                || (case.expect.error.is_some() && matches!(w.events.as_slice(), [Ev::Error(_)])),
             "case {}: whole-feed trace has no Head: {:?}",
             case.name,
             w.events.iter().map(short).collect::<Vec<_>>()

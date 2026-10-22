@@ -32,17 +32,20 @@ Each case lives in `cases/` as a pair, named `<code-or-case>-<n>`:
 | --- | --- |
 | `kind` | `request` or `response` |
 | `ctx` | responses only: `method` is the method of the request being answered, `is_connect` whether it was a CONNECT |
-| `framing` | `none`, `content_length`, `chunked`, `until_close`, `upgrade` or `ambiguous` |
+| `framing` | `none`, `content_length`, `chunked`, `until_close`, `upgrade` or `ambiguous`; omitted only for an `error` case that fails before the head |
 | `resolved`, `rule` | only when `framing` is `ambiguous`: the resolved variant and the `ResolutionRule` in snake_case |
 | `diagnostics` | head diagnostics plus body diagnostics, by code name, sorted, duplicates removed |
 | `pipelined` | `true` when a second message follows the first; the harness checks the tail starts a new message |
 | `body` / `body_hex` | the expected decoded payload (UTF-8 string, or hex when it is not UTF-8); omit when there is no body |
-| `error` | a fatal `ParseError` instead of a clean parse; currently only `invalid_chunk_size` |
+| `error` | a fatal `ParseError` instead of a clean parse, in snake_case: `head_too_large`, `line_too_long`, `too_many_headers`, `unexpected_eof`, `invalid_chunk_size`, `trailer_too_large` or `too_many_chunks` |
+| `limits` | optional overrides of `ParseLimits` for this case, e.g. `{ "head_size": 64 }`; keys are the `ParseLimits` field names |
 | `known_bug` | a description of a parser bug this case exposes; the harness skips and names the case |
 
 `invalid_chunk_size` is a fatal parse error rather than a message diagnostic, so
-cases for it carry `"error": "invalid_chunk_size"` and the checker counts `error`
-values toward coverage.
+cases for it carry `"error": "invalid_chunk_size"` and the checker counts that
+`error` value toward code coverage. The limit fixtures (`head_too_large-1`,
+`line_too_long-1`/`-2`, `too_many_headers-1`, `trailer_too_large-1`,
+`too_many_chunks-1`) use `limits` to make a small message hit each limit.
 
 A case too large to commit is described by `<name>.gen.json` instead
 (`kind`, `head`, `body_byte`, `body_len`, `framing`, `diagnostics`); the
@@ -50,10 +53,15 @@ harness builds `head` followed by `body_len` copies of `body_byte` at test time.
 
 ## What the harness asserts
 
-For every case: the framing variant (and `resolved`/`rule`), the diagnostic
-list, `write_exact(head) ++ the body bytes consumed == input`, that all the
-input is consumed (or, when `pipelined`, that a second message follows), and the
-decoded body.
+Every case is fed through the canonical feed loop (`drive` in
+`crates/crosswire-h1/tests/common/mod.rs`, also used by the split test). For
+every case: the error (if any), the framing variant (and `resolved`/`rule`), the
+diagnostic list, `write_exact(head)` equals the head bytes,
+`write_exact(head.with_inline_body(raw body bytes))` equals the consumed input,
+the raw body spans tile the body, that all the input is consumed (or, when
+`pipelined`, that a second message follows), and the decoded body. An `error`
+case may stop before the head; then only the error and an empty diagnostic list
+are checked.
 
 ## Adding a case
 

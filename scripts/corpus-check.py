@@ -20,6 +20,10 @@ CODES = [
 ]
 RULES = {"transfer_encoding_wins", "first_content_length", "no_body_status",
          "head_method", "connect_success", "invalid_content_length"}
+ERRORS = {"head_too_large", "line_too_long", "too_many_headers", "unexpected_eof",
+          "invalid_chunk_size", "trailer_too_large", "too_many_chunks"}
+LIMITS = {"head_size", "max_headers", "max_line", "max_chunk_size_line",
+          "max_trailer_size", "max_chunks", "max_body_diagnostics"}
 KINDS = {"request", "response"}
 FRAMINGS = {"none", "content_length", "chunked", "until_close", "upgrade", "ambiguous"}
 
@@ -52,7 +56,8 @@ def main():
         total += 1
         if e.get("kind") not in KINDS:
             errors.append(f"{n}: invalid kind {e.get('kind')!r}")
-        if e.get("framing") not in FRAMINGS:
+        # A case whose error comes before the head has no framing.
+        if not ("error" in e and "framing" not in e) and e.get("framing") not in FRAMINGS:
             errors.append(f"{n}: invalid framing {e.get('framing')!r}")
         if e.get("kind") == "response" and not is_gen and "ctx" not in e:
             errors.append(f"{n}: response without ctx")
@@ -70,10 +75,20 @@ def main():
                 errors.append(f"{n}: unknown code {d!r}")
             if not skip:
                 covered.add(d)
+        if "limits" in e:
+            lim = e["limits"]
+            if not isinstance(lim, dict):
+                errors.append(f"{n}: limits must be an object")
+            else:
+                for k, v in lim.items():
+                    if k not in LIMITS:
+                        errors.append(f"{n}: unknown limit {k!r}")
+                    if not isinstance(v, int) or isinstance(v, bool) or v < 0:
+                        errors.append(f"{n}: limit {k} must be a non-negative integer")
         if "error" in e:
-            if e["error"] not in CODES:
-                errors.append(f"{n}: unknown error code {e['error']!r}")
-            if not skip:
+            if e["error"] not in ERRORS:
+                errors.append(f"{n}: unknown error {e['error']!r}")
+            if not skip and e["error"] in CODES:
                 covered.add(e["error"])
     missing = [c for c in CODES if c not in covered]
     for c in missing:
