@@ -4,6 +4,8 @@
 extern crate alloc;
 
 mod chunked;
+#[cfg(feature = "http")]
+mod compat_http;
 mod config;
 mod error;
 mod limits;
@@ -13,6 +15,8 @@ mod progress;
 mod writer;
 
 pub use chunked::{BodyDecoder, BodyEvent};
+#[cfg(feature = "http")]
+pub use compat_http::HttpConvertError;
 pub use config::{ParserConfig, ParserConfigBuilder};
 pub use error::ParseError;
 pub use limits::{ParseLimits, ParseLimitsBuilder};

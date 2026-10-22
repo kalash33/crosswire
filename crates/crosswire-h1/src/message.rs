@@ -8,6 +8,7 @@ use crosswire_core::{Diagnostic, Span};
 
 /// The start line of a message, as spans into the head bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[non_exhaustive]
 pub enum StartLine {
     /// A request line.
@@ -32,6 +33,7 @@ pub enum StartLine {
 
 /// One header field, as spans into the head bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct HeaderSpan {
     name: Span,
     value: Span,
@@ -64,6 +66,7 @@ impl HeaderSpan {
 
 /// The rule used to settle on a body framing when candidates conflict.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[non_exhaustive]
 pub enum ResolutionRule {
     /// `Transfer-Encoding` took precedence over `Content-Length`.
@@ -80,6 +83,7 @@ pub enum ResolutionRule {
 
 /// How the body of a message is delimited.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[non_exhaustive]
 pub enum BodyFraming {
     /// No body.
@@ -186,6 +190,7 @@ impl HeadView {
 
 /// Whether a message is a request or a response.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[non_exhaustive]
 pub enum Kind {
     /// A request.
@@ -260,6 +265,7 @@ impl RawMessage {
 
 /// The request method, as far as response framing cares.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[non_exhaustive]
 pub enum Method {
     /// `HEAD`.
@@ -270,6 +276,7 @@ pub enum Method {
 
 /// What the parser must know about the request to frame its response.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ResponseContext {
     /// The request method.
     pub method: Method,

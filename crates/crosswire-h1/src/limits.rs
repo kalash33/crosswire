@@ -2,6 +2,7 @@
 
 /// Upper bounds on the sizes the parser will accept.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[non_exhaustive]
 pub struct ParseLimits {
     /// Maximum size in bytes of the whole message head.

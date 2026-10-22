@@ -20,7 +20,7 @@ serde = { version = "1", default-features = false, features = ["derive", "alloc"
 [features]
 default = ["std"]
 std = ["crosswire-core/std", "bytes/std"]
-http = ["dep:http"]
+http = ["std", "dep:http"]
 serde = ["dep:serde", "crosswire-core/serde"]
 
 [dev-dependencies]
