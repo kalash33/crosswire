@@ -32,3 +32,9 @@ tempfile = { workspace = true }
 tokio = { workspace = true }
 crosswire-core = { path = "../crosswire-core", version = "0.0.0" }
 
+# Spawned and SIGKILLed by tests/durability.rs.
+[[bin]]
+name = "killtest-child"
+path = "src/bin/killtest-child.rs"
+test = false
+doc = false
