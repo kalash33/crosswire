@@ -11,9 +11,6 @@ publish = false
 [lints]
 workspace = true
 
-[dependencies]
-
-
 [dev-dependencies]
 crosswire-client = { path = "../crosswire-client", version = "0.0.0" }
 crosswire-store = { path = "../crosswire-store", version = "0.0.0" }

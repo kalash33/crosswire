@@ -18,7 +18,6 @@ bytes = { version = "1", default-features = false }
 serde = { workspace = true }
 ulid = { workspace = true }
 
-
 [features]
 default = ["std"]
 std = ["crosswire-core/std", "crosswire-h1/std", "serde/std"]
