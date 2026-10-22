@@ -11,3 +11,7 @@ fn span_len_and_range() {
 fn empty_span() {
     assert!(Span::new(5, 5).is_empty());
 }
+#[test]
+fn empty_span_len_is_zero() {
+    assert_eq!(Span::new(5, 5).len(), 0);
+}

@@ -2,9 +2,14 @@
 
 /// A half-open byte range `[start, end)` into the original input.
 ///
-/// `end` is exclusive.
+/// `end` is exclusive. The invariant `start <= end` holds for every value,
+/// including deserialized ones: deserializing `{"start": 5, "end": 2}` fails.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize, serde::Deserialize),
+    serde(try_from = "raw::RawSpan")
+)]
 pub struct Span {
     start: u32,
     end: u32,
@@ -37,7 +42,7 @@ impl Span {
     /// Length in bytes.
     #[must_use]
     pub fn len(&self) -> u32 {
-        self.end - self.start
+        self.end.saturating_sub(self.start)
     }
 
     /// Whether the span covers no bytes.
@@ -50,5 +55,30 @@ impl Span {
     #[must_use]
     pub fn range(&self) -> core::ops::Range<usize> {
         self.start as usize..self.end as usize
+    }
+}
+
+#[cfg(feature = "serde")]
+mod raw {
+    /// The unchecked wire form of a [`Span`](super::Span); converted with a
+    /// check that `start <= end`.
+    #[derive(serde::Deserialize)]
+    pub struct RawSpan {
+        start: u32,
+        end: u32,
+    }
+
+    impl TryFrom<RawSpan> for super::Span {
+        type Error = &'static str;
+
+        fn try_from(r: RawSpan) -> Result<Self, Self::Error> {
+            if r.end < r.start {
+                return Err("span end is before its start");
+            }
+            Ok(super::Span {
+                start: r.start,
+                end: r.end,
+            })
+        }
     }
 }
