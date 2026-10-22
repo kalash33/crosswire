@@ -1,5 +1,8 @@
 //! The project lock: an exclusive `flock` plus a small status file.
 
+#[cfg(not(unix))]
+compile_error!("crosswire-store: the project lock uses flock; Windows support is a later task");
+
 use crate::error::StoreError;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -65,9 +68,10 @@ impl ProjectLock {
 
     fn write_status(&self, text: &str) -> Result<(), StoreError> {
         let mut f = &self.file;
-        self.file.set_len(0)?;
+        // Write first, then trim: a crash never leaves an empty status file.
         f.seek(SeekFrom::Start(0))?;
         f.write_all(text.as_bytes())?;
+        self.file.set_len(text.len() as u64)?;
         self.file.sync_data()?;
         Ok(())
     }

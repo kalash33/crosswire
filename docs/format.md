@@ -10,7 +10,7 @@ A project is a directory. Everything Crosswire records lives in it. This documen
   project.db-wal      SQLite WAL (created by SQLite)
   project.db-shm      SQLite shared memory (created by SQLite)
   project.lock        lock and status file, mode 0600
-  packs/              content packs, pack-<id>.cwp
+  packs/              content packs, {id:06}.pack
   journal/            one fsynced JSON file per exchange not yet in the database
   audit.jsonl         append-only audit log, mode 0600
 ```
@@ -58,14 +58,13 @@ Primary key `(ulid, side)`. At most one of `inline` and `blob_hash` is set (`CHE
 
 `blobs` (`WITHOUT ROWID`), the index of content in packs: `hash BLOB PRIMARY KEY`, `pack_id INTEGER NOT NULL`, `offset INTEGER NOT NULL`, `len INTEGER NOT NULL`, `refcount INTEGER NOT NULL DEFAULT 1`.
 
-`packs`: `id INTEGER PRIMARY KEY`, `path TEXT NOT NULL`, `committed_len INTEGER NOT NULL DEFAULT 0` (bytes of the pack file that the database has committed; anything beyond is an uncommitted tail and is truncated on open).
+`packs`: `id INTEGER PRIMARY KEY`, `committed_len INTEGER NOT NULL DEFAULT 0` (bytes of the pack file that the database has committed; anything beyond is an uncommitted tail and is truncated on open). There is no path column: the pack file is always `packs/{id:06}.pack` (for example `packs/000001.pack`), derived from the id. A project file is untrusted input, so readers must never open a path stored in the database.
 
 `markers` (`WITHOUT ROWID`), gap and error rows: `ulid TEXT PRIMARY KEY`, `kind TEXT NOT NULL`, `from_ulid TEXT`, `to_ulid TEXT`, `detail TEXT NOT NULL DEFAULT ''`.
 
 `meta` (`WITHOUT ROWID`): `key TEXT PRIMARY KEY`, `value TEXT NOT NULL`. Keys:
 
 - `last_committed_ulid`: id of the last exchange whose row and bodies are committed (empty string initially). Journal files with a greater id are replayed on open.
-- `clean_shutdown`: `1` after a clean close, `0` while a project is open.
 
 ### Indexes
 
@@ -76,7 +75,7 @@ Primary key `(ulid, side)`. At most one of `inline` and `blob_hash` is set (`CHE
 
 ## Lock file
 
-`project.lock` is held with an exclusive, non-blocking `flock` for the lifetime of the open `Project`. A second open fails with `Locked`. The file holds three lines:
+`project.lock` is held with an exclusive, non-blocking `flock` for the lifetime of the open `Project`. The lock is unix-only in v1 (the crate does not compile elsewhere); Windows support is a later task. A second open fails with `Locked`. The file holds three lines:
 
 ```
 <pid>
@@ -88,7 +87,7 @@ Opening writes `clean=0`; a clean close writes `clean=1`. If the previous conten
 
 ## Pack record (implemented in Task 6)
 
-Content is stored in `packs/pack-<id>.cwp`, append-only. Each record:
+Content is stored in `packs/{id:06}.pack`, append-only. Each record:
 
 ```
 magic       4 bytes   "CWPK"

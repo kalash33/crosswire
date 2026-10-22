@@ -69,7 +69,10 @@ fn second_open_is_locked() {
     let dir = tmp.path().join("p");
     let first = Project::create(&dir).unwrap();
     assert!(matches!(Project::open(&dir), Err(StoreError::Locked)));
-    assert!(matches!(Project::create(&dir), Err(StoreError::Locked)));
+    assert!(matches!(
+        Project::open_or_create(&dir),
+        Err(StoreError::Locked)
+    ));
     drop(first);
     drop(Project::open(&dir).unwrap());
 }
@@ -168,8 +171,77 @@ fn unclean_previous_run_triggers_integrity_check_and_corruption_is_reported() {
     std::fs::write(&db, bytes).unwrap();
     let _ = std::fs::remove_file(dir.join("project.db-wal"));
     let _ = std::fs::remove_file(dir.join("project.db-shm"));
+    assert!(matches!(Project::open(&dir), Err(StoreError::Corrupt(_))));
+}
+
+#[test]
+fn create_refuses_existing_project_before_locking() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("p");
+    let first = Project::create(&dir).unwrap();
+    // Held: AlreadyExists wins over Locked, because it is checked first.
     assert!(matches!(
-        Project::open(&dir),
-        Err(StoreError::Corrupt(_) | StoreError::Sqlite(_))
+        Project::create(&dir),
+        Err(StoreError::AlreadyExists)
     ));
+    drop(first);
+    assert!(matches!(
+        Project::create(&dir),
+        Err(StoreError::AlreadyExists)
+    ));
+}
+
+#[cfg(unix)]
+#[test]
+fn create_does_not_chmod_an_existing_directory() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("shared");
+    std::fs::create_dir(&dir).unwrap();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+    drop(Project::create(&dir).unwrap());
+    let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode(&dir), 0o755);
+    assert_eq!(mode(&dir.join("packs")), 0o700);
+    assert_eq!(mode(&dir.join("journal")), 0o700);
+}
+
+#[test]
+fn open_or_create_recreates_a_zero_byte_db() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("p");
+    std::fs::create_dir(&dir).unwrap();
+    std::fs::write(dir.join("project.db"), b"").unwrap();
+    let p = Project::open_or_create(&dir).unwrap();
+    let v: i64 = p
+        .reader()
+        .unwrap()
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(v, 1);
+}
+
+#[test]
+fn garbage_file_is_not_a_project() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("p");
+    std::fs::create_dir(&dir).unwrap();
+    std::fs::write(dir.join("project.db"), vec![0x41u8; 8192]).unwrap();
+    assert!(matches!(Project::open(&dir), Err(StoreError::NotAProject)));
+}
+
+#[test]
+fn packs_table_has_no_path_column() {
+    let tmp = tempfile::tempdir().unwrap();
+    let p = Project::create(&tmp.path().join("p")).unwrap();
+    let cols: Vec<String> = p
+        .reader()
+        .unwrap()
+        .prepare("SELECT name FROM pragma_table_info('packs')")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(cols, ["id", "committed_len"]);
 }

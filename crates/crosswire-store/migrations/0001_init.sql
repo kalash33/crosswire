@@ -36,7 +36,6 @@ CREATE TABLE blobs (
 
 CREATE TABLE packs (
     id            INTEGER PRIMARY KEY,
-    path          TEXT NOT NULL,
     committed_len INTEGER NOT NULL DEFAULT 0
 );
 
@@ -58,4 +57,4 @@ CREATE INDEX exchanges_req_host ON exchanges (req_host);
 CREATE INDEX exchanges_resp_status ON exchanges (resp_status);
 CREATE INDEX exchanges_namespace_created_at ON exchanges (namespace, created_at);
 
-INSERT INTO meta (key, value) VALUES ('last_committed_ulid', ''), ('clean_shutdown', '1');
+INSERT INTO meta (key, value) VALUES ('last_committed_ulid', '');

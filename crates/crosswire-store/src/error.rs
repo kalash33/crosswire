@@ -16,6 +16,9 @@ pub enum StoreError {
     /// The project was written by a newer format version than this build knows.
     #[error("project format version {0} is newer than this build supports")]
     NewerFormat(u32),
+    /// A project already exists in the directory.
+    #[error("a project already exists here")]
+    AlreadyExists,
     /// The directory is not a Crosswire project.
     #[error("not a crosswire project")]
     NotAProject,

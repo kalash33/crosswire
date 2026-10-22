@@ -4,13 +4,22 @@ use crate::error::StoreError;
 use crate::lock::ProjectLock;
 use crate::schema::{self, APPLICATION_ID, USER_VERSION};
 use rusqlite::config::DbConfig;
-use rusqlite::{Connection, OpenFlags};
-use std::fs::{self, OpenOptions};
+use rusqlite::{Connection, ErrorCode, OpenFlags};
+use std::fs::{self, DirBuilder, OpenOptions};
 use std::path::{Path, PathBuf};
 
 const DB_FILE: &str = "project.db";
 
+#[cfg(test)]
+thread_local! {
+    /// Counts `PRAGMA integrity_check` runs on this thread (tests only).
+    pub(crate) static INTEGRITY_CHECKS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
 /// An open project. Owns the one writer connection and the project lock.
+///
+/// `Project` is `Send` but not `Sync`: the store moves it into the writer
+/// thread, which is then the only user of the writer connection.
 #[derive(Debug)]
 pub struct Project {
     dir: PathBuf,
@@ -19,18 +28,32 @@ pub struct Project {
 }
 
 impl Project {
-    /// Creates a new project in `dir` (made with mode 0700 on unix).
+    /// Creates a new project in `dir` (made with mode 0700 on unix if absent).
     ///
-    /// Fails with [`StoreError::Locked`] if the project is held, and with an
-    /// I/O error if `project.db` already exists.
+    /// Fails with [`StoreError::AlreadyExists`] if `project.db` exists, before
+    /// taking the lock, and with [`StoreError::Locked`] if the directory is
+    /// held. An existing directory's permissions are never changed.
     pub fn create(dir: &Path) -> Result<Project, StoreError> {
+        if dir.join(DB_FILE).exists() {
+            return Err(StoreError::AlreadyExists);
+        }
         make_dir(dir)?;
         let lock = ProjectLock::acquire(&dir.join("project.lock"))?;
+        Project::create_locked(dir, lock)
+    }
+
+    fn create_locked(dir: &Path, lock: ProjectLock) -> Result<Project, StoreError> {
         let db_path = dir.join(DB_FILE);
         let mut create = OpenOptions::new();
         create.write(true).create_new(true);
         restrict(&mut create);
-        create.open(&db_path)?;
+        create.open(&db_path).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::AlreadyExists {
+                StoreError::AlreadyExists
+            } else {
+                StoreError::Io(e)
+            }
+        })?;
         make_dir(&dir.join("packs"))?;
         make_dir(&dir.join("journal"))?;
         let mut audit = OpenOptions::new();
@@ -55,17 +78,24 @@ impl Project {
     /// ([`StoreError::NewerFormat`]). Runs `PRAGMA integrity_check` only when
     /// the previous run did not shut down cleanly.
     pub fn open(dir: &Path) -> Result<Project, StoreError> {
-        let db_path = dir.join(DB_FILE);
-        if !db_path.is_file() {
+        if !dir.join(DB_FILE).is_file() {
             return Err(StoreError::NotAProject);
         }
         let lock = ProjectLock::acquire(&dir.join("project.lock"))?;
-        let db = open_writer(&db_path)?;
-        let app: i64 = db.query_row("PRAGMA application_id", [], |r| r.get(0))?;
+        Project::open_locked(dir, lock)
+    }
+
+    fn open_locked(dir: &Path, lock: ProjectLock) -> Result<Project, StoreError> {
+        let db = open_writer(&dir.join(DB_FILE)).map_err(classify)?;
+        let app: i64 = db
+            .query_row("PRAGMA application_id", [], |r| r.get(0))
+            .map_err(classify_sqlite)?;
         if app != APPLICATION_ID {
             return Err(StoreError::NotAProject);
         }
-        let version: u32 = db.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+        let version: u32 = db
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .map_err(classify_sqlite)?;
         if version == 0 {
             return Err(StoreError::NotAProject);
         }
@@ -73,12 +103,16 @@ impl Project {
             return Err(StoreError::NewerFormat(version));
         }
         if lock.previous_unclean() {
-            let result: String = db.query_row("PRAGMA integrity_check", [], |r| r.get(0))?;
+            #[cfg(test)]
+            INTEGRITY_CHECKS.with(|c| c.set(c.get() + 1));
+            let result: String = db
+                .query_row("PRAGMA integrity_check", [], |r| r.get(0))
+                .map_err(classify_sqlite)?;
             if result != "ok" {
                 return Err(StoreError::Corrupt(result));
             }
         }
-        configure_writer(&db)?;
+        configure_writer(&db).map_err(classify)?;
         Ok(Project {
             dir: dir.to_path_buf(),
             db,
@@ -86,12 +120,25 @@ impl Project {
         })
     }
 
-    /// Opens the project in `dir`, creating it if `project.db` does not exist.
+    /// Opens the project in `dir`, creating it if there is none.
+    ///
+    /// A 0-byte `project.db` (a crash between creating the file and writing
+    /// the schema) is deleted and recreated.
     pub fn open_or_create(dir: &Path) -> Result<Project, StoreError> {
-        if dir.join(DB_FILE).exists() {
-            Project::open(dir)
-        } else {
-            Project::create(dir)
+        make_dir(dir)?;
+        let lock = ProjectLock::acquire(&dir.join("project.lock"))?;
+        let db_path = dir.join(DB_FILE);
+        match fs::metadata(&db_path) {
+            Ok(m) if m.len() == 0 => {
+                fs::remove_file(&db_path)?;
+                for ext in ["-wal", "-shm"] {
+                    let _ = fs::remove_file(dir.join(format!("{DB_FILE}{ext}")));
+                }
+                Project::create_locked(dir, lock)
+            }
+            Ok(_) => Project::open_locked(dir, lock),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Project::create_locked(dir, lock),
+            Err(e) => Err(e.into()),
         }
     }
 
@@ -120,11 +167,33 @@ impl Project {
         self.lock.mark_clean()
     }
 
-    /// The writer connection, for the writer thread.
+    /// The writer connection; the writer thread uses it to run transactions.
     #[allow(dead_code)]
-    pub(crate) fn writer(&self) -> &Connection {
-        &self.db
+    pub(crate) fn writer_mut(&mut self) -> &mut Connection {
+        &mut self.db
     }
+
+    /// The path of pack `id`, derived from the id and never read from the database.
+    #[allow(dead_code)]
+    pub(crate) fn pack_path(&self, id: u32) -> PathBuf {
+        self.dir.join("packs").join(format!("{id:06}.pack"))
+    }
+}
+
+/// Maps `SQLITE_CORRUPT` and `SQLITE_NOTADB` to their store errors.
+fn classify_sqlite(e: rusqlite::Error) -> StoreError {
+    classify(StoreError::Sqlite(e))
+}
+
+fn classify(e: StoreError) -> StoreError {
+    if let StoreError::Sqlite(rusqlite::Error::SqliteFailure(f, _)) = &e {
+        match f.code {
+            ErrorCode::DatabaseCorrupt => return StoreError::Corrupt(e.to_string()),
+            ErrorCode::NotADatabase => return StoreError::NotAProject,
+            _ => {}
+        }
+    }
+    e
 }
 
 fn open_writer(path: &Path) -> Result<Connection, StoreError> {
@@ -156,13 +225,16 @@ fn configure_writer(conn: &Connection) -> Result<(), StoreError> {
     Ok(())
 }
 
+/// Creates `path` (and missing parents) with mode 0700; existing directories are left alone.
 fn make_dir(path: &Path) -> Result<(), StoreError> {
-    fs::create_dir_all(path)?;
+    let mut b = DirBuilder::new();
+    b.recursive(true);
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+        use std::os::unix::fs::DirBuilderExt;
+        b.mode(0o700);
     }
+    b.create(path)?;
     Ok(())
 }
 
@@ -174,4 +246,45 @@ fn restrict(opts: &mut OpenOptions) {
     }
     #[cfg(not(unix))]
     let _ = opts;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn count() -> u32 {
+        INTEGRITY_CHECKS.with(std::cell::Cell::get)
+    }
+
+    #[test]
+    fn clean_previous_run_skips_integrity_check_unclean_runs_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("p");
+        let p = Project::create(&dir).unwrap();
+        p.mark_clean().unwrap();
+        drop(p);
+        let before = count();
+        let p = Project::open(&dir).unwrap();
+        assert_eq!(count(), before, "clean previous run must skip the check");
+        drop(p); // leaves clean=0
+        drop(Project::open(&dir).unwrap());
+        assert_eq!(count(), before + 1, "unclean previous run must check");
+    }
+
+    #[test]
+    fn writer_mut_starts_transactions() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut p = Project::create(&tmp.path().join("p")).unwrap();
+        let tx = p.writer_mut().transaction().unwrap();
+        tx.execute("INSERT INTO meta(key, value) VALUES ('k', 'v')", [])
+            .unwrap();
+        tx.commit().unwrap();
+        assert_eq!(p.pack_path(7).file_name().unwrap(), "000007.pack");
+    }
+
+    #[test]
+    fn project_is_send() {
+        fn send<T: Send>() {}
+        send::<Project>();
+    }
 }
