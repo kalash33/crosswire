@@ -124,7 +124,7 @@ fn lose_blobs(
     let cut = i64::try_from(cut).unwrap_or(i64::MAX);
     let hashes: Vec<Vec<u8>> = {
         let mut st = tx.prepare(
-            "SELECT hash FROM blobs WHERE pack_id = ?1 AND offset >= ?2 OR offset + len > ?2",
+            "SELECT hash FROM blobs WHERE pack_id = ?1 AND (offset >= ?2 OR offset + len > ?2)",
         )?;
         let rows = st.query_map(rusqlite::params![id, cut], |r| r.get(0))?;
         rows.collect::<Result<_, _>>()?

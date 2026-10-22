@@ -566,3 +566,46 @@ fn symlinked_packs_dir_is_refused() {
     std::os::unix::fs::symlink(&moved, &real).unwrap();
     assert!(matches!(sweep(&mut p), Err(StoreError::Corrupt(_))));
 }
+
+#[test]
+fn missing_pack_does_not_touch_other_packs() {
+    let (_t, mut p) = setup();
+    let mut w = PackWriter::open(&mut p).unwrap();
+    w.set_rotate_limit(100 * 1024);
+    let mut store = BodyStore::new(w);
+    let bodies: Vec<Vec<u8>> = (0..4).map(|i| noise(60 * 1024, 200 + i)).collect();
+    let ids: Vec<Ulid> = bodies
+        .iter()
+        .map(|b| put_one(&mut p, &mut store, b))
+        .collect();
+    store.fsync().unwrap();
+    // Which pack holds each body.
+    let pack_of = |p: &mut Project, id: Ulid| -> i64 {
+        p.writer_mut()
+            .query_row(
+                "SELECT pack_id FROM blobs WHERE hash = \
+                 (SELECT blob_hash FROM bodies WHERE ulid = ?1)",
+                [id.to_string()],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    let packs: Vec<i64> = ids.iter().map(|i| pack_of(&mut p, *i)).collect();
+    assert!(
+        packs.contains(&1) && packs.iter().any(|&x| x >= 2),
+        "{packs:?}"
+    );
+    std::fs::remove_file(p.pack_path(1)).unwrap();
+    sweep(&mut p).unwrap();
+    for (i, id) in ids.iter().enumerate() {
+        let st = state_of(&mut p, *id);
+        let got = BodyStore::get(&p.reader().unwrap(), p.dir(), *id, BodySide::Resp);
+        if packs[i] == 1 {
+            assert_eq!(st, "error");
+            assert!(got.is_err());
+        } else {
+            assert_eq!(st, "complete", "body {i} in pack {}", packs[i]);
+            assert_eq!(got.unwrap().unwrap(), bodies[i]);
+        }
+    }
+}
