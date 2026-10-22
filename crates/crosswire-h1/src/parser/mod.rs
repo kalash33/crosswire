@@ -156,6 +156,12 @@ impl Parser {
     /// an error, every later call returns the same error until
     /// [`reset`](Parser::reset).
     ///
+    /// Re-present contract: body-phase tokens (a chunk-size line with its
+    /// extension, and the trailer block) are never buffered across calls. When
+    /// one is incomplete the step is `NeedMore` with `consumed` at the token
+    /// start, and the caller must present the unconsumed bytes again together
+    /// with new data. Chunk data is consumed incrementally.
+    ///
     /// # Errors
     ///
     /// Returns a [`ParseError`] when a configured limit is exceeded.

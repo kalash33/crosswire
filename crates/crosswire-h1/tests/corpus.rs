@@ -67,6 +67,9 @@ fn run(case: &Case) {
     let mut done = false;
     let mut err = None;
     for _ in 0..(input.len() + 100) {
+        // `rest` always starts at the first unconsumed byte, so unconsumed
+        // bytes are re-presented on every call (the `NeedMore` contract, see
+        // `Progress::NeedMore`); this is the same feeding rule as `split_prop`.
         let rest = &input[off..];
         let step = if rest.is_empty() && head.is_some() {
             p.feed_eof()

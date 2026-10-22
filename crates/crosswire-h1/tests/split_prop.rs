@@ -87,7 +87,10 @@ impl Run {
         let mut buf = std::mem::take(&mut self.carry);
         buf.extend_from_slice(piece);
         let mut off = 0;
-        // Zero-consumption steps (`Ext` peeks) need a bounded re-feed.
+        // Unconsumed bytes are re-presented (`buf[off..]`) with every call:
+        // incomplete size lines and trailer blocks are never buffered by the
+        // parser. Zero-consumption steps (`Ext` peeks) need a bounded re-feed.
+        let mut settled = false;
         for _ in 0..(buf.len() * 2 + 100) {
             let rest = &buf[off..];
             let step = match self.p.feed(rest) {
@@ -139,9 +142,11 @@ impl Run {
             }
             off += step.consumed;
             if finished {
+                settled = true;
                 break;
             }
         }
+        assert!(settled, "feed loop did not settle");
         if !self.stopped {
             self.carry = buf[off..].to_vec();
         }
@@ -225,24 +230,6 @@ fn diff(whole: &Trace, got: &Trace) -> Option<String> {
     }
     None
 }
-
-/// Cases whose golden (whole-feed) expectations are right but whose split
-/// behaviour is a real parser bug. They are listed here rather than marked
-/// `known_bug` in the corpus because that mark removes a case from the
-/// corpus harness and from `corpus-check.py`'s code coverage, and these are
-/// the only cases covering `chunk_extension_present` and `trailer_present`.
-///
-/// Bug: a chunk-size line (extension) or trailer block completed by a later
-/// `feed` call yields spans clamped to the start of that call's input, so
-/// resolving them against that call's input gives truncated or empty bytes
-/// (e.g. trailer `X-T` resolves to `-T`, or to empty for 1-byte feeds).
-const KNOWN_SPLIT_BUGS: &[&str] = &[
-    "chunk_extension_present-1",
-    "chunk_extension_present-2",
-    "chunked-ext-and-trailers-1",
-    "trailer_present-1",
-    "trailer_present-2",
-];
 
 /// Cases larger than this get a bounded sample of split points (see below).
 const BIG: usize = 64 * 1024;
@@ -335,13 +322,11 @@ fn split_invariance() {
 
     let mut failures = vec![];
     let mut ran = 0;
+    let mut skipped_known_bug = 0;
     for case in &cases {
         if let Some(bug) = &case.expect.known_bug {
             println!("known_bug {}: {bug}", case.name);
-            continue;
-        }
-        if KNOWN_SPLIT_BUGS.contains(&case.name.as_str()) {
-            println!("known split bug (skipped): {}", case.name);
+            skipped_known_bug += 1;
             continue;
         }
         let w = trace(case, &[&case.input]);
@@ -360,5 +345,7 @@ fn split_invariance() {
         failures.len(),
         failures.join("\n")
     );
+    assert_eq!(ran + skipped_known_bug, cases.len());
+    assert!(ran >= 90, "only {ran} cases ran");
     println!("split_prop: {ran} cases checked");
 }

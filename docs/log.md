@@ -11,3 +11,4 @@
 | 2026-10-22 | 8: write_exact and BodyEncoder | 0.8 | byte-exact write_exact (head + inline body), chunked BodyEncoder (lowercase hex, ext, deferred trailers, empty chunk skipped) |
 | 2026-10-22 | 9: golden corpus and harness | 0.9 | corpus/h1 with 95 cases covering all 25 codes plus framing shapes, corpus_golden harness, scripts/corpus-check.py, large body generated from .gen.json |
 | 2026-10-22 | 10: split-at-every-byte property test | 0.10 | tests/split_prop.rs: whole vs every 2-way split vs byte-wise vs proptest; found chunk Ext/Trailers span-clamp bug (5 cases, listed in KNOWN_SPLIT_BUGS) |
+| 2026-10-22 | 10b: remove chunk span clamp | 0.10b | BodyDecoder holds no partial token bytes; incomplete size line / trailer block returns NeedMore (consumed 0), caller re-presents; KNOWN_SPLIT_BUGS removed, split_prop passes all 95 cases |

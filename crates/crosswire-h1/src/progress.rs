@@ -10,7 +10,10 @@ use crate::message::{HeaderSpan, RawMessage};
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum Progress {
-    /// More input is needed.
+    /// More input is needed. The step's `consumed` counts the bytes that were
+    /// finalised before the incomplete token (for body tokens, usually 0).
+    /// The parser never buffers the incomplete rest: the caller must present
+    /// the unconsumed bytes again, followed by new data, on the next call.
     NeedMore,
     /// A complete message head.
     Head(RawMessage),

@@ -36,19 +36,14 @@ pub enum BodyEvent {
     Done,
 }
 
-#[derive(Debug, Clone, Copy)]
-struct Chunk {
-    size: u64,
-    /// Bytes of the current input that belong to the size line.
-    lead: usize,
-}
-
 #[derive(Debug)]
 enum St {
-    /// Expecting (or accumulating) a chunk-size line.
-    Size,
-    /// A size line was parsed and its extension announced.
-    Announced(Chunk),
+    /// Expecting a chunk-size line. `ext_reported` is set once the line's
+    /// extension was announced with a zero-consumption [`BodyEvent::Ext`], so
+    /// the re-presented line is not announced or diagnosed twice.
+    Size {
+        ext_reported: bool,
+    },
     /// Inside chunk data.
     Data {
         remaining: u64,
@@ -57,31 +52,23 @@ enum St {
     AfterData {
         seen_cr: bool,
     },
-    /// Inside the trailer section.
-    Trailers,
     Done,
 }
 
 /// A streaming decoder for a chunked message body, reused by [`Parser`](crate::Parser).
 ///
-/// Size lines and trailer blocks that arrive split across calls are buffered
-/// (bounded by the configured limits). Spans of events produced from such
-/// buffered bytes can only point into the current input for the part that
-/// arrived in this call: a size line completed across calls reports its raw
-/// span from the start of that call's input, and trailer spans for bytes
-/// received in earlier calls point at the start of the trailer bytes of this
-/// call. The `data` span is always exact for the bytes of this call.
+/// The decoder never buffers a partial token. The chunk-size line and the
+/// trailer block are all-or-nothing: when the input does not yet contain one
+/// up to and including its terminator, [`feed`](BodyDecoder::feed) returns
+/// `(0, BodyEvent::NeedMore)` and the caller must re-present the unconsumed
+/// bytes together with new data. Its only state between calls is the phase,
+/// the remaining byte count of the current chunk and whether an extension was
+/// already announced. Chunk data is consumed incrementally.
 #[derive(Debug)]
 pub struct BodyDecoder {
     limits: ParseLimits,
     profile: Profile,
     st: St,
-    /// A partial size line carried over from earlier calls.
-    line: Vec<u8>,
-    /// Trailer bytes accumulated so far.
-    tbuf: Vec<u8>,
-    /// Where the first incomplete trailer line starts in `tbuf`.
-    tline: usize,
     diags: Diagnostics,
 }
 
@@ -108,10 +95,9 @@ impl BodyDecoder {
         BodyDecoder {
             limits: *limits,
             profile,
-            st: St::Size,
-            line: Vec::new(),
-            tbuf: Vec::new(),
-            tline: 0,
+            st: St::Size {
+                ext_reported: false,
+            },
             diags: Diagnostics::new(profile),
         }
     }
@@ -129,15 +115,22 @@ impl BodyDecoder {
 
     /// Returns the decoder to its initial state, clearing diagnostics.
     pub(crate) fn reset(&mut self) {
-        self.st = St::Size;
-        self.line.clear();
-        self.tbuf.clear();
-        self.tline = 0;
+        self.st = St::Size {
+            ext_reported: false,
+        };
         self.diags = Diagnostics::new(self.profile);
     }
 
     /// Feeds input and returns how many bytes were consumed and what they
-    /// produced. `consumed` never exceeds `input.len()`.
+    /// produced. `consumed` never exceeds `input.len()` and every span points
+    /// into `input`.
+    ///
+    /// Size lines and trailer blocks are never buffered across calls. If
+    /// `input` does not contain one in full, the result is
+    /// `(0, BodyEvent::NeedMore)` and the caller must present the same bytes
+    /// again, followed by new data, on the next call. An incomplete line or
+    /// block that already exceeds its limit is an error instead. Chunk data is
+    /// consumed incrementally, so a call may end in the middle of data.
     ///
     /// # Errors
     ///
@@ -151,76 +144,72 @@ impl BodyDecoder {
             return Ok((0, BodyEvent::NeedMore));
         }
         match self.st {
-            St::Size => self.feed_size(input),
-            St::Announced(c) => self.proceed(input, c),
+            St::Size { ext_reported } => self.feed_size(input, ext_reported),
             St::Data { remaining } => Ok(self.run_data(input, 0, remaining)),
             St::AfterData { .. } => self.feed_after_data(input),
-            St::Trailers => self.run_trailers(input, 0),
             St::Done => Ok((0, BodyEvent::Done)),
         }
     }
 
-    fn feed_size(&mut self, input: &[u8]) -> Result<(usize, BodyEvent), ParseError> {
+    fn feed_size(
+        &mut self,
+        input: &[u8],
+        ext_reported: bool,
+    ) -> Result<(usize, BodyEvent), ParseError> {
         let max = limit(self.limits.max_chunk_size_line);
         let Some(nl) = input.iter().position(|&b| b == b'\n') else {
-            // +1 leaves room for the `\r` of a terminator split across calls.
-            if self.line.len().saturating_add(input.len()) > max.saturating_add(1) {
+            // A trailing `\r` may be the first half of the terminator.
+            let held = input.len() - usize::from(input.ends_with(b"\r"));
+            if held > max {
                 return Err(ParseError::LineTooLong);
             }
-            self.line.extend_from_slice(input);
-            return Ok((input.len(), BodyEvent::NeedMore));
+            return Ok((0, BodyEvent::NeedMore));
         };
-        let prefix = self.line.len();
-        let combined: Vec<u8>;
-        let mut content: &[u8] = if prefix == 0 {
-            &input[..nl]
-        } else {
-            let mut v = core::mem::take(&mut self.line);
-            v.extend_from_slice(&input[..nl]);
-            combined = v;
-            &combined
-        };
-        let bare = !content.ends_with(b"\r");
-        if !bare {
-            content = &content[..content.len() - 1];
-        }
+        let bare = nl == 0 || input[nl - 1] != b'\r';
+        let content = &input[..if bare { nl } else { nl - 1 }];
         if content.len() > max {
             return Err(ParseError::LineTooLong);
         }
-        let map = |o: usize| o.saturating_sub(prefix);
         let (token, ext_at) = match content.iter().position(|&b| b == b';') {
             Some(i) => (&content[..i], Some(i)),
             None => (content, None),
         };
-        let token_span = span(map(0), map(token.len()));
+        let token_span = span(0, token.len());
         let size = parse_hex(token).ok_or(ParseError::InvalidChunkSize { span: token_span })?;
-        if token.len() > 1 && token[0] == b'0' {
-            self.diags
-                .push(DiagnosticCode::ChunkSizeLeadingZeros, token_span);
+        // Diagnostics are only recorded once the token is committed, so a
+        // re-presented incomplete token never reports twice.
+        let announce = ext_at.filter(|_| !ext_reported);
+        let trailers = if size == 0 && announce.is_none() {
+            match scan_trailers(input, nl + 1, limit(self.limits.max_trailer_size))? {
+                Some(t) => Some(t),
+                None => return Ok((0, BodyEvent::NeedMore)),
+            }
+        } else {
+            None
+        };
+        if !ext_reported {
+            if token.len() > 1 && token[0] == b'0' {
+                self.diags
+                    .push(DiagnosticCode::ChunkSizeLeadingZeros, token_span);
+            }
+            if bare {
+                self.diags
+                    .push(DiagnosticCode::BareLf, span(nl, nl.saturating_add(1)));
+            }
         }
-        if bare {
-            self.diags
-                .push(DiagnosticCode::BareLf, span(nl, nl.saturating_add(1)));
-        }
-        let chunk = Chunk { size, lead: nl + 1 };
-        self.line.clear();
-        if let Some(i) = ext_at {
-            let ext = span(map(i + 1), map(content.len()));
+        if let Some(i) = announce {
+            let ext = span(i + 1, content.len());
             self.diags.push(DiagnosticCode::ChunkExtensionPresent, ext);
-            self.st = St::Announced(chunk);
+            self.st = St::Size { ext_reported: true };
             return Ok((0, BodyEvent::Ext(ext)));
         }
-        self.proceed(input, chunk)
-    }
-
-    /// Continues after a size line: the data, or the trailers for size 0.
-    fn proceed(&mut self, input: &[u8], c: Chunk) -> Result<(usize, BodyEvent), ParseError> {
-        let lead = c.lead.min(input.len());
-        if c.size == 0 {
-            self.st = St::Trailers;
-            return self.run_trailers(input, lead);
+        self.st = St::Size {
+            ext_reported: false,
+        };
+        if let Some(t) = trailers {
+            return Ok(self.finish_trailers(t));
         }
-        Ok(self.run_data(input, lead, c.size))
+        Ok(self.run_data(input, nl + 1, size))
     }
 
     fn run_data(&mut self, input: &[u8], lead: usize, remaining: u64) -> (usize, BodyEvent) {
@@ -247,7 +236,9 @@ impl BodyDecoder {
 
     /// Consumes the line break after chunk data starting at `from`. Returns
     /// where it stopped and whether it stopped at a byte that is not part of a
-    /// line break.
+    /// line break. A `\r` at the very end of the input is consumed and
+    /// remembered; the `\n` completing it is consumed by a later call, which
+    /// reports an empty `Data` piece for it.
     fn eat_line_break(&mut self, input: &[u8], from: usize) -> (usize, bool) {
         let mut pos = from;
         while let (St::AfterData { seen_cr }, Some(&b)) = (&self.st, input.get(pos)) {
@@ -256,9 +247,15 @@ impl BodyDecoder {
                 (false, b'\r') => self.st = St::AfterData { seen_cr: true },
                 (false, b'\n') => {
                     self.diags.push(DiagnosticCode::BareLf, span(pos, pos + 1));
-                    self.st = St::Size;
+                    self.st = St::Size {
+                        ext_reported: false,
+                    };
                 }
-                (true, b'\n') => self.st = St::Size,
+                (true, b'\n') => {
+                    self.st = St::Size {
+                        ext_reported: false,
+                    }
+                }
                 _ => return (pos, true),
             }
             pos += 1;
@@ -282,74 +279,63 @@ impl BodyDecoder {
         ))
     }
 
-    fn run_trailers(
-        &mut self,
-        input: &[u8],
-        lead: usize,
-    ) -> Result<(usize, BodyEvent), ParseError> {
-        // The final blank line is not counted against the limit.
-        let max = limit(self.limits.max_trailer_size).saturating_add(2);
-        let prev = self.tbuf.len();
-        let start = lead.min(input.len());
-        let mut pos = start;
-        loop {
-            let rest = &input[pos..];
-            let Some(i) = rest.iter().position(|&b| b == b'\n') else {
-                if self.tbuf.len().saturating_add(rest.len()) > max {
-                    return Err(ParseError::TrailerTooLarge);
-                }
-                self.tbuf.extend_from_slice(rest);
-                return Ok((input.len(), BodyEvent::NeedMore));
-            };
-            let piece = &rest[..=i];
-            if self.tbuf.len().saturating_add(piece.len()) > max {
-                return Err(ParseError::TrailerTooLarge);
-            }
-            self.tbuf.extend_from_slice(piece);
-            pos += i + 1;
-            let blank = find_line_end(&self.tbuf, self.tline).is_some_and(|l| l.len() == 0);
-            if blank {
-                break;
-            }
-            self.tline = self.tbuf.len();
-        }
-        let map = |o: usize| {
-            if o >= prev {
-                start + (o - prev)
-            } else {
-                start
-            }
-        };
-        let tmap = |s: Span| span(map(s.start() as usize), map(s.end() as usize));
-        let mut headers = Vec::new();
-        let mut at = 0;
-        while let Some(line) = find_line_end(&self.tbuf, at) {
-            if line.len() == 0 {
-                break;
-            }
-            if line.next - line.content_end == 1 {
-                self.diags.push(
-                    DiagnosticCode::BareLf,
-                    span(map(line.content_end), map(line.next)),
-                );
-            }
-            headers.push(map_header(split_header(&self.tbuf, line), tmap));
-            at = line.next;
-        }
-        self.tbuf.clear();
-        self.tline = 0;
+    /// Completes the message with a scanned trailer block.
+    fn finish_trailers(&mut self, t: Trailers) -> (usize, BodyEvent) {
         self.st = St::Done;
-        if headers.is_empty() {
-            return Ok((pos, BodyEvent::Done));
+        for s in t.bare_lf {
+            self.diags.push(DiagnosticCode::BareLf, s);
         }
-        let first = headers[0].line();
+        if t.headers.is_empty() {
+            return (t.end, BodyEvent::Done);
+        }
+        let first = t.headers[0].line();
         self.diags.push(DiagnosticCode::TrailerPresent, first);
-        Ok((pos, BodyEvent::Trailers(headers)))
+        (t.end, BodyEvent::Trailers(t.headers))
     }
 }
 
-fn map_header(h: HeaderSpan, f: impl Fn(Span) -> Span) -> HeaderSpan {
-    HeaderSpan::new(f(h.name()), f(h.value()), f(h.line()))
+/// A fully present trailer block.
+struct Trailers {
+    /// Offset just past the final empty line.
+    end: usize,
+    headers: Vec<HeaderSpan>,
+    bare_lf: Vec<Span>,
+}
+
+/// Scans the trailer block starting at `lead`, all or nothing: `None` until
+/// the final empty line is present. Records nothing, so it can be repeated on
+/// re-presented input.
+fn scan_trailers(input: &[u8], lead: usize, max: usize) -> Result<Option<Trailers>, ParseError> {
+    // The final empty line is not counted against the limit.
+    let mut pos = lead;
+    let mut headers = Vec::new();
+    let mut bare_lf = Vec::new();
+    loop {
+        let Some(line) = find_line_end(input, pos) else {
+            // A lone `\r` may be the first half of the final empty line.
+            let tail = &input[pos..];
+            let tail = if tail == b"\r" { 0 } else { tail.len() };
+            if (pos - lead).saturating_add(tail) > max {
+                return Err(ParseError::TrailerTooLarge);
+            }
+            return Ok(None);
+        };
+        if line.len() == 0 {
+            return Ok(Some(Trailers {
+                end: line.next,
+                headers,
+                bare_lf,
+            }));
+        }
+        if line.next - lead > max {
+            return Err(ParseError::TrailerTooLarge);
+        }
+        if line.next - line.content_end == 1 {
+            bare_lf.push(span(line.content_end, line.next));
+        }
+        headers.push(split_header(input, line));
+        pos = line.next;
+    }
 }
 
 /// Parses a non-empty run of hex digits that fits in a `u64`.

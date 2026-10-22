@@ -216,8 +216,15 @@ fn chunk_size_line_too_long() {
     ));
     let mut p = Parser::request(&cfg);
     p.feed(CHUNKED_HEAD).unwrap();
-    p.feed(b"5;aaaa").unwrap();
-    assert!(matches!(p.feed(b"aaaaaaaa"), Err(ParseError::LineTooLong)));
+    // An incomplete line is not buffered; the caller re-presents it, and it
+    // errors as soon as the bytes present exceed the limit.
+    let s = p.feed(b"5;aaaa").unwrap();
+    assert_eq!(s.consumed, 0);
+    assert!(matches!(s.event, Progress::NeedMore));
+    assert!(matches!(
+        p.feed(b"5;aaaaaaaaaa"),
+        Err(ParseError::LineTooLong)
+    ));
 }
 
 #[test]
@@ -233,9 +240,11 @@ fn trailer_too_large() {
     ));
     let mut p = Parser::request(&cfg);
     p.feed(CHUNKED_HEAD).unwrap();
-    p.feed(b"0\r\nX-A: aaaa").unwrap();
+    let s = p.feed(b"0\r\nX-A: aaaa").unwrap();
+    assert_eq!(s.consumed, 0);
+    assert!(matches!(s.event, Progress::NeedMore));
     assert!(matches!(
-        p.feed(b"aaaaaaaaaaaaaaaaaaa"),
+        p.feed(b"0\r\nX-A: aaaaaaaaaaaaaaaaaaaaaaa"),
         Err(ParseError::TrailerTooLarge)
     ));
 }
@@ -251,9 +260,11 @@ fn chunked_split_at_every_byte_yields_same_payload() {
 #[test]
 fn chunked_split_trailers_and_eof_midchunk() {
     let mut p = chunked();
-    p.feed(b"0\r\nX-").unwrap();
-    let s = p.feed(b"T: 1\r\n\r\nGET").unwrap();
-    assert_eq!(s.consumed, 8);
+    let s = p.feed(b"0\r\nX-").unwrap();
+    assert_eq!(s.consumed, 0);
+    // The caller re-presents the unconsumed bytes with the new data.
+    let s = p.feed(b"0\r\nX-T: 1\r\n\r\nGET").unwrap();
+    assert_eq!(s.consumed, 13);
     let Progress::Trailers(t) = s.event else {
         panic!()
     };
@@ -395,4 +406,67 @@ mod fuzz {
             let _ = p.feed_eof();
         }
     }
+}
+
+#[test]
+fn size_line_split_requires_represent() {
+    let mut p = chunked();
+    let s = p.feed(b"5").unwrap();
+    assert_eq!(s.consumed, 0);
+    assert!(matches!(s.event, Progress::NeedMore));
+    // The caller re-presents the unconsumed bytes together with new data.
+    let input = b"5\r\nhello\r\n";
+    let s = p.feed(input).unwrap();
+    assert_eq!(s.consumed, input.len());
+    let Progress::BodyData { raw, data } = s.event else {
+        panic!()
+    };
+    assert_eq!(raw, Span::new(0, 10));
+    assert_eq!(&input[data.range()], b"hello");
+}
+
+#[test]
+fn ext_split_across_calls_round_trips() {
+    let mut p = chunked();
+    let s = p.feed(b"5;x=").unwrap();
+    assert_eq!(s.consumed, 0);
+    assert!(matches!(s.event, Progress::NeedMore));
+    let input = b"5;x=y\r\nhello\r\n";
+    let s = p.feed(input).unwrap();
+    assert_eq!(s.consumed, 0);
+    let Progress::ChunkExt(e) = s.event else {
+        panic!()
+    };
+    assert_eq!(&input[e.range()], b"x=y");
+    let s = p.feed(input).unwrap();
+    assert_eq!(s.consumed, input.len());
+    assert!(matches!(s.event, Progress::BodyData { .. }));
+    assert_eq!(has(&p, DiagnosticCode::ChunkExtensionPresent), 1);
+}
+
+#[test]
+fn trailers_split_across_calls_round_trip() {
+    let mut p = chunked();
+    let s = p.feed(b"0\r\nX-T").unwrap();
+    assert_eq!(s.consumed, 0);
+    assert!(matches!(s.event, Progress::NeedMore));
+    let input = b"0\r\nX-T: 1\r\n\r\n";
+    let s = p.feed(input).unwrap();
+    assert_eq!(s.consumed, input.len());
+    let Progress::Trailers(t) = s.event else {
+        panic!()
+    };
+    assert_eq!(t.len(), 1);
+    assert_eq!(&input[t[0].name().range()], b"X-T");
+    assert_eq!(&input[t[0].value().range()], b"1");
+}
+
+#[test]
+fn incomplete_size_line_over_limit_errors() {
+    let cfg = ParserConfig::builder()
+        .limits(ParseLimits::builder().max_chunk_size_line(4).build())
+        .build();
+    let mut p = Parser::request(&cfg);
+    p.feed(CHUNKED_HEAD).unwrap();
+    assert!(matches!(p.feed(b"12345"), Err(ParseError::LineTooLong)));
 }
