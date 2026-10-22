@@ -1,7 +1,7 @@
 # crosswire-core
 
 Small data types shared by the Crosswire crates. Part of
-[Crosswire](https://github.com/crosswire-rs/crosswire/blob/main/README.md).
+[Crosswire](https://github.com/kalash33/crosswire/blob/main/README.md).
 
 It holds:
 
@@ -9,7 +9,7 @@ It holds:
 - `Diagnostic`, `DiagnosticCode`, `Severity`: a finding about input, located by a
   span. `DiagnosticCode` has 26 stable snake_case names (`as_str()`) and a
   default severity per `Profile`; the catalogue is in
-  [docs/h1-diagnostics.md](https://github.com/crosswire-rs/crosswire/blob/main/docs/h1-diagnostics.md).
+  [docs/h1-diagnostics.md](https://github.com/kalash33/crosswire/blob/main/docs/h1-diagnostics.md).
 - `Profile`: `Strict` or `Lenient` (the default).
 - `Change`, `ChangeOp`, `ChangeReason`: a record of one edit to a message.
 - `EncodingHint`, `FieldHint`: per-field encoding hints.

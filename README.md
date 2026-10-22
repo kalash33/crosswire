@@ -1,7 +1,22 @@
 # Crosswire
 
 An open-source web security testing platform in Rust, for authorised testing.
-It is a pure community open-source project.
+It is a pure community open-source project: no company, no paid tier, nothing gated.
+
+**Status: pre-alpha.** The foundation library is built and tested; the proxy, API and UI are not started yet. Nothing here is usable for testing a web application today.
+
+## Why
+
+Professional web testers mostly use Burp Suite or Caido. Both are closed source. Crosswire aims to be the open alternative, built on one promise: **what you type is what is sent, byte for byte**, and what came back is shown exactly as received — including malformed, ambiguous and deliberately odd HTTP that compliant libraries refuse to produce. Projects never corrupt, memory stays bounded at a million requests, and team mode (later) is free and self-hosted.
+
+The design is written up in full in [the spec](docs/superpowers/specs/2026-10-22-crosswire-design.md), including the honest competitive picture, the threat model for the tool itself, and a dated roadmap.
+
+## Roadmap (short form)
+
+- **alpha.1 — headless recorder** (in progress): the HTTP/1 library (done), local CA, TLS client, crash-safe project store, then a MITM proxy that records a browser session to a project directory.
+- **alpha.2 — the sidecar**: history view, repeater (assisted and raw modes), request intercept, scope, browser launcher, REST API, web UI.
+- **beta → v0.1.0**: match-and-replace, decoder, tags/notes, docs site, release pipeline.
+- Later: intruder, HTTP/2, plugins, team mode, HTTP/3. Dates are in the spec §14.
 
 ## What exists today
 
@@ -39,8 +54,12 @@ Commands are in the `justfile`:
   running it; run `cargo bench -p crosswire-h1` to measure.
 - `just lint`: clippy with `-D warnings` and `cargo fmt --check`.
 
-The design spec and implementation plan are under `docs/superpowers/`
-(`specs/2026-10-22-crosswire-design.md`).
+The design spec and implementation plans are under `docs/superpowers/`
+(`specs/2026-10-22-crosswire-design.md`, `plans/`). Architecture decisions are in `docs/adr/`.
+
+## Contributing and security
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) (what is open now, DCO sign-off, the AI-assisted-PR rule) and [SECURITY.md](SECURITY.md) (private reporting, 72-hour acknowledgement). The project follows the Contributor Covenant ([CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)).
 
 ## Licence
 

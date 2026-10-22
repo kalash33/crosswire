@@ -1,7 +1,7 @@
 # crosswire-h1
 
 Sans-IO, byte-exact HTTP/1 for security testing tools. Part of
-[Crosswire](https://github.com/crosswire-rs/crosswire/blob/main/README.md), an open-source Rust web security testing platform.
+[Crosswire](https://github.com/kalash33/crosswire/blob/main/README.md), an open-source Rust web security testing platform.
 
 ## Charter
 
@@ -56,7 +56,7 @@ Non-goal: a general-purpose HTTP client.
    line break after chunk data (both `InvalidChunkSize`). `Profile::Strict`
    does not make more input fatal; it raises the severity of diagnostics.
 
-See [ADR-0001](https://github.com/crosswire-rs/crosswire/blob/main/docs/adr/0001-h1-sans-io-contract.md) for the reasoning
+See [ADR-0001](https://github.com/kalash33/crosswire/blob/main/docs/adr/0001-h1-sans-io-contract.md) for the reasoning
 behind rule 2.
 
 ## Example
@@ -119,7 +119,7 @@ assert_eq!(body, b"hello");
 
 ## Diagnostics and corpus
 
-- [Diagnostic catalogue](https://github.com/crosswire-rs/crosswire/blob/main/docs/h1-diagnostics.md): all 26 codes, with
+- [Diagnostic catalogue](https://github.com/kalash33/crosswire/blob/main/docs/h1-diagnostics.md): all 26 codes, with
   severities under each profile.
-- [Fidelity corpus](https://github.com/crosswire-rs/crosswire/blob/main/corpus/h1/README.md): odd-but-real HTTP/1 messages,
+- [Fidelity corpus](https://github.com/kalash33/crosswire/blob/main/corpus/h1/README.md): odd-but-real HTTP/1 messages,
   each parsed, diagnosed and written back byte-identical.
