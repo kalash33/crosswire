@@ -3,8 +3,9 @@
 //! Usage: `killtest-child <project dir> <count>`. Opens (or creates) the
 //! project, submits `count` exchanges with 20 KiB request and response
 //! bodies whose bytes are derived from the exchange index (stored in the
-//! exchange notes), prints every `Committed` event as
-//! `committed <ulid> <ulid> ...` on stdout, and never closes the store.
+//! exchange notes), prints `accepted <ulid>` for every submit that returned
+//! `Ok` and every `Committed` event as `committed <ulid> <ulid> ...` on
+//! stdout, and never closes the store.
 
 use bytes::Bytes;
 use crosswire_model::{
@@ -13,6 +14,7 @@ use crosswire_model::{
 use crosswire_store::{Project, Store, StoreConfig};
 use std::io::Write;
 use std::path::PathBuf;
+use ulid::Ulid;
 
 const BODY_LEN: usize = 20 * 1024;
 
@@ -64,11 +66,21 @@ fn main() {
     let sink = store.sink();
     std::thread::spawn(move || {
         for i in 0..count {
-            let mut ex = Exchange::new(message(pattern(i, 0, BODY_LEN)));
-            ex.set_response(message(pattern(i, 1, BODY_LEN)));
+            let (req, resp) = (
+                message(pattern(i, 0, BODY_LEN)),
+                message(pattern(i, 1, BODY_LEN)),
+            );
+            // The id is minted just before the submit, as a proxy would.
+            let mut ex = Exchange::with_id(Ulid::new(), req);
+            ex.set_response(resp);
             ex.set_notes(i.to_string());
-            if let Err(e) = sink.submit(ex) {
-                eprintln!("submit {i}: {e}");
+            let id = ex.id();
+            match sink.submit(ex) {
+                Ok(()) => {
+                    let mut out = std::io::stdout().lock();
+                    let _ = writeln!(out, "accepted {id}").and_then(|()| out.flush());
+                }
+                Err(e) => eprintln!("submit {i}: {e}"),
             }
         }
     });

@@ -89,7 +89,14 @@ fn journal_files(dir: &Path) -> usize {
         .count()
 }
 
-fn gap_markers(dir: &Path) -> Vec<(Option<String>, String)> {
+/// A gap marker row: `from_ulid`, `to_ulid`, `detail`.
+struct Gap {
+    from: Option<Ulid>,
+    to: Ulid,
+    detail: String,
+}
+
+fn gap_markers(dir: &Path) -> Vec<Gap> {
     // Read without taking the project lock, which would rewrite its status.
     let conn = rusqlite::Connection::open_with_flags(
         dir.join("project.db"),
@@ -97,12 +104,25 @@ fn gap_markers(dir: &Path) -> Vec<(Option<String>, String)> {
     )
     .unwrap();
     let mut st = conn
-        .prepare("SELECT from_ulid, detail FROM markers WHERE kind = 'gap' ORDER BY ulid")
+        .prepare("SELECT from_ulid, to_ulid, detail FROM markers WHERE kind = 'gap' ORDER BY ulid")
         .unwrap();
     let rows = st
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, Option<String>>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })
         .unwrap()
-        .map(Result::unwrap)
+        .map(|r| {
+            let (from, to, detail) = r.unwrap();
+            Gap {
+                from: from.map(|f| Ulid::from_string(&f).unwrap()),
+                to: Ulid::from_string(&to).unwrap(),
+                detail,
+            }
+        })
         .collect();
     rows
 }
@@ -403,8 +423,15 @@ fn unclean_shutdown_writes_gap_marker_on_reopen() {
     store.close().unwrap();
     let gaps = gap_markers(&dir);
     assert_eq!(gaps.len(), 1);
-    assert_eq!(gaps[0].0.as_deref(), Some(id.to_string().as_str()));
-    assert_eq!(gaps[0].1, "unclean shutdown");
+    // The window runs from the last commit (with slack) to the restart, and
+    // brackets everything submitted after that commit.
+    let from = gaps[0].from.expect("a watermark was recorded");
+    assert!(
+        from <= id,
+        "the window starts at or before the committed exchange"
+    );
+    assert!(gaps[0].to > id && gaps[0].to > from);
+    assert_eq!(gaps[0].detail, "unclean shutdown");
 
     // A clean close leaves clean=1 and the next open adds no marker.
     let lock = std::fs::read_to_string(dir.join("project.lock")).unwrap();
@@ -524,15 +551,19 @@ fn journal_cap_drops_with_error_and_gap_marker() {
     let mut ev = store.subscribe();
     let sink = store.sink();
     let guard = pause.lock().unwrap();
-    let first = exchange(b"1", b"1");
-    let first_id = first.id();
-    sink.submit(first).unwrap();
-    assert_eq!(sink.submit(exchange(b"2", b"2")), Err(SinkError::Full));
-    assert_eq!(sink.submit(exchange(b"3", b"3")), Err(SinkError::Full));
+    sink.submit(exchange(b"1", b"1")).unwrap();
+    let (two, three) = (exchange(b"2", b"2"), exchange(b"3", b"3"));
+    let dropped = [two.id(), three.id()];
+    assert_eq!(sink.submit(two), Err(SinkError::Full));
+    assert_eq!(sink.submit(three), Err(SinkError::Full));
     let mut errors = 0;
     while let Some(e) = ev.try_recv() {
-        if matches!(e, Event::Error { .. }) {
-            errors += 1;
+        match e {
+            Event::Error { .. } => errors += 1,
+            Event::Received { id, .. } => {
+                assert!(!dropped.contains(&id), "no Received for a dropped exchange");
+            }
+            _ => {}
         }
     }
     assert_eq!(errors, 1, "one Error event per episode");
@@ -552,9 +583,13 @@ fn journal_cap_drops_with_error_and_gap_marker() {
     store.close().unwrap();
     let gaps = gap_markers(&dir);
     assert_eq!(gaps.len(), 1);
-    // The marker starts at the last id committed before the drop was recorded.
-    if let Some(from) = &gaps[0].0 {
-        assert!(from.as_str() <= first_id.to_string().as_str());
+    // The window brackets both dropped exchanges.
+    let from = gaps[0].from.expect("a drop window has a start");
+    for id in dropped {
+        assert!(
+            from <= id && id <= gaps[0].to,
+            "{id} outside the gap window"
+        );
     }
 }
 
@@ -670,4 +705,128 @@ fn store_and_stream_are_shareable() {
     fn send<T: Send>() {}
     send_sync::<Store>();
     send::<EventStream>();
+}
+
+/// Writes a journal file the way the sink does (complete before visible).
+fn plant_journal(dir: &Path, ex: &Exchange) -> u64 {
+    let data = serde_json::to_vec(ex).unwrap();
+    let tmp = dir.join("journal").join(format!("{}.json.tmp", ex.id()));
+    std::fs::write(&tmp, &data).unwrap();
+    std::fs::rename(&tmp, dir.join("journal").join(format!("{}.json", ex.id()))).unwrap();
+    data.len() as u64
+}
+
+#[test]
+fn drop_commits_memory_but_leaves_the_journal() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (dir, store) = new_store(
+        &tmp,
+        StoreConfig {
+            batch_interval: Duration::from_secs(10),
+            ..StoreConfig::default()
+        },
+    );
+    let queued = exchange(b"queued", b"q");
+    let planted: Vec<Exchange> = (0..3u64)
+        .map(|i| exchange(&noise(10, i), &noise(10, i + 9)))
+        .collect();
+    store.sink().submit(queued.clone()).unwrap();
+    for ex in &planted {
+        plant_journal(&dir, ex);
+    }
+    let start = Instant::now();
+    drop(store);
+    assert!(
+        start.elapsed() < Duration::from_secs(2),
+        "drop does not wait on the journal"
+    );
+    assert_eq!(
+        journal_files(&dir),
+        3,
+        "the journal is left for the next open"
+    );
+
+    let store = Store::open(Project::open(&dir).unwrap(), cfg()).unwrap();
+    assert_eq!(store.open_report().journal_files_drained, 3);
+    assert!(store.open_report().unclean_gap.is_some());
+    let conn = store.reader().unwrap();
+    for ex in planted.iter().chain([&queued]) {
+        let n: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM exchanges WHERE ulid = ?1",
+                [ex.id().to_string()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1, "{} stored", ex.id());
+    }
+    drop(conn);
+    store.close().unwrap();
+}
+
+#[test]
+fn journal_drain_respects_the_byte_budget() {
+    let tmp = tempfile::tempdir().unwrap();
+    let pause = Arc::new(Mutex::new(()));
+    let (dir, store) = new_store(
+        &tmp,
+        StoreConfig {
+            queue_bytes_max: 100 * 1024,
+            test_pause: Some(Arc::clone(&pause)),
+            ..cfg()
+        },
+    );
+    let mut ev = store.subscribe();
+    // All three files are in place before the writer looks.
+    let guard = pause.lock().unwrap();
+    let exs: Vec<Exchange> = (0..3u64)
+        .map(|i| exchange(&noise(40 * 1024, i), b"r"))
+        .collect();
+    for ex in &exs {
+        // Each file is over half the budget, so each batch holds one.
+        assert!(plant_journal(&dir, ex) > 50 * 1024);
+    }
+    drop(guard);
+    let want: Vec<Ulid> = exs.iter().map(Exchange::id).collect();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut got = BTreeSet::new();
+    while Instant::now() < deadline && got.len() < want.len() {
+        match ev.try_recv() {
+            Some(Event::Committed { ids, .. }) => {
+                assert_eq!(ids.len(), 1, "one large journal file per batch");
+                got.extend(ids);
+            }
+            Some(_) => {}
+            None => std::thread::sleep(Duration::from_millis(2)),
+        }
+    }
+    assert_eq!(got, want.iter().copied().collect());
+    store.close().unwrap();
+}
+
+#[test]
+fn open_report_lists_what_open_did() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("p");
+    let p = Project::create(&dir).unwrap();
+    let good = exchange(b"good", b"good");
+    plant_journal(&dir, &good);
+    let bad = format!("{}.json", Ulid::new());
+    std::fs::write(dir.join("journal").join(&bad), b"{ broken").unwrap();
+    let store = Store::open(p, cfg()).unwrap();
+    let report = store.open_report();
+    assert_eq!(report.journal_files_drained, 2);
+    assert!(
+        report.unclean_gap.is_none(),
+        "a new project was not unclean"
+    );
+    assert!(report
+        .events
+        .iter()
+        .any(|e| matches!(e, Event::Error { detail, .. } if detail.contains(&bad))));
+    assert!(report
+        .events
+        .iter()
+        .any(|e| matches!(e, Event::Committed { ids, .. } if ids.contains(&good.id()))));
+    store.close().unwrap();
 }

@@ -64,36 +64,41 @@ impl Journal {
         })
     }
 
-    /// Writes `ex` durably. `before_publish` runs after the data is fsynced
-    /// and before the file becomes visible to the writer under its final name.
-    pub(crate) fn spill(
+    /// Writes `ex` to a fsynced temporary file, counting it against the cap
+    /// when `enforce_cap`. [`Prepared::publish`] makes it visible.
+    pub(crate) fn prepare(
         &self,
         ex: &Exchange,
-        before_publish: impl FnOnce(),
-    ) -> Result<(), SpillError> {
+        enforce_cap: bool,
+    ) -> Result<Prepared<'_>, SpillError> {
         let data = serde_json::to_vec(ex).map_err(|e| SpillError::Io(e.into()))?;
         let len = data.len() as u64;
+        let cap = if enforce_cap { self.cap } else { u64::MAX };
         if self
             .bytes
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |b| {
-                b.checked_add(len).filter(|n| *n <= self.cap)
+                b.checked_add(len).filter(|n| *n <= cap)
             })
             .is_err()
         {
             return Err(SpillError::CapExceeded);
         }
         let name = format!("{}.json", ex.id());
-        let tmp = self.dir.join(format!("{name}.tmp"));
-        let written = write_synced(&tmp, &data)
-            .map(|()| before_publish())
-            .and_then(|()| fs::rename(&tmp, self.dir.join(&name)))
-            .and_then(|()| File::open(&self.dir)?.sync_all());
-        if let Err(e) = written {
-            let _ = fs::remove_file(&tmp);
-            self.release(len);
-            return Err(SpillError::Io(e.into()));
-        }
-        Ok(())
+        let prepared = Prepared {
+            journal: self,
+            tmp: self.dir.join(format!("{name}.tmp")),
+            name,
+            len,
+            published: false,
+        };
+        write_synced(&prepared.tmp, &data).map_err(|e| SpillError::Io(e.into()))?;
+        Ok(prepared)
+    }
+
+    /// Writes an exchange the writer could not commit back to the journal
+    /// (not counted against the cap: it was accepted already).
+    pub(crate) fn write_back(&self, ex: &Exchange) -> Result<(), SpillError> {
+        self.prepare(ex, false)?.publish()
     }
 
     /// Up to `max` journal files, oldest ULID first.
@@ -179,6 +184,39 @@ impl Journal {
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |b| {
                 Some(b.saturating_sub(len))
             });
+    }
+}
+
+/// A spill written and fsynced under a temporary name. Dropped without
+/// [`Prepared::publish`], the file is deleted and its bytes uncounted.
+#[derive(Debug)]
+pub(crate) struct Prepared<'a> {
+    journal: &'a Journal,
+    tmp: PathBuf,
+    name: String,
+    len: u64,
+    published: bool,
+}
+
+impl Prepared<'_> {
+    /// Renames the file to `<ulid>.json` and fsyncs the directory.
+    pub(crate) fn publish(mut self) -> Result<(), SpillError> {
+        let dir = &self.journal.dir;
+        fs::rename(&self.tmp, dir.join(&self.name)).map_err(|e| SpillError::Io(e.into()))?;
+        // From here the file is visible and will be committed; keep it.
+        self.published = true;
+        File::open(dir)
+            .and_then(|d| d.sync_all())
+            .map_err(|e| SpillError::Io(e.into()))
+    }
+}
+
+impl Drop for Prepared<'_> {
+    fn drop(&mut self) {
+        if !self.published {
+            let _ = fs::remove_file(&self.tmp);
+            self.journal.release(self.len);
+        }
     }
 }
 

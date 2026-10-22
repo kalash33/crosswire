@@ -28,10 +28,16 @@ impl fmt::Display for SinkError {
 #[cfg(feature = "std")]
 impl std::error::Error for SinkError {}
 
-/// Accepts finished exchanges. `submit` must not block the relay: a full
-/// queue returns [`SinkError::Full`] and the caller records a drop.
+/// Accepts finished exchanges. `submit` never waits for the consumer: when
+/// nothing more can be accepted it returns [`SinkError::Full`] and the
+/// caller records a drop. It may still block briefly on file I/O, so the
+/// relay calls it off its async tasks (for example via `spawn_blocking`).
 pub trait ExchangeSink: Send + Sync {
     /// Queues an exchange for recording.
+    ///
+    /// May block on file I/O (a store spills to a fsynced file when its
+    /// queue is full), so call it from a thread that may block, for example
+    /// inside `spawn_blocking` in an async runtime.
     ///
     /// # Errors
     ///

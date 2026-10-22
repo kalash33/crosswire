@@ -11,7 +11,9 @@ use ulid::Ulid;
 #[derive(Debug)]
 pub(crate) struct AuditLog {
     dir: PathBuf,
-    file: File,
+    /// `None` after a rotation whose new file could not be created; the next
+    /// append tries again rather than writing into the renamed generation.
+    file: Option<File>,
     len: u64,
     rotate_at: u64,
 }
@@ -22,7 +24,7 @@ impl AuditLog {
         let len = file.metadata()?.len();
         Ok(AuditLog {
             dir: dir.to_path_buf(),
-            file,
+            file: Some(file),
             len,
             rotate_at,
         })
@@ -52,8 +54,12 @@ impl AuditLog {
         if self.len > 0 && self.len + add > self.rotate_at {
             self.rotate()?;
         }
-        self.file.write_all(line.as_bytes())?;
-        self.file.sync_data()?;
+        let file = match &mut self.file {
+            Some(f) => f,
+            None => self.file.insert(self.new_generation()?),
+        };
+        file.write_all(line.as_bytes())?;
+        file.sync_data()?;
         self.len += add;
         Ok(())
     }
@@ -62,12 +68,22 @@ impl AuditLog {
     /// generation) and starts an empty one.
     fn rotate(&mut self) -> Result<(), StoreError> {
         let cur = self.dir.join("audit.jsonl");
-        self.file.sync_all()?;
+        if let Some(f) = self.file.take() {
+            f.sync_all()?;
+            // Closed here: nothing more goes into the old generation.
+            drop(f);
+        }
         std::fs::rename(&cur, self.dir.join("audit.jsonl.1"))?;
-        self.file = open_log(&cur)?;
-        File::open(&self.dir)?.sync_all()?;
         self.len = 0;
+        self.file = Some(self.new_generation()?);
         Ok(())
+    }
+
+    /// Creates `audit.jsonl` and makes its directory entry durable.
+    fn new_generation(&self) -> Result<File, StoreError> {
+        let file = open_log(&self.dir.join("audit.jsonl"))?;
+        File::open(&self.dir)?.sync_all()?;
+        Ok(file)
     }
 }
 

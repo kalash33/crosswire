@@ -2,6 +2,7 @@
 #![cfg(unix)]
 
 use crosswire_store::{sweep, BodySide, BodyStore, Project, Store, StoreConfig};
+use std::collections::BTreeSet;
 use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
 use ulid::Ulid;
@@ -35,29 +36,36 @@ fn kill_minus_nine() {
         .stderr(Stdio::inherit())
         .spawn()
         .unwrap();
-    // Keep the pipe open until the kill, so the child never sees EPIPE first.
-    let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
-    let mut seen: Vec<Ulid> = Vec::new();
-    for line in lines.by_ref() {
+    let lines = BufReader::new(child.stdout.take().unwrap()).lines();
+    let mut committed: Vec<Ulid> = Vec::new();
+    let mut accepted: Vec<Ulid> = Vec::new();
+    // Accepted ids printed after the last `committed` line read.
+    let mut after_last_commit: BTreeSet<Ulid> = BTreeSet::new();
+    let mut killed = false;
+    // Read to EOF: lines printed before the kill are still in the pipe.
+    for line in lines {
         let line = line.unwrap();
         if let Some(rest) = line.strip_prefix("committed") {
             for tok in rest.split_whitespace() {
-                seen.push(Ulid::from_string(tok).unwrap());
+                committed.push(Ulid::from_string(tok).unwrap());
             }
+            after_last_commit.clear();
+        } else if let Some(rest) = line.strip_prefix("accepted ") {
+            let id = Ulid::from_string(rest.trim()).unwrap();
+            accepted.push(id);
+            after_last_commit.insert(id);
         }
-        if seen.len() >= KILL_AFTER {
-            break;
+        if !killed && committed.len() >= KILL_AFTER {
+            child.kill().unwrap(); // SIGKILL
+            killed = true;
         }
     }
-    child.kill().unwrap(); // SIGKILL
     let status = child.wait().unwrap();
-    drop(lines);
     assert!(
-        seen.len() >= KILL_AFTER,
+        killed,
         "child stopped early ({status}) after {} committed ids",
-        seen.len()
+        committed.len()
     );
-    let last_seen = *seen.iter().max().unwrap();
     let spilled = std::fs::read_dir(dir.join("journal"))
         .unwrap()
         .filter(|e| {
@@ -65,10 +73,6 @@ fn kill_minus_nine() {
             e.file_name().to_string_lossy().ends_with(".json")
         })
         .count();
-    eprintln!(
-        "killed after {} committed ids seen; {spilled} exchanges in journal/",
-        seen.len()
-    );
 
     // Reopen: the sweep and an integrity check must pass.
     let mut p = Project::open(&dir).unwrap();
@@ -79,18 +83,23 @@ fn kill_minus_nine() {
         .unwrap();
     assert_eq!(check, "ok");
 
-    // Opening the store replays the journal and records the gap.
+    // Opening the store records the gap, then replays the journal.
     let store = Store::open(p, StoreConfig::default()).unwrap();
+    let gap = store
+        .open_report()
+        .unclean_gap
+        .clone()
+        .expect("an unclean-restart gap");
     let conn = store.reader().unwrap();
-    for id in &seen {
-        let (state, notes): (String, String) = conn
-            .query_row(
-                "SELECT state, notes FROM exchanges WHERE ulid = ?1",
-                [id.to_string()],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .unwrap_or_else(|e| panic!("committed {id} lost: {e}"));
-        assert_eq!(state, "committed", "{id}");
+    let stored = |id: &Ulid| -> Option<(String, String)> {
+        conn.query_row(
+            "SELECT state, notes FROM exchanges WHERE ulid = ?1",
+            [id.to_string()],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .ok()
+    };
+    let check_bodies = |id: &Ulid, notes: &str| {
         let index: u64 = notes.parse().unwrap();
         for (side, n) in [(BodySide::Req, 0), (BodySide::Resp, 1)] {
             let body = BodyStore::get(&conn, &dir, *id, side).unwrap().unwrap();
@@ -99,28 +108,50 @@ fn kill_minus_nine() {
                 "{id} {side:?} body differs"
             );
         }
-    }
-    let gaps: Vec<Option<String>> = {
-        let mut st = conn
-            .prepare("SELECT from_ulid FROM markers WHERE kind = 'gap'")
-            .unwrap();
-        let rows = st.query_map([], |r| r.get(0)).unwrap();
-        rows.map(Result::unwrap).collect()
     };
-    assert_eq!(gaps.len(), 1, "exactly one gap marker: {gaps:?}");
-    let from = Ulid::from_string(gaps[0].as_deref().expect("gap has a from_ulid")).unwrap();
-    assert!(
-        from >= last_seen,
-        "gap starts at or after the last committed id seen"
+    // Every id seen committed is there, byte-exact.
+    for id in &committed {
+        let (state, notes) = stored(id).unwrap_or_else(|| panic!("committed {id} lost"));
+        assert_eq!(state, "committed", "{id}");
+        check_bodies(id, &notes);
+    }
+    // Every accepted id is either there and byte-exact, or inside the gap window.
+    let from = gap.from_ulid().expect("the previous run committed");
+    let to = gap.to_ulid().expect("a restart gap ends at the restart");
+    let mut missing = Vec::new();
+    for id in &accepted {
+        match stored(id) {
+            Some((state, notes)) => {
+                assert_eq!(state, "committed", "{id}");
+                check_bodies(id, &notes);
+            }
+            None => missing.push(*id),
+        }
+    }
+    for id in &missing {
+        assert!(
+            *id >= from,
+            "missing {id} is before the gap window starting {from}"
+        );
+        assert!(*id < to, "missing {id} is after the gap window ending {to}");
+    }
+    let missing_before_last_commit = missing
+        .iter()
+        .filter(|id| !after_last_commit.contains(id))
+        .count();
+    eprintln!(
+        "killed after {} committed ids seen; {} accepted; {spilled} in journal/; \
+         {} missing ({missing_before_last_commit} accepted before the last committed line)",
+        committed.len(),
+        accepted.len(),
+        missing.len()
     );
-    let from_is_committed: bool = conn
-        .query_row(
-            "SELECT EXISTS (SELECT 1 FROM exchanges WHERE ulid = ?1 AND state = 'committed')",
-            [from.to_string()],
-            |r| r.get(0),
-        )
+    let gaps: i64 = conn
+        .query_row("SELECT count(*) FROM markers WHERE kind = 'gap'", [], |r| {
+            r.get(0)
+        })
         .unwrap();
-    assert!(from_is_committed);
+    assert_eq!(gaps, 1, "exactly one gap marker");
     drop(conn);
     store.close().unwrap();
 

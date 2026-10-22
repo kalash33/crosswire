@@ -23,5 +23,5 @@ pub use error::StoreError;
 pub use events::EventStream;
 pub use packs::{BlobRef, PackWriter};
 pub use project::Project;
-pub use store::{Store, StoreConfig};
+pub use store::{OpenReport, Store, StoreConfig};
 pub use sweep::{sweep, SweepReport};

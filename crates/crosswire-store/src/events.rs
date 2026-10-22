@@ -1,7 +1,7 @@
 //! The event broadcaster and the subscriber stream.
 
 use crosswire_model::Event;
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 use tokio::sync::broadcast::{
     self,
     error::{RecvError, TryRecvError},
@@ -13,8 +13,37 @@ pub(crate) struct Events {
     tx: broadcast::Sender<Event>,
     /// The next sequence id. A mutex rather than an atomic so that ids reach
     /// the channel in order: a subscriber sees strictly increasing ids, and a
-    /// jump means it missed events.
+    /// jump means it missed events. Holding it (see [`Events::hold`]) also
+    /// orders a caller's action before any event another thread sends.
     next_seq: Mutex<u64>,
+    /// While `Some`, every event is also recorded here (used during open,
+    /// before anyone can subscribe).
+    capture: Mutex<Option<Vec<Event>>>,
+}
+
+/// The sequence lock, held: no other event can be sent until it is dropped.
+pub(crate) struct EventsGuard<'a> {
+    events: &'a Events,
+    seq: MutexGuard<'a, u64>,
+}
+
+impl EventsGuard<'_> {
+    /// Builds the event with the next sequence id and broadcasts it.
+    pub(crate) fn emit(&mut self, make: impl FnOnce(u64) -> Event) {
+        let event = make(*self.seq);
+        *self.seq += 1;
+        if let Some(v) = self
+            .events
+            .capture
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_mut()
+        {
+            v.push(event.clone());
+        }
+        // No subscribers is not an error.
+        let _ = self.events.tx.send(event);
+    }
 }
 
 impl Events {
@@ -24,22 +53,41 @@ impl Events {
         Events {
             tx,
             next_seq: Mutex::new(1),
+            capture: Mutex::new(None),
+        }
+    }
+
+    /// Takes the sequence lock. Never call [`Events::emit`] while holding it.
+    pub(crate) fn hold(&self) -> EventsGuard<'_> {
+        EventsGuard {
+            events: self,
+            seq: self.next_seq.lock().unwrap_or_else(PoisonError::into_inner),
         }
     }
 
     /// Builds the event with the next sequence id and broadcasts it.
     pub(crate) fn emit(&self, make: impl FnOnce(u64) -> Event) {
-        let mut seq = self.next_seq.lock().unwrap_or_else(PoisonError::into_inner);
-        let event = make(*seq);
-        *seq += 1;
-        // No subscribers is not an error.
-        let _ = self.tx.send(event);
+        self.hold().emit(make);
     }
 
     /// Broadcasts an [`Event::Error`].
     pub(crate) fn error(&self, detail: impl Into<String>) {
         let detail = detail.into();
         self.emit(|seq| Event::Error { detail, seq });
+    }
+
+    /// Starts recording every event sent.
+    pub(crate) fn start_capture(&self) {
+        *self.capture.lock().unwrap_or_else(PoisonError::into_inner) = Some(Vec::new());
+    }
+
+    /// Stops recording and returns what was recorded.
+    pub(crate) fn take_capture(&self) -> Vec<Event> {
+        self.capture
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
+            .unwrap_or_default()
     }
 
     pub(crate) fn subscribe(&self) -> EventStream {

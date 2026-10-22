@@ -1,42 +1,114 @@
 //! The writer thread: batches exchanges into `SQLite` and packs.
 //!
-//! Per batch, in this order: `BEGIN IMMEDIATE`; for each exchange the bodies
-//! (`BodyStore::put`, appending to packs) and the `exchanges` row; advance
-//! `meta.last_committed_ulid`; a pending gap marker; fsync the pack; record
-//! each touched pack's `committed_len`; `COMMIT`; then broadcast
-//! `Committed`. Nothing is announced as committed before `COMMIT` returned,
-//! and `COMMIT` never happens before the pack bytes it references are synced.
+//! Per batch, in this order: `BEGIN IMMEDIATE`; a pending gap marker; for
+//! each exchange the bodies (`BodyStore::put`, appending to packs) and the
+//! `exchanges` row; advance `meta.last_committed_ulid` and
+//! `meta.last_commit_watermark`; fsync the pack; record each touched pack's
+//! `committed_len`; `COMMIT`; then (if journal files were committed) fsync
+//! the WAL and delete them; then broadcast `Committed`. Nothing is announced
+//! as committed before `COMMIT` returned, and `COMMIT` never happens before
+//! the pack bytes it references are synced.
+//!
+//! Failures are split in two. A failure caused by one exchange (an oversized
+//! body, a JSON or constraint error) sets that exchange aside in
+//! `journal/bad/` and commits the rest. Any other failure is treated as the
+//! database being unavailable (disk full, I/O error): queued exchanges are
+//! written back to `journal/` (or held in memory if that fails too), journal
+//! files stay where they are, one `Error` is sent per failure streak, and the
+//! writer retries with a backoff from 250 ms doubling to 30 s.
 
 use crate::bodies::{BodyLocator, BodySide, BodyStore};
 use crate::error::StoreError;
 use crate::journal::{Entry, Journal};
 use crate::packs::PackWriter;
-use crate::sink::{Msg, Shared, Stop};
+use crate::sink::{slack_ulid, Msg, Shared, Stop};
 use crate::store::StoreConfig;
 use crate::Project;
 use crosswire_model::{
     Body, Event, Exchange, ExchangeState, Head, Marker, MarkerKind, Message, StartLineSpans,
 };
-use rusqlite::{OptionalExtension, Transaction, TransactionBehavior};
+use rusqlite::{ErrorCode, OptionalExtension, Transaction, TransactionBehavior};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
+use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::sync::{Arc, PoisonError};
 use std::time::{Duration, Instant};
 use ulid::Ulid;
 
-/// An exchange to commit and, if it came from the journal, its file.
+const BACKOFF_MIN: Duration = Duration::from_millis(250);
+const BACKOFF_MAX: Duration = Duration::from_secs(30);
+
+/// An exchange to commit, and where it came from.
 struct Item {
     ex: Exchange,
+    /// The journal file it was read from.
     journal: Option<Entry>,
+    /// The queue bytes it reserved (it came from the queue and is in memory only).
+    reserved: Option<usize>,
+}
+
+impl Item {
+    fn queued(ex: Exchange, size: usize) -> Item {
+        Item {
+            ex,
+            journal: None,
+            reserved: Some(size),
+        }
+    }
 }
 
 /// What a successful commit produced.
 struct Committed {
     ids: Vec<Ulid>,
     marker: Option<Marker>,
+}
+
+/// Why a commit failed.
+enum CommitError {
+    /// Exchange `items[.0]` cannot be stored; the others may be fine.
+    Item(usize, StoreError),
+    /// The database or disk failed; nothing in the batch is at fault.
+    Db(StoreError),
+}
+
+impl From<StoreError> for CommitError {
+    fn from(e: StoreError) -> CommitError {
+        CommitError::Db(e)
+    }
+}
+
+impl From<rusqlite::Error> for CommitError {
+    fn from(e: rusqlite::Error) -> CommitError {
+        CommitError::Db(e.into())
+    }
+}
+
+/// Whether an error from storing one exchange is that exchange's fault.
+fn per_exchange(e: &StoreError) -> bool {
+    match e {
+        StoreError::Json(_) => true,
+        StoreError::Io(io) => io.kind() == std::io::ErrorKind::InvalidInput,
+        StoreError::Sqlite(rusqlite::Error::SqliteFailure(f, _)) => matches!(
+            f.code,
+            ErrorCode::ConstraintViolation | ErrorCode::TooBig | ErrorCode::TypeMismatch
+        ),
+        StoreError::Sqlite(rusqlite::Error::ToSqlConversionFailure(_)) => true,
+        _ => false,
+    }
+}
+
+/// Marks the writer dead if its thread unwinds.
+struct DeathWatch(Arc<Shared>);
+
+impl Drop for DeathWatch {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            self.0.writer_died("the writer thread panicked");
+        }
+    }
 }
 
 /// Owns the project (and so its one writer connection) on the writer thread.
@@ -46,6 +118,14 @@ pub(crate) struct Writer {
     shared: Arc<Shared>,
     cfg: StoreConfig,
     last_checkpoint: Instant,
+    /// Queued exchanges that could be neither committed nor written back.
+    held: Vec<Item>,
+    /// The current backoff delay and when to try again, while the database fails.
+    backoff: Option<(Duration, Instant)>,
+    /// In a database failure streak (its one `Error` was sent).
+    failing: bool,
+    /// Journal files whose quarantine failed; skipped from then on.
+    stuck: HashSet<PathBuf>,
 }
 
 impl Writer {
@@ -56,21 +136,45 @@ impl Writer {
             shared,
             cfg,
             last_checkpoint: Instant::now(),
+            held: Vec::new(),
+            backoff: None,
+            failing: false,
+            stuck: HashSet::new(),
         }
     }
 
-    /// Commits every journal file, oldest first.
-    pub(crate) fn drain_journal(&mut self) {
-        while self.drain_journal_once() > 0 {}
+    /// Commits every journal file, oldest first; returns how many left the
+    /// journal. Stops early while the database is failing.
+    pub(crate) fn drain_journal(&mut self) -> usize {
+        let mut total = 0;
+        loop {
+            let n = self.drain_journal_once();
+            total += n;
+            if n == 0 || self.backing_off() {
+                return total;
+            }
+        }
     }
 
-    /// Inserts the `Gap` marker for an unclean previous run.
-    pub(crate) fn mark_unclean_restart(&mut self) -> Result<(), StoreError> {
+    /// Inserts the `Gap` marker for an unclean previous run: from the last
+    /// commit's watermark (read before anything else is committed) to now.
+    pub(crate) fn mark_unclean_restart(&mut self) -> Result<Marker, StoreError> {
         let tx = self.project.writer_mut().transaction()?;
-        let marker = gap_marker(&tx, "unclean shutdown")?;
+        let from: Option<String> = tx
+            .query_row(
+                "SELECT value FROM meta WHERE key = 'last_commit_watermark'",
+                [],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let from = from.and_then(|f| Ulid::from_string(&f).ok());
+        let marker = insert_gap(&tx, from, "unclean shutdown")?;
         tx.commit()?;
-        self.shared.events.emit(|seq| Event::Marker { marker, seq });
-        Ok(())
+        let event = marker.clone();
+        self.shared
+            .events
+            .emit(|seq| Event::Marker { marker: event, seq });
+        Ok(marker)
     }
 
     /// Records `clean=0`: from here on a crash is an unclean shutdown.
@@ -80,15 +184,37 @@ impl Writer {
 
     /// The thread body. Returns the project once stopped.
     pub(crate) fn run(mut self, rx: &Receiver<Msg>) -> Project {
+        let _watch = DeathWatch(Arc::clone(&self.shared));
         let mut stop = None;
         while stop.is_none() {
+            if self.wait_backoff(rx, &mut stop) {
+                continue;
+            }
             let pause = self.cfg.test_pause.clone();
             let guard = pause
                 .as_ref()
                 .map(|m| m.lock().unwrap_or_else(PoisonError::into_inner));
-            let batch = self.collect(rx, &mut stop);
+            let batch = if self.held.is_empty() {
+                self.collect(rx, &mut stop)
+            } else {
+                std::mem::take(&mut self.held)
+            };
+            #[cfg(test)]
+            if !batch.is_empty()
+                && self
+                    .cfg
+                    .hooks
+                    .panic_next_batch
+                    .swap(false, Ordering::SeqCst)
+            {
+                panic!("injected writer panic");
+            }
             self.commit(batch);
-            if self.shared.queued.load(Ordering::SeqCst) * 4 < self.cfg.queue_max {
+            // On a stop the journal is `finish`'s business (and `Drop` skips it).
+            if stop.is_none()
+                && !self.backing_off()
+                && self.shared.queued.load(Ordering::SeqCst) * 4 < self.cfg.queue_max
+            {
                 self.drain_journal_once();
             }
             self.maybe_checkpoint();
@@ -98,34 +224,69 @@ impl Writer {
                 std::thread::sleep(Duration::from_millis(1));
             }
         }
-        // Everything was enqueued before the stop message; take what is left.
-        loop {
-            let mut batch = Vec::new();
-            while batch.len() < self.cfg.batch_max.max(1) {
-                match rx.try_recv() {
-                    Ok(Msg::Exchange(ex, size)) => {
-                        self.shared.release(size);
-                        batch.push(Item {
-                            ex: *ex,
-                            journal: None,
-                        });
-                    }
-                    Ok(Msg::Stop(_)) => {}
-                    Err(_) => break,
-                }
+        self.finish(rx, stop == Some(Stop::Clean));
+        self.project
+    }
+
+    /// The shutdown path. Everything was enqueued before the stop message.
+    fn finish(&mut self, rx: &Receiver<Msg>, clean: bool) {
+        // One attempt each from here: no backoff waits during shutdown.
+        self.backoff = None;
+        let mut batch = std::mem::take(&mut self.held);
+        while let Ok(msg) = rx.try_recv() {
+            if let Msg::Exchange(ex, size) = msg {
+                batch.push(Item::queued(*ex, size));
             }
-            if batch.is_empty() {
-                break;
-            }
-            self.commit(batch);
         }
-        self.drain_journal();
-        // Records a gap that is still pending.
+        for chunk in chunked(batch, self.cfg.batch_max.max(1)) {
+            self.backoff = None;
+            self.commit(chunk);
+        }
+        // `close` drains the journal; `Drop` leaves it for the next open,
+        // so dropping a store never waits on a large journal.
+        if clean {
+            self.backoff = None;
+            self.drain_journal();
+        }
+        self.backoff = None;
         self.commit(Vec::new());
-        if stop == Some(Stop::Clean) {
+        // Whatever is still only in memory is lost: record it.
+        for item in std::mem::take(&mut self.held) {
+            if self.shared.journal.write_back(&item.ex).is_err() {
+                self.shared
+                    .dropped(item.ex.id(), "exchanges could not be stored at shutdown");
+            }
+            if let Some(size) = item.reserved {
+                self.shared.release(item.ex.id(), size);
+            }
+        }
+        if clean {
             self.checkpoint("TRUNCATE");
         }
-        self.project
+    }
+
+    /// Whether a database failure's retry time is still ahead.
+    fn backing_off(&self) -> bool {
+        self.backoff.is_some_and(|(_, at)| Instant::now() < at)
+    }
+
+    /// While backing off, waits (in steps, so a stop is seen) and keeps
+    /// receiving into `held`. Returns true if the caller should loop again.
+    fn wait_backoff(&mut self, rx: &Receiver<Msg>, stop: &mut Option<Stop>) -> bool {
+        let Some((_, at)) = self.backoff else {
+            return false;
+        };
+        let now = Instant::now();
+        if now >= at {
+            return false;
+        }
+        match rx.recv_timeout((at - now).min(Duration::from_millis(50))) {
+            Ok(Msg::Exchange(ex, size)) => self.held.push(Item::queued(*ex, size)),
+            Ok(Msg::Stop(s)) => *stop = Some(s),
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => *stop = Some(Stop::Abandon),
+        }
+        true
     }
 
     /// Waits up to `batch_interval` for a first exchange, then collects until
@@ -138,13 +299,7 @@ impl Writer {
         let deadline = Instant::now() + interval;
         loop {
             match next {
-                Ok(Msg::Exchange(ex, size)) => {
-                    self.shared.release(size);
-                    batch.push(Item {
-                        ex: *ex,
-                        journal: None,
-                    });
-                }
+                Ok(Msg::Exchange(ex, size)) => batch.push(Item::queued(*ex, size)),
                 Ok(Msg::Stop(s)) => {
                     *stop = Some(s);
                     break;
@@ -167,8 +322,9 @@ impl Writer {
         batch
     }
 
-    /// Commits up to `batch_max` journal files; returns how many files left
-    /// the journal (committed or quarantined).
+    /// Commits up to `batch_max` journal files, and at most `queue_bytes_max`
+    /// of them (always at least one); returns how many files left the
+    /// journal (committed or quarantined).
     fn drain_journal_once(&mut self) -> usize {
         let entries = match self.shared.journal.oldest(self.cfg.batch_max.max(1)) {
             Ok(e) => e,
@@ -181,11 +337,22 @@ impl Writer {
         };
         let mut removed = 0;
         let mut items = Vec::new();
+        let mut bytes = 0u64;
         for entry in entries {
+            if self.stuck.contains(&entry.path) {
+                continue;
+            }
+            if !items.is_empty()
+                && bytes.saturating_add(entry.len) > self.cfg.queue_bytes_max as u64
+            {
+                break;
+            }
+            bytes = bytes.saturating_add(entry.len);
             match Journal::read(&entry) {
                 Ok(ex) => items.push(Item {
                     ex,
                     journal: Some(entry),
+                    reserved: None,
                 }),
                 Err(why) => {
                     if self.quarantine_file(&entry, &why) {
@@ -197,8 +364,9 @@ impl Writer {
         removed + self.commit(items)
     }
 
-    /// Moves an unusable journal file to `journal/bad/` and reports it.
-    fn quarantine_file(&self, entry: &Entry, why: &str) -> bool {
+    /// Moves an unusable journal file to `journal/bad/` and reports it. A
+    /// file that cannot be moved is skipped from then on.
+    fn quarantine_file(&mut self, entry: &Entry, why: &str) -> bool {
         let name = entry.path.file_name().unwrap_or_default().to_string_lossy();
         match self.shared.journal.quarantine(entry) {
             Ok(()) => {
@@ -209,77 +377,137 @@ impl Writer {
             }
             Err(e) => {
                 self.shared.events.error(format!(
-                    "journal file {name} is unusable ({why}) and could not be moved: {e}"
+                    "journal file {name} is unusable ({why}) and could not be moved \
+                     ({e}); skipped until the next open"
                 ));
+                self.stuck.insert(entry.path.clone());
                 false
             }
         }
     }
 
-    /// Commits `items` as one transaction, or one by one if that fails.
-    /// Returns how many journal files were removed.
-    fn commit(&mut self, items: Vec<Item>) -> usize {
-        let gap = self.shared.gap_pending.swap(false, Ordering::SeqCst);
-        if items.is_empty() && !gap {
-            return 0;
-        }
-        match self.try_commit(&items, gap) {
-            Ok(done) => self.after_commit(items, done),
-            Err(e) => {
-                // The pack writer may have appended past what the database now
-                // knows, or rotated in the rolled-back transaction: reopen it.
-                self.bodies = None;
-                if gap {
-                    self.shared.gap_pending.store(true, Ordering::SeqCst);
+    /// Commits `items` as one transaction. An exchange at fault is set aside
+    /// and the rest retried; a database failure starts the backoff. Returns
+    /// how many journal files were removed.
+    fn commit(&mut self, mut items: Vec<Item>) -> usize {
+        let mut removed = 0;
+        loop {
+            let gap = self.shared.take_gap();
+            if items.is_empty() && gap.is_none() {
+                return removed;
+            }
+            match self.try_commit(&items, gap) {
+                Ok(done) => {
+                    self.backoff = None;
+                    self.failing = false;
+                    return removed + self.after_commit(items, done);
                 }
-                if items.len() > 1 {
-                    self.shared.events.error(format!(
-                        "batch of {} failed ({e}); retrying one by one",
-                        items.len()
-                    ));
-                    items.into_iter().map(|i| self.commit(vec![i])).sum()
-                } else if let Some(item) = items.into_iter().next() {
-                    usize::from(self.give_up(item, &e))
-                } else {
-                    self.shared
-                        .events
-                        .error(format!("cannot write the gap marker: {e}"));
-                    0
+                Err(err) => {
+                    // The pack writer may have appended past what the database
+                    // knows, or rotated in the rolled-back transaction: reopen it.
+                    self.bodies = None;
+                    if let Some(g) = gap {
+                        self.shared.restore_gap(g);
+                    }
+                    match err {
+                        CommitError::Item(i, e) if i < items.len() => {
+                            let item = items.remove(i);
+                            removed += usize::from(self.give_up(item, &e));
+                        }
+                        CommitError::Item(_, e) | CommitError::Db(e) => {
+                            self.db_failure(items, &e);
+                            return removed;
+                        }
+                    }
                 }
             }
         }
     }
 
-    /// An exchange that cannot be committed is kept in `journal/bad/` and
+    /// The database is unavailable: keep every exchange and back off.
+    fn db_failure(&mut self, items: Vec<Item>, e: &StoreError) {
+        if !self.failing {
+            self.failing = true;
+            self.shared.events.error(format!(
+                "cannot write to the project ({e}); exchanges are kept in journal/ \
+                 and retried"
+            ));
+        }
+        let delay = match self.backoff {
+            None => BACKOFF_MIN,
+            Some((d, _)) => (d * 2).min(BACKOFF_MAX),
+        };
+        self.backoff = Some((delay, Instant::now() + delay));
+        for item in items {
+            // Journal items are durable already: their files stay.
+            let Some(size) = item.reserved else {
+                continue;
+            };
+            if self.shared.journal.write_back(&item.ex).is_ok() {
+                self.shared.release(item.ex.id(), size);
+            } else {
+                self.held.push(item);
+            }
+        }
+    }
+
+    /// An exchange that cannot be stored is kept in `journal/bad/` and
     /// counted as a loss (a gap marker follows).
     fn give_up(&mut self, item: Item, e: &StoreError) -> bool {
         let id = item.ex.id();
-        self.shared.gap_pending.store(true, Ordering::SeqCst);
         if let Some(entry) = &item.journal {
-            return self.quarantine_file(entry, &format!("commit failed: {e}"));
+            let moved = self.quarantine_file(entry, &format!("cannot be stored: {e}"));
+            // Recorded once: a file that stays stuck is not retried.
+            self.shared
+                .dropped(id, "an exchange could not be stored; see journal/bad/");
+            return moved;
         }
         let kept = match self.shared.journal.quarantine_exchange(&item.ex) {
             Ok(()) => "kept in journal/bad/".to_owned(),
             Err(e2) => format!("and could not be kept: {e2}"),
         };
-        self.shared.events.error(format!(
-            "exchange {id} could not be committed ({e}); {kept}"
-        ));
+        if let Some(size) = item.reserved {
+            self.shared.release(id, size);
+        }
+        self.shared
+            .events
+            .error(format!("exchange {id} cannot be stored ({e}); {kept}"));
+        self.shared
+            .dropped(id, "an exchange could not be stored; see journal/bad/");
         false
     }
 
-    /// After `COMMIT`: deletes the batch's journal files, then broadcasts, so a
-    /// subscriber that saw `Committed` never finds the file still there.
+    /// After `COMMIT`: releases queue reservations, makes the commit durable
+    /// before deleting the batch's journal files (so a spilled exchange is
+    /// never only in an unsynced WAL), then broadcasts.
     fn after_commit(&mut self, items: Vec<Item>, done: Committed) -> usize {
         let Committed { ids, marker } = done;
+        let mut journaled = Vec::new();
+        for item in items {
+            if let Some(size) = item.reserved {
+                self.shared.release(item.ex.id(), size);
+            }
+            if let Some(entry) = item.journal {
+                journaled.push(entry);
+            }
+        }
         let mut removed = 0;
-        for entry in items.into_iter().filter_map(|i| i.journal) {
-            match self.shared.journal.remove(&entry) {
-                Ok(()) => removed += 1,
-                // Replay is idempotent: a leftover file is skipped next time.
+        if !journaled.is_empty() {
+            match self.sync_wal() {
+                Ok(()) => {
+                    for entry in journaled {
+                        match self.shared.journal.remove(&entry) {
+                            Ok(()) => removed += 1,
+                            // Replay is idempotent: a leftover file is skipped next time.
+                            Err(e) => self.shared.events.error(format!(
+                                "cannot delete committed journal file {}: {e}",
+                                entry.path.display()
+                            )),
+                        }
+                    }
+                }
                 Err(e) => self.shared.events.error(format!(
-                    "cannot delete committed journal file {}: {e}",
-                    entry.path.display()
+                    "cannot sync the WAL ({e}); committed journal files are kept"
                 )),
             }
         }
@@ -292,33 +520,42 @@ impl Writer {
         removed
     }
 
-    fn try_commit(&mut self, items: &[Item], gap: bool) -> Result<Committed, StoreError> {
+    fn try_commit(&mut self, items: &[Item], gap: Option<Ulid>) -> Result<Committed, CommitError> {
         if self.bodies.is_none() {
             self.bodies = Some(BodyStore::new(PackWriter::open(&mut self.project)?));
         }
+        // A crash after this commit can lose only exchanges still in memory
+        // (none older than the oldest one there) or submitted later.
+        let in_batch: HashSet<Ulid> = items.iter().map(|i| i.ex.id()).collect();
+        let watermark = self
+            .shared
+            .oldest_in_memory(&in_batch)
+            .map_or_else(slack_ulid, |o| o.min(slack_ulid()));
+        #[cfg(test)]
+        let hooks = Arc::clone(&self.cfg.hooks);
         let Writer {
             project, bodies, ..
         } = self;
         let Some(bodies) = bodies.as_mut() else {
-            return Err(StoreError::Closed);
+            return Err(CommitError::Db(StoreError::Closed));
         };
         // (1) BEGIN IMMEDIATE.
         let tx = project
             .writer_mut()
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        // (2) A pending gap: from the earliest lost id to now.
+        let marker = match gap {
+            Some(from) => Some(insert_gap(
+                &tx,
+                Some(from),
+                "exchanges were dropped: the queue and journal were full or unwritable",
+            )?),
+            None => None,
+        };
         // Packs appended to in this batch, and the end of the last record in each.
         let mut touched: BTreeMap<u32, u64> = BTreeMap::new();
         let mut ids = Vec::with_capacity(items.len());
-        // (5) A pending gap starts at the last id committed before this batch.
-        let marker = if gap {
-            Some(gap_marker(
-                &tx,
-                "exchanges were dropped: the queue and journal were full or unwritable",
-            )?)
-        } else {
-            None
-        };
-        for item in items {
+        for (i, item) in items.iter().enumerate() {
             let id = item.ex.id();
             let exists = tx
                 .query_row(
@@ -328,50 +565,97 @@ impl Writer {
                 )
                 .optional()?
                 .is_some();
-            // (2) Bodies and the row; a replayed or repeated id is already stored.
+            // (3) Bodies and the row; a replayed or repeated id is already stored.
             if !exists {
-                insert_exchange(&tx, bodies, &item.ex, &mut touched)?;
+                #[cfg(test)]
+                if hooks
+                    .fail_item
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .as_ref()
+                    == Some(&id)
+                {
+                    return Err(CommitError::Item(
+                        i,
+                        StoreError::Io(std::io::Error::new(
+                            std::io::ErrorKind::InvalidInput,
+                            "injected bad exchange",
+                        )),
+                    ));
+                }
+                insert_exchange(&tx, bodies, &item.ex, &mut touched).map_err(|e| {
+                    if per_exchange(&e) {
+                        CommitError::Item(i, e)
+                    } else {
+                        CommitError::Db(e)
+                    }
+                })?;
             }
             ids.push(id);
         }
-        // (3) Advance last_committed_ulid (ULID order; never backwards).
+        // (4) Advance last_committed_ulid (ULID order; never backwards) and
+        // record the watermark gap markers start from after a crash.
         if let Some(max) = ids.iter().max() {
             tx.execute(
                 "UPDATE meta SET value = ?1 WHERE key = 'last_committed_ulid' AND value < ?1",
                 [max.to_string()],
             )?;
         }
+        tx.execute(
+            "INSERT INTO meta (key, value) VALUES ('last_commit_watermark', ?1) \
+             ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+            [watermark.to_string()],
+        )?;
         if !touched.is_empty() {
-            // (4) The pack bytes are durable before anything references them.
+            // (5) The pack bytes are durable before anything references them.
             bodies.fsync()?;
-            // (5) Trust them from now on.
             for (pack, len) in &touched {
                 Project::set_pack_committed_len(&tx, *pack, *len)?;
             }
+        }
+        #[cfg(test)]
+        if hooks
+            .fail_commits
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+            .is_ok()
+        {
+            return Err(CommitError::Db(StoreError::Sqlite(
+                rusqlite::Error::SqliteFailure(
+                    rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_FULL),
+                    Some("injected disk full".into()),
+                ),
+            )));
         }
         // (6) COMMIT.
         tx.commit()?;
         Ok(Committed { ids, marker })
     }
 
-    fn maybe_checkpoint(&mut self) {
-        let wal = self
-            .project
+    fn wal_path(&self) -> PathBuf {
+        self.project
             .dir()
-            .join(format!("{}-wal", crate::project::DB_FILE));
-        let wal_len = std::fs::metadata(&wal).map_or(0, |m| m.len());
+            .join(format!("{}-wal", crate::project::DB_FILE))
+    }
+
+    fn sync_wal(&self) -> std::io::Result<()> {
+        match std::fs::File::open(self.wal_path()).and_then(|f| f.sync_all()) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            r => r,
+        }
+    }
+
+    fn maybe_checkpoint(&mut self) {
+        let wal_len = std::fs::metadata(self.wal_path()).map_or(0, |m| m.len());
         if self.last_checkpoint.elapsed() >= self.cfg.checkpoint_interval
             || wal_len >= self.cfg.checkpoint_bytes
         {
             self.checkpoint("PASSIVE");
             // Make the WAL durable even if readers kept the checkpoint from
             // copying it: this bounds a power loss to one interval.
-            if let Err(e) = std::fs::File::open(&wal).and_then(|f| f.sync_all()) {
-                if e.kind() != std::io::ErrorKind::NotFound {
-                    self.shared
-                        .events
-                        .error(format!("cannot sync the WAL: {e}"));
-                }
+            if let Err(e) = self.sync_wal() {
+                self.shared
+                    .events
+                    .error(format!("cannot sync the WAL: {e}"));
             }
         }
     }
@@ -391,17 +675,32 @@ impl Writer {
     }
 }
 
-/// Inserts a `Gap` marker from `meta.last_committed_ulid` and returns it.
-fn gap_marker(tx: &Transaction<'_>, detail: &str) -> Result<Marker, StoreError> {
-    let last: String = tx.query_row(
-        "SELECT value FROM meta WHERE key = 'last_committed_ulid'",
-        [],
-        |r| r.get(0),
-    )?;
+/// Splits `v` into chunks of at most `n`.
+fn chunked(mut v: Vec<Item>, n: usize) -> Vec<Vec<Item>> {
+    let mut out = Vec::new();
+    while v.len() > n {
+        let rest = v.split_off(n);
+        out.push(v);
+        v = rest;
+    }
+    if !v.is_empty() {
+        out.push(v);
+    }
+    out
+}
+
+/// Inserts a `Gap` marker covering `from` (if known) to now and returns it.
+fn insert_gap(
+    tx: &Transaction<'_>,
+    from: Option<Ulid>,
+    detail: &str,
+) -> Result<Marker, StoreError> {
     let mut marker = Marker::new(MarkerKind::Gap, detail);
-    if let Ok(from) = Ulid::from_string(&last) {
+    if let Some(from) = from {
         marker = marker.with_from(from);
     }
+    let to = marker.id();
+    marker = marker.with_to(to);
     tx.execute(
         "INSERT INTO markers (ulid, kind, from_ulid, to_ulid, detail) VALUES (?1, ?2, ?3, ?4, ?5)",
         rusqlite::params![

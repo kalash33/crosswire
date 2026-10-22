@@ -9,7 +9,14 @@ use ulid::Ulid;
 #[serde(rename_all = "kebab-case")]
 #[non_exhaustive]
 pub enum MarkerKind {
-    /// Exchanges are missing between two ids.
+    /// Exchanges may be missing in a time window.
+    ///
+    /// `from_ulid` and `to_ulid` bound the window by ULID timestamp: any
+    /// exchange that was submitted but not recorded has an id in
+    /// `from_ulid..=to_ulid` (a missing `from_ulid` means "from the start").
+    /// Exchange ids are minted when the exchange is created, not when it is
+    /// submitted, so an exchange that started before `from_ulid` but was
+    /// submitted after it (a long-running one) can also be missing.
     Gap,
     /// A configured limit was exceeded.
     LimitExceeded,

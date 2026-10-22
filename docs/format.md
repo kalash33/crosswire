@@ -62,11 +62,12 @@ Primary key `(ulid, side)`. At most one of `inline` and `blob_hash` is set (`CHE
 
 `packs`: `id INTEGER PRIMARY KEY`, `committed_len INTEGER NOT NULL DEFAULT 0` (bytes of the pack file that the database has committed and trusts; the tail beyond it is validated on open, kept while its records are intact, and truncated at the first bad record). There is no path column: the pack file is always `packs/{id:06}.pack` (for example `packs/000001.pack`), derived from the id. A project file is untrusted input, so readers must never open a path stored in the database.
 
-`markers` (`WITHOUT ROWID`), gap and error rows: `ulid TEXT PRIMARY KEY`, `kind TEXT NOT NULL`, `from_ulid TEXT`, `to_ulid TEXT`, `detail TEXT NOT NULL DEFAULT ''`.
+`markers` (`WITHOUT ROWID`), gap and error rows: `ulid TEXT PRIMARY KEY`, `kind TEXT NOT NULL`, `from_ulid TEXT`, `to_ulid TEXT`, `detail TEXT NOT NULL DEFAULT ''`. A `gap` is a time window: exchanges that were submitted and not recorded have ids (creation times) in `from_ulid..=to_ulid` (`from_ulid` NULL means from the start). An exchange created before `from_ulid` but submitted after it can also be missing.
 
 `meta` (`WITHOUT ROWID`): `key TEXT PRIMARY KEY`, `value TEXT NOT NULL`. Keys:
 
-- `last_committed_ulid`: the greatest (in ULID order) exchange id whose row and bodies are committed (empty string initially). Updated in the transaction that commits the batch; never moves backwards. Gap markers start here.
+- `last_committed_ulid`: the greatest (in ULID order) exchange id whose row and bodies are committed (empty string initially). Updated in the transaction that commits the batch; never moves backwards. For readers; gap markers do not use it.
+- `last_commit_watermark`: written by every commit: the oldest exchange id still held only in memory at that commit, or the commit time minus one second if that is earlier (absent until the first commit). An exchange lost in a crash after that commit has an id at or after it, unless it was created more than a second before it was submitted.
 
 ### Indexes
 
@@ -85,7 +86,7 @@ Primary key `(ulid, side)`. At most one of `inline` and `blob_hash` is set (`CHE
 clean=0|1
 ```
 
-Opening writes `clean=0` (and `Store::open` writes it again); only `Store::close` writes `clean=1`. If the previous contents say `clean=0`, the previous run died, so `Project::open` runs `PRAGMA integrity_check` and `Store::open` writes a `gap` marker (`from_ulid` = `last_committed_ulid`, detail `unclean shutdown`) after replaying the journal.
+Opening writes `clean=0` (and `Store::open` writes it again); only `Store::close` writes `clean=1`. If the previous contents say `clean=0`, the previous run died, so `Project::open` runs `PRAGMA integrity_check` and `Store::open`, before replaying the journal, writes a `gap` marker from `last_commit_watermark` to the restart (detail `unclean shutdown`).
 
 ## Pack record (implemented in Task 6)
 
@@ -105,11 +106,15 @@ The `blobs` row points at the record start with `offset` and `len` (the whole re
 One writer thread owns the writer connection. Exchanges reach it through a bounded queue (10,000 exchanges and 64 MiB, an exchange costing its message bytes plus 1 KiB). It commits a batch when 1,000 exchanges are waiting or 250 ms after the first one arrived. Per batch, in order:
 
 1. `BEGIN IMMEDIATE`.
-2. A pending `gap` marker (exchanges were dropped), starting at `last_committed_ulid`.
+2. A pending `gap` marker (exchanges were dropped): from the earliest dropped id (or one second before the first drop, if earlier) to now.
 3. For each exchange not already stored: its bodies (inline or appended to a pack), then its `exchanges` row.
-4. `last_committed_ulid` advances to the greatest id in the batch.
+4. `last_committed_ulid` advances to the greatest id in the batch; `last_commit_watermark` is rewritten.
 5. The current pack is fsynced; `packs.committed_len` is raised to the end of the last record written to each pack.
-6. `COMMIT`; only then is the `committed` event sent and are the batch's journal files deleted.
+6. `COMMIT`. If the batch came from journal files, the WAL is fsynced and only then are the files deleted. Then the `committed` event is sent.
+
+A failure caused by one exchange (an oversized body, a JSON or constraint error) moves that exchange to `journal/bad/`, records a gap, and commits the rest. Any other failure (disk full, I/O error) is treated as the database being unavailable: queued exchanges are written back to `journal/` (held in memory if that fails too), journal files stay, one `error` event is sent per failure streak, and the writer retries with a backoff of 250 ms doubling to 30 s.
+
+`Store::close` drains the queue and the journal. Dropping a `Store` without `close` drains only the in-memory queue; the journal waits for the next open.
 
 `PRAGMA wal_checkpoint(PASSIVE)` runs every 30 s or when the WAL passes 64 MiB, followed by an fsync of the WAL; `close` ends with `wal_checkpoint(TRUNCATE)`.
 
@@ -117,7 +122,7 @@ One writer thread owns the writer connection. Exchanges reach it through a bound
 
 When the queue has no room, the sink writes the exchange to `journal/<ulid>.json.tmp` (one JSON `Exchange`, bodies inline, mode 0600), fsyncs it, renames it to `journal/<ulid>.json` and fsyncs the directory before returning. The journal is capped at 1 GiB; past that the exchange is dropped, one `error` event is sent per episode, and the writer's next commit writes a `gap` marker.
 
-The writer commits journal files oldest ULID first whenever the queue is below a quarter full, and all of them on every open. Replay is idempotent: an id already in `exchanges` is skipped and its file deleted. Leftover `.tmp` files were never acknowledged and are deleted on open. A file that cannot be read or committed is moved to `journal/bad/` with an `error` event.
+The writer commits journal files oldest ULID first whenever the queue is below a quarter full, at most 1,000 files and 64 MiB of files (at least one) per batch, and all of them on every open. Replay is idempotent: an id already in `exchanges` is skipped and its file deleted. Leftover `.tmp` files were never acknowledged and are deleted on open. A file that cannot be read or committed is moved to `journal/bad/` with an `error` event.
 
 ## Audit log (Task 7)
 

@@ -6,8 +6,8 @@ use crate::events::{EventStream, Events};
 use crate::journal::Journal;
 use crate::sink::{Msg, Shared, Stop, StoreSink};
 use crate::writer::Writer;
-use crate::{sweep, Project};
-use crosswire_model::ExchangeSink;
+use crate::{sweep, Project, SweepReport};
+use crosswire_model::{Event, ExchangeSink, Marker};
 use rusqlite::Connection;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -46,6 +46,37 @@ pub struct StoreConfig {
     /// each batch, so a test can stall it.
     #[doc(hidden)]
     pub test_pause: Option<Arc<Mutex<()>>>,
+    /// Fault injection for the crate's own tests.
+    #[cfg(test)]
+    pub(crate) hooks: Arc<TestHooks>,
+}
+
+/// Fault injection for unit tests.
+#[cfg(test)]
+#[derive(Debug, Default)]
+pub(crate) struct TestHooks {
+    /// The next this many commits fail with `SQLITE_FULL` just before `COMMIT`.
+    pub(crate) fail_commits: std::sync::atomic::AtomicUsize,
+    /// Storing this exchange fails as that exchange's fault.
+    pub(crate) fail_item: Mutex<Option<ulid::Ulid>>,
+    /// The writer thread panics on its next non-empty batch.
+    pub(crate) panic_next_batch: AtomicBool,
+}
+
+/// What [`Store::open`] did before the writer started.
+#[derive(Clone, Debug, Default)]
+#[non_exhaustive]
+pub struct OpenReport {
+    /// The startup sweep.
+    pub sweep: SweepReport,
+    /// Journal files that left `journal/` (committed or quarantined).
+    pub journal_files_drained: usize,
+    /// The gap marker written because the previous run did not close.
+    pub unclean_gap: Option<Marker>,
+    /// Every event sent during open (markers, errors such as quarantined
+    /// journal files, commits of replayed exchanges), sent before anyone
+    /// could subscribe.
+    pub events: Vec<Event>,
 }
 
 impl Default for StoreConfig {
@@ -61,6 +92,8 @@ impl Default for StoreConfig {
             event_capacity: 10_000,
             audit_rotate_bytes: 64 * MIB as u64,
             test_pause: None,
+            #[cfg(test)]
+            hooks: Arc::default(),
         }
     }
 }
@@ -72,10 +105,11 @@ impl Default for StoreConfig {
 /// queued and not yet committed (one batch when the writer keeps up, at most
 /// the bounded queue otherwise); spilled exchanges in `journal/` survive and
 /// are committed on the next open. The next open after a crash writes a
-/// `Gap` marker from the last committed id.
+/// `Gap` marker whose window (by ULID time) covers every exchange that was
+/// accepted and lost; see [`crosswire_model::MarkerKind::Gap`].
 ///
 /// Call [`Store::close`] to shut down cleanly. Dropping a `Store` stops the
-/// writer after it commits what is queued, but leaves the project marked
+/// writer after it commits what is in memory, but leaves the project marked
 /// unclean, so the next open records a gap.
 #[derive(Debug)]
 pub struct Store {
@@ -83,16 +117,19 @@ pub struct Store {
     dir: Arc<Path>,
     audit: Mutex<AuditLog>,
     writer: Option<JoinHandle<Project>>,
+    report: OpenReport,
 }
 
 impl Store {
     /// Opens the store on `project`.
     ///
-    /// Runs the startup sweep, commits every file left in `journal/`, writes
-    /// a `Gap` marker if the previous run did not close cleanly, records
-    /// `clean=0` in `project.lock`, and starts the writer thread.
+    /// Runs the startup sweep; if the previous run did not close cleanly,
+    /// writes a `Gap` marker from the last commit's watermark to now (read
+    /// before anything else is committed); commits every file left in
+    /// `journal/`; records `clean=0` in `project.lock`; and starts the writer
+    /// thread. What happened is in [`Store::open_report`].
     pub fn open(mut project: Project, cfg: StoreConfig) -> Result<Store, StoreError> {
-        sweep(&mut project)?;
+        let sweep_report = sweep(&mut project)?;
         // Keep the WAL from staying at its high-water size, so its length
         // tracks what is not yet checkpointed.
         project
@@ -109,19 +146,30 @@ impl Store {
             queue_bytes_max: cfg.queue_bytes_max,
             queued: AtomicUsize::new(0),
             queued_bytes: AtomicUsize::new(0),
+            in_memory: Mutex::default(),
             closed: RwLock::new(false),
             events: Events::new(cfg.event_capacity),
             journal,
-            gap_pending: AtomicBool::new(false),
+            gap_since: Mutex::new(None),
+            writer_dead: AtomicBool::new(false),
         });
+        shared.events.start_capture();
         let unclean = project.previous_unclean();
         let mut writer = Writer::new(project, Arc::clone(&shared), cfg);
+        let unclean_gap = if unclean {
+            Some(writer.mark_unclean_restart()?)
+        } else {
+            None
+        };
         // Always: replay is idempotent, and a clean run leaves nothing to do.
-        writer.drain_journal();
-        if unclean {
-            writer.mark_unclean_restart()?;
-        }
+        let journal_files_drained = writer.drain_journal();
         writer.mark_dirty()?;
+        let report = OpenReport {
+            sweep: sweep_report,
+            journal_files_drained,
+            unclean_gap,
+            events: shared.events.take_capture(),
+        };
         let handle = std::thread::Builder::new()
             .name("crosswire-store-writer".into())
             .spawn(move || writer.run(&rx))?;
@@ -130,7 +178,24 @@ impl Store {
             dir,
             audit: Mutex::new(audit),
             writer: Some(handle),
+            report,
         })
+    }
+
+    /// What [`Store::open`] did: sweep, replay, unclean-restart marker, and
+    /// the events sent before anyone could subscribe.
+    #[must_use]
+    pub fn open_report(&self) -> &OpenReport {
+        &self.report
+    }
+
+    /// Whether the writer thread is running. False once it stopped
+    /// abnormally (the sink then refuses with [`crosswire_model::SinkError::Closed`])
+    /// or the store is shutting down.
+    #[must_use]
+    pub fn is_healthy(&self) -> bool {
+        !self.shared.writer_dead.load(Ordering::SeqCst)
+            && self.writer.as_ref().is_some_and(|h| !h.is_finished())
     }
 
     /// The project directory.
@@ -179,12 +244,13 @@ impl Store {
     /// Shuts down cleanly: refuses new exchanges, commits the queue and the
     /// journal, checkpoints and truncates the WAL, and records `clean=1`.
     ///
-    /// If losses happened that could not be recorded with a gap marker, the
-    /// project is left unclean (so the next open records one) and this
-    /// returns [`StoreError::Writer`].
+    /// If the writer thread stopped abnormally, or losses happened that
+    /// could not be recorded with a gap marker, the project is left unclean
+    /// (so the next open records a gap) and this returns
+    /// [`StoreError::Writer`] with the reason.
     pub fn close(mut self) -> Result<(), StoreError> {
         let project = self.stop(Stop::Clean)?;
-        if self.shared.gap_pending.load(Ordering::SeqCst) {
+        if self.shared.gap_pending() {
             return Err(StoreError::Writer(
                 "dropped exchanges could not be marked; project left unclean".into(),
             ));
@@ -201,17 +267,205 @@ impl Store {
         let handle = self.writer.take().ok_or(StoreError::Closed)?;
         // Fails only if the writer is gone; the join below reports why.
         let _ = self.shared.tx.send(Msg::Stop(how));
-        handle
-            .join()
-            .map_err(|_| StoreError::Writer("the writer thread panicked".into()))
+        handle.join().map_err(|panic| {
+            let why = panic
+                .downcast_ref::<&str>()
+                .map(|s| (*s).to_owned())
+                .or_else(|| panic.downcast_ref::<String>().cloned())
+                .unwrap_or_default();
+            StoreError::Writer(format!("the writer thread panicked: {why}"))
+        })
     }
 }
 
 impl Drop for Store {
-    /// Stops the writer without recording a clean shutdown.
+    /// Stops the writer without recording a clean shutdown. It commits what
+    /// is in memory (at most the bounded queue) and returns; `journal/` is
+    /// left for the next open, so this never waits on a large journal.
     fn drop(&mut self) {
         if self.writer.is_some() {
             let _ = self.stop(Stop::Abandon);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crosswire_model::{
+        Body, ConnectionInfo, Exchange, Fidelity, FramingRecord, Head, Message, MessageKind,
+        SinkError,
+    };
+    use std::collections::BTreeSet;
+    use std::time::Instant;
+    use ulid::Ulid;
+
+    fn exchange(body: &[u8]) -> Exchange {
+        let msg = Message::new(
+            MessageKind::Normalized,
+            Fidelity::Normalized,
+            Head::Normalized { map: Vec::new() },
+            FramingRecord::None,
+            Body::Inline {
+                bytes: bytes::Bytes::copy_from_slice(body),
+            },
+            ConnectionInfo::new("example.test", 443),
+        );
+        Exchange::new(msg)
+    }
+
+    fn open(tmp: &tempfile::TempDir) -> (StoreConfig, Store) {
+        let cfg = StoreConfig {
+            batch_interval: Duration::from_millis(20),
+            ..StoreConfig::default()
+        };
+        let p = Project::create(&tmp.path().join("p")).unwrap();
+        (cfg.clone(), Store::open(p, cfg).unwrap())
+    }
+
+    /// Drains `ev` until `limit`, returning committed ids and error details.
+    fn watch(
+        ev: &mut EventStream,
+        want: &[Ulid],
+        limit: Duration,
+    ) -> (BTreeSet<Ulid>, Vec<String>) {
+        let deadline = Instant::now() + limit;
+        let (mut got, mut errors) = (BTreeSet::new(), Vec::new());
+        while Instant::now() < deadline && !want.iter().all(|w| got.contains(w)) {
+            match ev.try_recv() {
+                Some(Event::Committed { ids, .. }) => got.extend(ids),
+                Some(Event::Error { detail, .. }) => errors.push(detail),
+                Some(_) => {}
+                None => std::thread::sleep(Duration::from_millis(2)),
+            }
+        }
+        (got, errors)
+    }
+
+    fn bad_files(store: &Store) -> usize {
+        std::fs::read_dir(store.dir().join("journal").join("bad")).map_or(0, Iterator::count)
+    }
+
+    #[test]
+    fn database_failure_keeps_exchanges_and_recovers() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (cfg, store) = open(&tmp);
+        let mut ev = store.subscribe();
+        // Three failed attempts: 250 + 500 + 1000 ms of backoff.
+        cfg.hooks.fail_commits.store(3, Ordering::SeqCst);
+        let exs: Vec<Exchange> = (0..5u8).map(|i| exchange(&[i; 100])).collect();
+        let ids: Vec<Ulid> = exs.iter().map(Exchange::id).collect();
+        for ex in exs {
+            store.sink().submit(ex).unwrap();
+        }
+        let (got, errors) = watch(&mut ev, &ids, Duration::from_secs(15));
+        assert!(
+            ids.iter().all(|i| got.contains(i)),
+            "all committed after recovery"
+        );
+        assert_eq!(errors.len(), 1, "one Error per failure streak: {errors:?}");
+        assert_eq!(
+            bad_files(&store),
+            0,
+            "nothing quarantined for a database failure"
+        );
+        assert!(store.is_healthy());
+        let dir = store.dir().to_path_buf();
+        store.close().unwrap();
+        let journal = std::fs::read_dir(dir.join("journal"))
+            .unwrap()
+            .filter(|e| {
+                e.as_ref()
+                    .unwrap()
+                    .path()
+                    .extension()
+                    .is_some_and(|x| x == "json")
+            })
+            .count();
+        assert_eq!(journal, 0, "written-back exchanges were drained");
+        let conn = crate::project::open_reader(&dir).unwrap();
+        let gaps: i64 = conn
+            .query_row("SELECT count(*) FROM markers", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(gaps, 0, "nothing was lost");
+    }
+
+    #[test]
+    fn failing_exchange_is_set_aside_alone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (cfg, store) = open(&tmp);
+        let mut ev = store.subscribe();
+        let exs: Vec<Exchange> = (0..3u8).map(|i| exchange(&[i; 10])).collect();
+        let ids: Vec<Ulid> = exs.iter().map(Exchange::id).collect();
+        *cfg.hooks.fail_item.lock().unwrap() = Some(ids[1]);
+        for ex in exs {
+            store.sink().submit(ex).unwrap();
+        }
+        let want = [ids[0], ids[2]];
+        let (got, errors) = watch(&mut ev, &want, Duration::from_secs(5));
+        assert!(want.iter().all(|i| got.contains(i)));
+        assert!(!got.contains(&ids[1]));
+        assert!(errors.iter().any(|e| e.contains(&ids[1].to_string())));
+        assert!(store
+            .dir()
+            .join("journal")
+            .join("bad")
+            .join(format!("{}.json", ids[1]))
+            .is_file());
+        let dir = store.dir().to_path_buf();
+        store.close().unwrap();
+        let conn = crate::project::open_reader(&dir).unwrap();
+        let (from, to): (String, String) = conn
+            .query_row(
+                "SELECT from_ulid, to_ulid FROM markers WHERE kind = 'gap'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        let (from, to) = (
+            Ulid::from_string(&from).unwrap(),
+            Ulid::from_string(&to).unwrap(),
+        );
+        assert!(
+            from <= ids[1] && ids[1] <= to,
+            "the gap brackets the set-aside exchange"
+        );
+    }
+
+    #[test]
+    fn dead_writer_is_reported_and_refuses() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (cfg, store) = open(&tmp);
+        let mut ev = store.subscribe();
+        cfg.hooks.panic_next_batch.store(true, Ordering::SeqCst);
+        store.sink().submit(exchange(b"boom")).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut stopped = Vec::new();
+        while Instant::now() < deadline && stopped.is_empty() {
+            match ev.try_recv() {
+                Some(Event::Error { detail, .. }) if detail.starts_with("writer stopped") => {
+                    stopped.push(detail);
+                }
+                Some(_) => {}
+                None => std::thread::sleep(Duration::from_millis(2)),
+            }
+        }
+        assert_eq!(stopped.len(), 1);
+        assert!(!store.is_healthy());
+        assert_eq!(store.sink().submit(exchange(b"x")), Err(SinkError::Closed));
+        assert_eq!(store.sink().submit(exchange(b"y")), Err(SinkError::Closed));
+        while let Some(e) = ev.try_recv() {
+            assert!(
+                !matches!(&e, Event::Error { detail, .. } if detail.starts_with("writer stopped")),
+                "only one writer-stopped Error"
+            );
+        }
+        let dir = store.dir().to_path_buf();
+        match store.close() {
+            Err(StoreError::Writer(why)) => assert!(why.contains("injected writer panic")),
+            other => panic!("expected a writer error, got {other:?}"),
+        }
+        let lock = std::fs::read_to_string(dir.join("project.lock")).unwrap();
+        assert!(lock.contains("clean=0"));
     }
 }
