@@ -338,6 +338,7 @@ dependencies = [
 name = "crosswire-client"
 version = "0.0.0"
 dependencies = [
+ "bytes",
  "crosswire-ca",
  "crosswire-core",
  "crosswire-h1",

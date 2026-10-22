@@ -21,6 +21,7 @@ crosswire-core = { path = "../crosswire-core", version = "0.0.0" }
 crosswire-model = { path = "../crosswire-model", version = "0.0.0" }
 rustls-pki-types = { workspace = true }
 thiserror = { workspace = true }
+bytes = { version = "1", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }
