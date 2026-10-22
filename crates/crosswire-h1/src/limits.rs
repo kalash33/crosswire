@@ -2,7 +2,11 @@
 
 /// Upper bounds on the sizes the parser will accept.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize, serde::Deserialize),
+    serde(default)
+)]
 #[non_exhaustive]
 pub struct ParseLimits {
     /// Maximum size in bytes of the whole message head.
@@ -15,6 +19,14 @@ pub struct ParseLimits {
     pub max_chunk_size_line: u32,
     /// Maximum total size in bytes of the trailer section.
     pub max_trailer_size: u32,
+    /// Maximum number of data chunks (chunks with a non-zero size) in one
+    /// chunked body. The terminating zero-size chunk is not counted. One more
+    /// is [`ParseError::TooManyChunks`](crate::ParseError::TooManyChunks).
+    pub max_chunks: u64,
+    /// Maximum number of body diagnostics kept per message. Further body
+    /// diagnostics are counted, not stored; see
+    /// [`Parser::body_diagnostics_dropped`](crate::Parser::body_diagnostics_dropped).
+    pub max_body_diagnostics: u16,
 }
 
 impl Default for ParseLimits {
@@ -25,6 +37,8 @@ impl Default for ParseLimits {
             max_line: 16384,
             max_chunk_size_line: 4096,
             max_trailer_size: 16384,
+            max_chunks: 1_000_000,
+            max_body_diagnostics: 64,
         }
     }
 }
@@ -78,6 +92,20 @@ impl ParseLimitsBuilder {
     #[must_use]
     pub fn max_trailer_size(mut self, v: u32) -> Self {
         self.limits.max_trailer_size = v;
+        self
+    }
+
+    /// Sets [`ParseLimits::max_chunks`].
+    #[must_use]
+    pub fn max_chunks(mut self, v: u64) -> Self {
+        self.limits.max_chunks = v;
+        self
+    }
+
+    /// Sets [`ParseLimits::max_body_diagnostics`].
+    #[must_use]
+    pub fn max_body_diagnostics(mut self, v: u16) -> Self {
+        self.limits.max_body_diagnostics = v;
         self
     }
 

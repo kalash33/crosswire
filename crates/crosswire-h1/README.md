@@ -83,7 +83,7 @@ assert!(msg.diagnostics().iter().any(|d| d.code().as_str() == "obs_fold"));
 
 ## Diagnostics and corpus
 
-- [Diagnostic catalogue](https://github.com/crosswire-rs/crosswire/blob/main/docs/h1-diagnostics.md): all 25 codes, with
+- [Diagnostic catalogue](https://github.com/crosswire-rs/crosswire/blob/main/docs/h1-diagnostics.md): all 26 codes, with
   severities under each profile.
 - [Fidelity corpus](https://github.com/crosswire-rs/crosswire/blob/main/corpus/h1/README.md): odd-but-real HTTP/1 messages,
   each parsed, diagnosed and written back byte-identical.

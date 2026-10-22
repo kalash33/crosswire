@@ -1,0 +1,13 @@
+{
+  "kind": "response",
+  "ctx": {
+    "method": "GET",
+    "is_connect": false
+  },
+  "framing": "chunked",
+  "diagnostics": [
+    "chunk_extension_present",
+    "chunk_size_whitespace"
+  ],
+  "body": "MozillaDeveloper"
+}

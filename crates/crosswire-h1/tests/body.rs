@@ -1,5 +1,5 @@
 //! Tests for body streaming, chunked decoding and pipelining.
-use crosswire_core::{DiagnosticCode, Span};
+use crosswire_core::{DiagnosticCode, Profile, Severity, Span};
 use crosswire_h1::*;
 
 const CHUNKED_HEAD: &[u8] = b"POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n";
@@ -172,7 +172,9 @@ fn invalid_sizes() {
         &b"\r\n"[..],
         b";x\r\n",
         b"-1\r\n",
-        b"1 \r\n",
+        b"5 5\r\n",
+        b" 1\r\n",
+        b"1 x\r\n",
         b"fffffffffffffffff\r\n",
     ] {
         let mut p = chunked();
@@ -469,4 +471,285 @@ fn incomplete_size_line_over_limit_errors() {
     let mut p = Parser::request(&cfg);
     p.feed(CHUNKED_HEAD).unwrap();
     assert!(matches!(p.feed(b"12345"), Err(ParseError::LineTooLong)));
+}
+
+// C1: body diagnostics and chunk count are bounded.
+
+#[test]
+fn body_diagnostics_are_capped() {
+    let mut p = chunked();
+    let mut body = Vec::new();
+    for _ in 0..10_000 {
+        body.extend_from_slice(b"01\nX\n");
+    }
+    let mut off = 0;
+    while off < body.len() {
+        let s = p.feed(&body[off..]).unwrap();
+        assert!(s.consumed > 0);
+        off += s.consumed;
+    }
+    assert!(p.body_diagnostics().len() <= 64);
+    assert_eq!(p.body_diagnostics().len(), 64);
+    // Three findings per chunk (leading zeros, two bare LFs).
+    assert_eq!(p.body_diagnostics_dropped(), 30_000 - 64);
+    p.reset();
+    assert_eq!(p.body_diagnostics_dropped(), 0);
+}
+
+#[test]
+fn body_diagnostic_cap_is_configurable() {
+    let cfg = ParserConfig::builder()
+        .limits(ParseLimits::builder().max_body_diagnostics(2).build())
+        .build();
+    let mut p = Parser::request(&cfg);
+    p.feed(CHUNKED_HEAD).unwrap();
+    p.feed(b"01\nX\n").unwrap();
+    assert_eq!(p.body_diagnostics().len(), 2);
+    assert_eq!(p.body_diagnostics_dropped(), 1);
+}
+
+#[test]
+fn too_many_chunks() {
+    let cfg = ParserConfig::builder()
+        .limits(ParseLimits::builder().max_chunks(2).build())
+        .build();
+    let mut p = Parser::request(&cfg);
+    p.feed(CHUNKED_HEAD).unwrap();
+    assert_eq!(p.feed(b"1\r\na\r\n").unwrap().consumed, 6);
+    assert_eq!(p.feed(b"1\r\nb\r\n").unwrap().consumed, 6);
+    assert!(matches!(
+        p.feed(b"1\r\nc\r\n0\r\n\r\n"),
+        Err(ParseError::TooManyChunks)
+    ));
+    // Poisoned until reset.
+    assert!(matches!(
+        p.feed(b"0\r\n\r\n"),
+        Err(ParseError::TooManyChunks)
+    ));
+    // The terminating chunk is not counted.
+    let mut p = Parser::request(&cfg);
+    p.feed(CHUNKED_HEAD).unwrap();
+    p.feed(b"1\r\na\r\n").unwrap();
+    p.feed(b"1\r\nb\r\n").unwrap();
+    assert!(matches!(
+        p.feed(b"0\r\n\r\n").unwrap().event,
+        Progress::Done
+    ));
+    assert_eq!(ParseLimits::default().max_chunks, 1_000_000);
+}
+
+// C2: BWS in the chunk-size line.
+
+/// Feeds `body` whole, re-presenting after zero-consumption steps, and
+/// returns (ext texts, payload).
+fn drain(p: &mut Parser, body: &[u8]) -> (Vec<Vec<u8>>, Vec<u8>) {
+    let mut off = 0;
+    let mut exts = vec![];
+    let mut data = vec![];
+    for _ in 0..100 {
+        let rest = &body[off..];
+        let s = p.feed(rest).unwrap();
+        match &s.event {
+            Progress::ChunkExt(e) => exts.push(rest[e.range()].to_vec()),
+            Progress::BodyData { data: d, .. } => data.extend_from_slice(&rest[d.range()]),
+            Progress::Done => return (exts, data),
+            _ => {}
+        }
+        off += s.consumed;
+    }
+    panic!("no progress");
+}
+
+#[test]
+fn chunk_size_whitespace_before_ext() {
+    for body in [
+        &b"5 ;x=y\r\nhello\r\n0\r\n\r\n"[..],
+        b"5\t;x=y\r\nhello\r\n0\r\n\r\n",
+    ] {
+        let mut p = chunked();
+        let (exts, data) = drain(&mut p, body);
+        assert_eq!(exts, vec![b"x=y".to_vec()]);
+        assert_eq!(data, b"hello");
+        assert_eq!(has(&p, DiagnosticCode::ChunkSizeWhitespace), 1);
+        let d = p
+            .body_diagnostics()
+            .iter()
+            .find(|d| d.code() == DiagnosticCode::ChunkSizeWhitespace)
+            .unwrap();
+        assert_eq!(d.span(), Span::new(1, 2));
+        assert_eq!(has(&p, DiagnosticCode::ChunkExtensionPresent), 1);
+    }
+}
+
+#[test]
+fn chunk_size_whitespace_before_line_end() {
+    let mut p = chunked();
+    let (exts, data) = drain(&mut p, b"5 \r\nhello\r\n0 \t\r\n\r\n");
+    assert!(exts.is_empty());
+    assert_eq!(data, b"hello");
+    // Once per chunk: the data chunk and the last chunk.
+    assert_eq!(has(&p, DiagnosticCode::ChunkSizeWhitespace), 2);
+    let severity = |profile| {
+        let cfg = ParserConfig::builder().profile(profile).build();
+        let mut p = Parser::request(&cfg);
+        p.feed(CHUNKED_HEAD).unwrap();
+        p.feed(b"5 \r\nhello\r\n").unwrap();
+        p.body_diagnostics()[0].severity()
+    };
+    assert_eq!(severity(Profile::Lenient), Severity::Info);
+    assert_eq!(severity(Profile::Strict), Severity::Warning);
+}
+
+#[test]
+fn chunk_size_inner_whitespace_is_invalid() {
+    let mut p = chunked();
+    assert!(matches!(
+        p.feed(b"5 5\r\nhello\r\n"),
+        Err(ParseError::InvalidChunkSize { .. })
+    ));
+}
+
+// I4: absolute body-diagnostic spans.
+
+#[test]
+fn body_diagnostic_spans_are_absolute() {
+    let mut p = chunked();
+    // Two chunks, each with a leading-zero size, fed in separate calls.
+    assert_eq!(p.feed(b"01\r\na\r\n").unwrap().consumed, 7);
+    assert_eq!(p.feed(b"02\r\nbc\r\n").unwrap().consumed, 8);
+    let spans: Vec<Span> = p.body_diagnostics().iter().map(|d| d.span()).collect();
+    assert_eq!(spans, vec![Span::new(0, 2), Span::new(7, 9)]);
+
+    // Split-fed and whole-fed runs agree.
+    let body = b"01\na\n02;e\r\nbc\r\n0\r\nT: 1\n\r\n";
+    let whole = {
+        let mut p = chunked();
+        drain(&mut p, body);
+        p.body_diagnostics().to_vec()
+    };
+    for step in 1..body.len() {
+        let mut p = chunked();
+        let mut off = 0;
+        let mut end = step;
+        loop {
+            let input = &body[off..end];
+            let s = p.feed(input).unwrap();
+            off += s.consumed;
+            if matches!(s.event, Progress::Done) {
+                break;
+            }
+            if matches!(s.event, Progress::NeedMore) || off == end {
+                end = (end + step).min(body.len());
+            }
+        }
+        assert_eq!(p.body_diagnostics(), &whole[..], "step {step}");
+    }
+    let codes: Vec<_> = whole.iter().map(|d| (d.code(), d.span())).collect();
+    assert_eq!(
+        codes,
+        vec![
+            (DiagnosticCode::ChunkSizeLeadingZeros, Span::new(0, 2)),
+            (DiagnosticCode::BareLf, Span::new(2, 3)),
+            (DiagnosticCode::BareLf, Span::new(4, 5)),
+            (DiagnosticCode::ChunkSizeLeadingZeros, Span::new(5, 7)),
+            (DiagnosticCode::ChunkExtensionPresent, Span::new(8, 9)),
+            (DiagnosticCode::BareLf, Span::new(22, 23)),
+            (DiagnosticCode::TrailerPresent, Span::new(18, 23)),
+        ]
+    );
+}
+
+// I5a: trailer blocks fed byte by byte scan in linear time.
+
+#[test]
+fn trailer_block_byte_by_byte_is_linear() {
+    let mut block = b"0\r\n".to_vec();
+    while block.len() < 16 * 1024 - 64 {
+        block.extend_from_slice(b"X-Trailer-Field: some value here\r\n");
+    }
+    block.extend_from_slice(b"\r\n");
+    let cfg = ParserConfig::builder()
+        .limits(ParseLimits::builder().max_trailer_size(32 * 1024).build())
+        .build();
+    let mut p = Parser::request(&cfg);
+    p.feed(CHUNKED_HEAD).unwrap();
+    let start = std::time::Instant::now();
+    let mut end = 1;
+    let trailers = loop {
+        let s = p.feed(&block[..end]).unwrap();
+        match s.event {
+            Progress::NeedMore => {
+                assert_eq!(s.consumed, 0);
+                end += 1;
+            }
+            Progress::Trailers(t) => {
+                assert_eq!(s.consumed, block.len());
+                break t;
+            }
+            other => panic!("{other:?}"),
+        }
+    };
+    let took = start.elapsed();
+    assert_eq!(trailers.len(), (block.len() - 5) / 34);
+    assert_eq!(&block[trailers[0].value().range()], b"some value here");
+    // Generous bound for slow CI machines; locally this is a few ms in debug.
+    assert!(took.as_millis() < 200, "took {took:?}");
+}
+
+// I3 and I8: reset_response and is_idle.
+
+#[test]
+fn reset_response_replaces_context() {
+    let mut p = Parser::response(
+        &ParserConfig::default(),
+        ResponseContext::for_method(b"HEAD"),
+    );
+    let Progress::Head(m) = p
+        .feed(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\n")
+        .unwrap()
+        .event
+    else {
+        panic!()
+    };
+    assert_ne!(m.head().framing(), &BodyFraming::ContentLength(5));
+    p.reset();
+    let Progress::Head(m) = p
+        .feed(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\n")
+        .unwrap()
+        .event
+    else {
+        panic!()
+    };
+    assert_ne!(
+        m.head().framing(),
+        &BodyFraming::ContentLength(5),
+        "reset keeps the context"
+    );
+    p.reset_response(ResponseContext::for_method(b"GET"));
+    let Progress::Head(m) = p
+        .feed(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\n")
+        .unwrap()
+        .event
+    else {
+        panic!()
+    };
+    assert_eq!(m.head().framing(), &BodyFraming::ContentLength(5));
+}
+
+#[test]
+fn is_idle_between_messages() {
+    let mut p = Parser::request(&ParserConfig::default());
+    assert!(p.is_idle());
+    p.feed(b"GET / HTTP/1.1\r\n").unwrap();
+    assert!(!p.is_idle());
+    p.feed(b"Host: x\r\n\r\n").unwrap();
+    assert!(!p.is_idle());
+    p.reset();
+    assert!(p.is_idle());
+    // feed_eof is unchanged: an idle parser still reports UnexpectedEof.
+    assert!(matches!(p.feed_eof(), Err(ParseError::UnexpectedEof)));
+    p.reset_response(ResponseContext::for_method(b"GET"));
+    assert!(p.is_idle());
+    p.feed(b"\r\n").unwrap();
+    assert!(!p.is_idle());
 }

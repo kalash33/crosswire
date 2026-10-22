@@ -52,8 +52,12 @@ decoder clamped such spans to the current slice. Clamping made `ChunkExt` and
 `Trailers` spans wrong (truncated) whenever input was split inside those
 tokens. The split-at-every-byte property test found this in 5 corpus cases. It
 also meant a second, hidden buffer with its own size accounting. Re-presenting
-removes the buffer and the clamp: a span always refers to the `input` of the
-call that returned it, and results do not depend on how the input was split.
+removes the buffer and the clamp: a span in a `Progress` event always refers
+to the `input` of the call that returned it, and results do not depend on how
+the input was split. Body diagnostics (`Parser::body_diagnostics`) are
+collected across calls, so their spans are instead absolute offsets from the
+first body byte (byte 0 is the first byte after the head's empty line),
+saturating at `u32::MAX`; they too are independent of the split.
 
 ## Consequences
 
@@ -62,10 +66,17 @@ call that returned it, and results do not depend on how the input was split.
   two-way split vs byte-by-byte) and the fuzz targets.
 - Callers must keep unconsumed bytes and re-present them. A caller that drops
   them loses data. The rule is stated on `Parser::feed` and `Progress::NeedMore`.
-- Feeding a long incomplete token byte-by-byte rescans it each time; the size
-  line and trailer block are bounded by `max_chunk_size_line` and
-  `max_trailer_size`, which bounds the rescan cost.
+- Feeding a long incomplete chunk-size line byte-by-byte rescans it each
+  time; it is bounded by `max_chunk_size_line`, which bounds the rescan cost.
+  An incomplete trailer block is not rescanned: the decoder remembers how far
+  into the re-presented bytes it has verified complete lines (an offset, not
+  the bytes) and resumes there, so a trailer block fed byte by byte costs
+  linear time. This relies on re-presented bytes being identical; the decoder
+  does not verify them.
 - Memory is bounded without a body buffer: the only owned buffer is the head,
-  limited by `head_size`.
+  limited by `head_size`. Body diagnostics are capped at
+  `max_body_diagnostics` per message (the rest are only counted, see
+  `body_diagnostics_dropped`), and a chunked body may have at most
+  `max_chunks` data chunks (`ParseError::TooManyChunks`).
 - `Strict` changes severities, not fatality, so rule 4 is about `Lenient` and
   strictness never adds a failure mode that callers have to handle.

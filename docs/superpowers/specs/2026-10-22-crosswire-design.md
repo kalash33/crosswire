@@ -173,7 +173,7 @@ pub struct Change { op: ChangeOp, span: Span /* after-coordinates */, before: By
 #[non_exhaustive] pub enum EncodingHint { /* HTTP/2 per-field hints; used by the frozen Message schema from v0.1 */ }
 
 // crosswire-h1  (depends on crosswire-core and bytes only; `http` and `serde` are optional features)
-#[non_exhaustive] pub struct ParseLimits { head_size, max_headers, max_line, max_chunk_size_line, max_trailer_size }  // the §11.6 head row is derived from these defaults
+#[non_exhaustive] pub struct ParseLimits { head_size, max_headers, max_line, max_chunk_size_line, max_trailer_size, max_chunks, max_body_diagnostics }  // the §11.6 head row is derived from these defaults
 #[non_exhaustive] pub struct ParserConfig { profile: Profile, limits: ParseLimits }   // builder; per-code severity overrides deferred to h1 0.2
 pub struct RawMessage { /* private: head: Bytes, view: HeadView, body: Option<Bytes>, diagnostics */ }
 impl RawMessage { pub fn bytes(&self) -> &Bytes; pub fn head(&self) -> &HeadView; pub fn body(&self) -> Option<&Bytes>; pub fn diagnostics(&self) -> &[Diagnostic]; pub fn with_inline_body(self, body: Bytes) -> Self; }
@@ -207,7 +207,7 @@ pub fn apply_edits(msg: &RawMessage, edits: &[Edit], reason: ChangeReason) -> Re
 #[cfg(feature = "http")] impl TryFrom<&RawMessage> for http::Response<()> { /* documented lossy */ }
 ```
 
-**Initial `DiagnosticCode` catalogue** (default severity Lenient / Strict): `duplicate_content_length` (W/E), `conflicting_framing` (W/E), `obs_fold` (W/E), `bare_lf` (W/E), `bare_cr` (W/E), `whitespace_before_colon` (W/E), `trailing_space_in_name` (W/E), `leading_whitespace_before_start_line` (I/E), `non_canonical_header_case` (I/I), `invalid_token_char_in_name` (W/E), `invalid_char_in_value` (W/E), `missing_host` (W/E), `duplicate_host` (W/E), `absolute_form_target` (I/I), `chunk_extension_present` (I/I), `trailer_present` (I/I), `chunk_size_leading_zeros` (I/W), `invalid_chunk_size` (E/E), `content_length_non_numeric` (W/E), `content_length_leading_plus` (W/E), `unknown_transfer_coding` (W/E), `body_after_no_body_status` (W/E), `expect_100_continue` (I/I), `http_0_9_request` (W/E), `version_unusual` (W/E). Twenty-five codes; the §2.3 corpus must cover each at least once.
+**Initial `DiagnosticCode` catalogue** (default severity Lenient / Strict): `duplicate_content_length` (W/E), `conflicting_framing` (W/E), `obs_fold` (W/E), `bare_lf` (W/E), `bare_cr` (W/E), `whitespace_before_colon` (W/E), `trailing_space_in_name` (W/E), `leading_whitespace_before_start_line` (I/E), `non_canonical_header_case` (I/I), `invalid_token_char_in_name` (W/E), `invalid_char_in_value` (W/E), `missing_host` (W/E), `duplicate_host` (W/E), `absolute_form_target` (I/I), `chunk_extension_present` (I/I), `trailer_present` (I/I), `chunk_size_leading_zeros` (I/W), `invalid_chunk_size` (E/E), `content_length_non_numeric` (W/E), `content_length_leading_plus` (W/E), `unknown_transfer_coding` (W/E), `body_after_no_body_status` (W/E), `expect_100_continue` (I/I), `http_0_9_request` (W/E), `version_unusual` (W/E), `chunk_size_whitespace` (I/W; BWS before `;` or the line break of a chunk-size line, RFC 9112 §7.1.1). Twenty-six codes; the §2.3 corpus must cover each at least once.
 
 Raw-mode repeater sends use `WritePlan::raw(Bytes)` with a `ResponseContext` from a best-effort parse, falling back to `UntilClose`. `MessageBuilder` and a `TryFrom<http::Request<Bytes>>` with a serialisation policy are deferred to h1 0.2.
 
@@ -388,7 +388,7 @@ The worker process is the sandbox boundary and holds no secrets, only a scoped p
 | `audit.jsonl` cap | 64 MiB | rotate | file count |
 | in-flight body budget | 256 MiB | new bodies `capture_dropped` | `body.capture_dropped` |
 | head size / header count / line length (`ParseLimits`, §5.1) | 64 KiB / 256 / 16 KiB | stop reading, retain ≤ limit + tail, close, `limit_exceeded` marker; fixture asserts flat RSS | `Marker{limit_exceeded}` |
-| chunk count / chunk-ext size / trailer size / pipelining depth | 1M / 4 KiB / 16 KiB / 16 | diagnostic, close | diagnostic |
+| chunk count (`max_chunks`) / chunk-size line incl. ext (`max_chunk_size_line`) / trailer size (`max_trailer_size`) / body diagnostics kept per message (`max_body_diagnostics`) / pipelining depth | 1M / 4 KiB / 16 KiB / 64 / 16 | `ParseError` (`TooManyChunks`, `LineTooLong`, `TrailerTooLarge`), close; body diagnostics past the cap are counted, not stored | error event; `body_diagnostics_dropped` |
 | decompression size / ratio | 64 MiB / 100:1 | derived view marked truncated | banner |
 | HTTP exchange timeouts (header read, idle, total); stop at 101 / CONNECT establishment | 30 s / 60 s / 300 s | `generated` 504 | row |
 | `tunnel_idle` | off | close with `tunnel_idle` event | event |
@@ -444,7 +444,7 @@ Verify upstream chains against OS/webpki roots for every host by default, agains
 
 ### v0.1.0 — core loop. 700 h (§5 arithmetic). Target 2028-Q1; with the full cut list 2027-Q4; latest 2028-Q2. Segment: bug bounty hunters and creators (sidecar beside Burp).
 Pre-releases are defined by content and cumulative hours, not by calendar:
-- **0.1.0-alpha.1 — headless recorder, ~270 h (≈ 2027-Q2).** core, h1 parser + writer + body codec (no edit engine), ca, client (h1 serial), store with writer/journal, proxy relaying to the store with no intercept, the §2.3 corpus, `crosswire serve` with no UI. Mini-DoD: golden HTTP/1 suite and split proptest green on ≥ 200 captures covering all 25 codes; kill -9 test green; proxy relays a real browser session to a project directory.
+- **0.1.0-alpha.1 — headless recorder, ~270 h (≈ 2027-Q2).** core, h1 parser + writer + body codec (no edit engine), ca, client (h1 serial), store with writer/journal, proxy relaying to the store with no intercept, the §2.3 corpus, `crosswire serve` with no UI. Mini-DoD: golden HTTP/1 suite and split proptest green on ≥ 200 captures covering all 26 codes; kill -9 test green; proxy relays a real browser session to a project directory.
 - **alpha.2 — the sidecar, ~500 h cumulative (≈ 2027-Q4).** h1 edit engine, scope, model, api, history view, repeater (assisted and raw), request intercept, `crosswire browser` (Chromium). Mini-DoD: all §13 security gates green; install-to-first-capture < 2 min; RSS < 500 MB at 1M synthetic exchanges. Private early access for 5–10 named creators begins here.
 - **beta — daily tools, ~620 h cumulative (≈ 2028-Q1).** match-and-replace, decoder, tags/notes, copy-as-curl, response intercept, docs site with the CA-install guide, Firefox profile. Good-first-issues open at the beta.
 - **0.1.0 — ~700 h (≈ 2028-Q1).** launch assets (§15), release pipeline, governance docs.

@@ -72,7 +72,7 @@ spec behaviour and add `"known_bug"`; do not bend the expectation to the bug.
   a case that cannot be written back identical is a bug in the library, not in
   the case.
 - Cases must not depend on the operating system's line endings.
-- Every one of the 25 diagnostic codes must appear in at least one case.
+- Every one of the 26 diagnostic codes must appear in at least one case.
 
 ## Licence
 

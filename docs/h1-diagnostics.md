@@ -1,6 +1,6 @@
 # Diagnostic catalogue
 
-The 25 `DiagnosticCode` values of `crosswire-core`, as emitted by `crosswire-h1`.
+The 26 `DiagnosticCode` values of `crosswire-core`, as emitted by `crosswire-h1`.
 `code` is the stable `as_str()` name. Severities are the defaults from
 `DiagnosticCode::default_severity` for `Profile::Lenient` and `Profile::Strict`.
 Neither profile makes any of these fatal (except `invalid_chunk_size`, which is a
@@ -36,3 +36,4 @@ This table is checked against the code by
 | `expect_100_continue` | An `Expect: 100-continue` header is present. The span is the value. | Info | Info |
 | `http_0_9_request` | The request line has fewer than two spaces, so there is no version. The span is the whole line. | Warning | Error |
 | `version_unusual` | The version is not exactly `HTTP/1.0` or `HTTP/1.1`. For responses it is also the catch-all when the status is not three ASCII digits. At most once per response; the span is the version. | Warning | Error |
+| `chunk_size_whitespace` | Spaces or tabs between the chunk size and the `;` of an extension or the line break (`5 ;x=y`, `5 \r\n`). RFC 9112 allows this BWS before `;`; it is tolerated, never fatal. Reported once per chunk; the span is the whitespace. Whitespace before or inside the size token is still `invalid_chunk_size`. | Info | Warning |

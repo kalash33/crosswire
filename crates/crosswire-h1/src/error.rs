@@ -14,7 +14,10 @@ pub enum ParseError {
     LineTooLong,
     /// The head contained more headers than allowed.
     TooManyHeaders,
-    /// The head had no terminating blank line.
+    /// Reserved; not currently returned. When no terminating blank line
+    /// appears within [`ParseLimits::head_size`](crate::ParseLimits::head_size)
+    /// the parser returns [`ParseError::HeadTooLarge`], and end of input
+    /// before it is [`ParseError::UnexpectedEof`].
     NoTerminator,
     /// The input ended in the middle of a message.
     UnexpectedEof,
@@ -25,6 +28,9 @@ pub enum ParseError {
     },
     /// The trailer section exceeded its size limit.
     TrailerTooLarge,
+    /// A chunked body had more data chunks than
+    /// [`ParseLimits::max_chunks`](crate::ParseLimits::max_chunks).
+    TooManyChunks,
 }
 
 impl fmt::Display for ParseError {
@@ -42,6 +48,7 @@ impl fmt::Display for ParseError {
                 span.end()
             ),
             ParseError::TrailerTooLarge => f.write_str("trailer section too large"),
+            ParseError::TooManyChunks => f.write_str("too many chunks"),
         }
     }
 }
@@ -72,6 +79,7 @@ mod tests {
                 "invalid chunk size at bytes 3..7",
             ),
             (ParseError::TrailerTooLarge, "trailer section too large"),
+            (ParseError::TooManyChunks, "too many chunks"),
         ];
         for (err, msg) in cases {
             assert_eq!(err.to_string(), msg);

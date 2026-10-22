@@ -70,6 +70,8 @@ pub enum DiagnosticCode {
     Http09Request,
     /// See [`DiagnosticCode::as_str`]: `version_unusual`.
     VersionUnusual,
+    /// See [`DiagnosticCode::as_str`]: `chunk_size_whitespace`.
+    ChunkSizeWhitespace,
 }
 
 impl DiagnosticCode {
@@ -100,6 +102,7 @@ impl DiagnosticCode {
         DiagnosticCode::Expect100Continue,
         DiagnosticCode::Http09Request,
         DiagnosticCode::VersionUnusual,
+        DiagnosticCode::ChunkSizeWhitespace,
     ];
 
     /// Stable snake_case name of the code.
@@ -133,6 +136,7 @@ impl DiagnosticCode {
             DiagnosticCode::Expect100Continue => "expect_100_continue",
             DiagnosticCode::Http09Request => "http_0_9_request",
             DiagnosticCode::VersionUnusual => "version_unusual",
+            DiagnosticCode::ChunkSizeWhitespace => "chunk_size_whitespace",
         }
     }
 
@@ -165,6 +169,7 @@ impl DiagnosticCode {
             DiagnosticCode::Expect100Continue => (Severity::Info, Severity::Info),
             DiagnosticCode::Http09Request => (Severity::Warning, Severity::Error),
             DiagnosticCode::VersionUnusual => (Severity::Warning, Severity::Error),
+            DiagnosticCode::ChunkSizeWhitespace => (Severity::Info, Severity::Warning),
         };
         match profile {
             Profile::Strict => strict,

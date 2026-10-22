@@ -32,8 +32,8 @@ fn parse_severity(s: &str) -> Severity {
 #[test]
 fn docs_catalogue_matches_code() {
     let rows = rows();
-    assert_eq!(rows.len(), 25, "table must have 25 data rows");
-    assert_eq!(DiagnosticCode::ALL.len(), 25);
+    assert_eq!(rows.len(), 26, "table must have 26 data rows");
+    assert_eq!(DiagnosticCode::ALL.len(), 26);
     for code in DiagnosticCode::ALL {
         let name = code.as_str();
         let matching: Vec<_> = rows.iter().filter(|r| r[0] == name).collect();

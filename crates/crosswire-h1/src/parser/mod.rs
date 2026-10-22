@@ -100,11 +100,16 @@ enum State {
     Failed(ParseError),
 }
 
+/// The largest input prefix one body-phase call looks at, so that `consumed`
+/// never exceeds what a [`Span`] can describe.
+const MAX_SPAN: usize = u32::MAX as usize;
+
 /// An incremental HTTP/1 message parser.
 ///
-/// Feed it bytes with [`feed`](Parser::feed) until it returns
-/// [`Progress::NeedMore`]. After [`Progress::Done`], the unconsumed tail of the
-/// input is the next pipelined message; call [`reset`](Parser::reset) to parse it.
+/// Feed it bytes with [`feed`](Parser::feed) in a loop until it returns
+/// [`Progress::NeedMore`]. After [`Progress::Done`] the parser keeps returning
+/// `Done` (consuming nothing) until [`reset`](Parser::reset); the unconsumed
+/// tail of the input is the next pipelined message.
 #[derive(Debug)]
 pub struct Parser {
     kind: Kind,
@@ -135,6 +140,12 @@ impl Parser {
 
     /// Creates a parser for response messages. `ctx` describes the request
     /// being answered, which decides how the body is framed.
+    ///
+    /// [`reset`](Parser::reset) keeps `ctx`. A keep-alive relay parsing the
+    /// next response on the connection must call
+    /// [`reset_response`](Parser::reset_response) with the context of the
+    /// next request instead, or a response to `HEAD` or `CONNECT` is framed
+    /// with the previous request's method.
     #[must_use]
     pub fn response(cfg: &ParserConfig, ctx: ResponseContext) -> Parser {
         Parser {
@@ -164,7 +175,21 @@ impl Parser {
     ///
     /// # Errors
     ///
-    /// Returns a [`ParseError`] when a configured limit is exceeded.
+    /// - [`ParseError::HeadTooLarge`]: the head reached
+    ///   [`ParseLimits::head_size`] without its empty line.
+    /// - [`ParseError::LineTooLong`]: a head line exceeded
+    ///   [`ParseLimits::max_line`], or a chunk-size line exceeded
+    ///   [`ParseLimits::max_chunk_size_line`].
+    /// - [`ParseError::TooManyHeaders`]: more than
+    ///   [`ParseLimits::max_headers`] header fields.
+    /// - [`ParseError::InvalidChunkSize`]: a chunk size that is not
+    ///   hexadecimal, or a malformed line break after chunk data.
+    /// - [`ParseError::TrailerTooLarge`]: the trailer block exceeded
+    ///   [`ParseLimits::max_trailer_size`].
+    /// - [`ParseError::TooManyChunks`]: more data chunks than
+    ///   [`ParseLimits::max_chunks`].
+    /// - The earlier error again, if the parser already failed; it stays
+    ///   failed until [`reset`](Parser::reset).
     pub fn feed(&mut self, input: &[u8]) -> Result<Step, ParseError> {
         let result = match &self.state {
             State::Done => {
@@ -186,6 +211,11 @@ impl Parser {
     }
 
     /// Signals the end of the input stream.
+    ///
+    /// An idle parser (see [`is_idle`](Parser::is_idle)) also returns
+    /// `UnexpectedEof`: a relay that sees the connection close between
+    /// messages checks `is_idle()` first to tell a clean close from a
+    /// truncated message.
     ///
     /// # Errors
     ///
@@ -215,20 +245,60 @@ impl Parser {
 
     /// Diagnostics found while reading the body (chunk framing, trailers).
     /// They are cleared by [`reset`](Parser::reset).
+    ///
+    /// Spans are absolute offsets from the first body byte: byte 0 is the
+    /// first byte after the head's empty line. They saturate at `u32::MAX`
+    /// and do not depend on how the input was split across calls (unlike
+    /// the spans in [`Progress`] events, which index each call's input).
+    ///
+    /// At most [`ParseLimits::max_body_diagnostics`] are kept per message;
+    /// the rest are counted by
+    /// [`body_diagnostics_dropped`](Parser::body_diagnostics_dropped).
     #[must_use]
     pub fn body_diagnostics(&self) -> &[Diagnostic] {
         self.decoder.diagnostics()
     }
 
-    /// Discards all state and starts parsing a new message.
+    /// How many body diagnostics were found but not kept because
+    /// [`ParseLimits::max_body_diagnostics`] was reached.
+    #[must_use]
+    pub fn body_diagnostics_dropped(&self) -> usize {
+        self.decoder.diagnostics_dropped()
+    }
+
+    /// Whether the parser is between messages: in the head state with
+    /// nothing buffered. True for a fresh parser and right after
+    /// [`reset`](Parser::reset) or [`reset_response`](Parser::reset_response),
+    /// until the first byte of a head (including skipped leading whitespace)
+    /// is consumed.
+    #[must_use]
+    pub fn is_idle(&self) -> bool {
+        matches!(self.state, State::Head) && self.buf.bytes.is_empty()
+    }
+
+    /// Discards all state and starts parsing a new message. A response
+    /// parser keeps its [`ResponseContext`]; use
+    /// [`reset_response`](Parser::reset_response) to replace it.
     pub fn reset(&mut self) {
         self.state = State::Head;
         self.buf.clear();
         self.decoder.reset();
     }
 
+    /// Like [`reset`](Parser::reset), and also replaces the
+    /// [`ResponseContext`] with `ctx`, the request the next response answers.
+    /// On a request parser `ctx` is ignored.
+    pub fn reset_response(&mut self, ctx: ResponseContext) {
+        self.reset();
+        if self.kind == Kind::Response {
+            self.ctx = Some(ctx);
+        }
+    }
+
     fn feed_fixed(&mut self, remaining: u64, input: &[u8]) -> Step {
-        let take = usize::try_from(remaining).map_or(input.len(), |r| r.min(input.len()));
+        // Capped so that `consumed` never exceeds what the span can describe.
+        let avail = input.len().min(MAX_SPAN);
+        let take = usize::try_from(remaining).map_or(avail, |r| r.min(avail));
         if take == 0 {
             return Step {
                 consumed: 0,
@@ -241,6 +311,7 @@ impl Parser {
         } else {
             State::Fixed { remaining: left }
         };
+        debug_assert!(take <= MAX_SPAN);
         let whole = Span::new(0, u32::try_from(take).unwrap_or(u32::MAX));
         Step {
             consumed: take,
@@ -314,15 +385,17 @@ fn body_state(framing: &BodyFraming) -> State {
 }
 
 fn feed_until_close(input: &[u8]) -> Step {
-    if input.is_empty() {
+    // Capped so that `consumed` never exceeds what the span can describe.
+    let take = input.len().min(MAX_SPAN);
+    if take == 0 {
         return Step {
             consumed: 0,
             event: Progress::NeedMore,
         };
     }
-    let whole = Span::new(0, u32::try_from(input.len()).unwrap_or(u32::MAX));
+    let whole = Span::new(0, u32::try_from(take).unwrap_or(u32::MAX));
     Step {
-        consumed: input.len(),
+        consumed: take,
         event: Progress::BodyData {
             raw: whole,
             data: whole,

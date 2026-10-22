@@ -16,7 +16,7 @@ CODES = [
     "trailer_present", "chunk_size_leading_zeros", "invalid_chunk_size",
     "content_length_non_numeric", "content_length_leading_plus",
     "unknown_transfer_coding", "body_after_no_body_status", "expect_100_continue",
-    "http_0_9_request", "version_unusual",
+    "http_0_9_request", "version_unusual", "chunk_size_whitespace",
 ]
 RULES = {"transfer_encoding_wins", "first_content_length", "no_body_status",
          "head_method", "connect_success"}
