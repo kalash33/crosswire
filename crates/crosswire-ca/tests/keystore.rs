@@ -38,3 +38,17 @@ fn debug_never_prints_key() {
     let dbg = format!("{ca:?}");
     assert!(!dbg.contains("PRIVATE"));
 }
+
+#[test]
+fn orphan_crt_is_an_error_and_no_tmp_files_remain() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = FileKeyStore::new(tmp.path());
+    Ca::load_or_generate(&store, "t").unwrap();
+    let names: Vec<_> = std::fs::read_dir(tmp.path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    assert!(names.iter().all(|n| !n.ends_with(".tmp")), "{names:?}");
+    std::fs::remove_file(tmp.path().join("ca.key")).unwrap();
+    assert!(matches!(store.load(), Err(CaError::Pem(_))));
+}

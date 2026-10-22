@@ -193,10 +193,38 @@ fn leaves_have_distinct_serials_and_one_key() {
 
 #[test]
 fn spki_pin_is_base64_sha256() {
+    use rcgen::PublicKeyData;
+    use sha2::{Digest, Sha256};
+
+    fn b64(data: &[u8]) -> String {
+        const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut out = String::new();
+        for c in data.chunks(3) {
+            let n = (u32::from(c[0]) << 16)
+                | (u32::from(*c.get(1).unwrap_or(&0)) << 8)
+                | u32::from(*c.get(2).unwrap_or(&0));
+            for i in 0..4 {
+                out.push(if i <= c.len() {
+                    A[((n >> (18 - 6 * i)) & 63) as usize] as char
+                } else {
+                    '='
+                });
+            }
+        }
+        out
+    }
+
     let ca = Ca::generate("test").unwrap();
     let pin = ca.spki_sha256_base64();
-    assert_eq!(pin.len(), 44);
-    assert!(pin.ends_with('='));
+    let key = rcgen::KeyPair::from_pem(&ca.key_pem()).unwrap();
+    let spki = key.subject_public_key_info();
+    assert_eq!(
+        pin,
+        b64(&Sha256::digest(&spki)),
+        "pin is SHA-256 of the DER SPKI"
+    );
+    // Negative control: hashing only the raw EC point must differ.
+    assert_ne!(pin, b64(&Sha256::digest(key.public_key_raw())));
     assert_eq!(
         pin,
         Ca::from_pem(&ca.cert_pem(), &ca.key_pem())
@@ -206,8 +234,44 @@ fn spki_pin_is_base64_sha256() {
 }
 
 #[test]
+fn long_host_omits_cn_and_still_verifies() {
+    let (ca, issuer) = issuer(IssuerLimits::default());
+    let host = format!(
+        "{}.{}.{}.example.test",
+        "a".repeat(60),
+        "b".repeat(60),
+        "c".repeat(60)
+    );
+    assert!(host.len() > 64);
+    let ck = issuer
+        .issue(&ServerName::try_from(host.clone()).unwrap())
+        .unwrap();
+    let (_, leaf) = X509Certificate::from_der(&ck.cert[0]).unwrap();
+    assert!(leaf.subject().iter_common_name().next().is_none());
+    assert_verifies(&ca, &ck, &host);
+}
+
+#[test]
 fn issuer_is_send_sync() {
     fn assert<T: Send + Sync>() {}
     assert::<LeafIssuer>();
     assert::<Ca>();
+}
+
+#[test]
+fn expired_ca_is_refused() {
+    use rcgen::{BasicConstraints, CertificateParams, IsCa, KeyPair, KeyUsagePurpose};
+    let key = KeyPair::generate().unwrap();
+    let mut p = CertificateParams::default();
+    p.not_before = ::time::OffsetDateTime::now_utc() - ::time::Duration::days(30);
+    p.not_after = ::time::OffsetDateTime::now_utc() - ::time::Duration::days(2);
+    p.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+    p.key_usages = vec![KeyUsagePurpose::KeyCertSign];
+    let cert = p.self_signed(&key).unwrap();
+    let ca = Ca::from_pem(&cert.pem(), &key.serialize_pem()).unwrap();
+    let issuer = LeafIssuer::new(Arc::new(ca), IssuerLimits::default());
+    let err = issuer
+        .issue(&ServerName::try_from("example.test").unwrap())
+        .unwrap_err();
+    assert!(matches!(err, CaError::CaExpired));
 }

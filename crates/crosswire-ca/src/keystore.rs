@@ -16,6 +16,10 @@ pub trait KeyStore {
 
 /// A key store of two files, `ca.crt` (0644) and `ca.key` (0600), in a 0700
 /// directory. On Windows no mode bits are applied.
+///
+/// `save` writes `ca.crt` first, then `ca.key`. A crash between the two leaves
+/// an orphan `ca.crt`, which `load` reports as an error; recover by deleting
+/// the orphan and regenerating.
 #[derive(Debug, Clone)]
 pub struct FileKeyStore {
     dir: PathBuf,
@@ -54,8 +58,8 @@ impl KeyStore for FileKeyStore {
 
     fn save(&self, cert_pem: &str, key_pem: &str) -> Result<(), CaError> {
         make_dir(&self.dir)?;
-        write_file(&self.dir.join("ca.key"), key_pem, 0o600)?;
         write_file(&self.dir.join("ca.crt"), cert_pem, 0o644)?;
+        write_file(&self.dir.join("ca.key"), key_pem, 0o600)?;
         Ok(())
     }
 }
@@ -80,7 +84,9 @@ fn make_dir(dir: &Path) -> Result<(), CaError> {
 /// Write via a temp file created with its final mode, then rename, so the
 /// secret is never visible with looser permissions.
 fn write_file(path: &Path, data: &str, mode: u32) -> Result<(), CaError> {
-    let tmp = path.with_extension("tmp");
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(".tmp");
+    let tmp = path.with_file_name(name);
     let _ = fs::remove_file(&tmp);
     let mut opts = fs::OpenOptions::new();
     opts.write(true).create_new(true);

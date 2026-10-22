@@ -19,4 +19,7 @@ pub enum CaError {
     /// The server name cannot be certified.
     #[error("host cannot be certified")]
     InvalidHost,
+    /// The CA is expired or too close to expiry to sign a valid leaf.
+    #[error("CA certificate is expired or about to expire")]
+    CaExpired,
 }

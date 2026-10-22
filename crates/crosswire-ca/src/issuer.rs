@@ -11,7 +11,7 @@ use rcgen::{
     KeyUsagePurpose, SanType, PKCS_ECDSA_P256_SHA256,
 };
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName};
-use rustls::sign::CertifiedKey;
+use rustls::sign::{CertifiedKey, SigningKey};
 use time::{Duration, OffsetDateTime};
 
 use crate::ca::{random_serial, Ca};
@@ -50,7 +50,7 @@ struct State {
 pub struct LeafIssuer {
     ca: Arc<Ca>,
     leaf_key: KeyPair,
-    leaf_pkcs8: Vec<u8>,
+    signing_key: Arc<dyn SigningKey>,
     rate: f64,
     state: Mutex<State>,
 }
@@ -69,13 +69,16 @@ impl LeafIssuer {
     pub fn new(ca: Arc<Ca>, limits: IssuerLimits) -> LeafIssuer {
         let leaf_key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256)
             .expect("P-256 key generation failed: no system randomness");
-        let leaf_pkcs8 = leaf_key.serialize_der();
+        let signing_key = rustls::crypto::ring::sign::any_ecdsa_type(&PrivateKeyDer::Pkcs8(
+            PrivatePkcs8KeyDer::from(leaf_key.serialize_der()),
+        ))
+        .expect("rcgen emits valid PKCS#8 P-256");
         let cap = NonZeroUsize::new(limits.cache_entries.max(1)).expect("max(1) is non-zero");
         let rate = f64::from(limits.mint_rate_per_sec.max(1));
         LeafIssuer {
             ca,
             leaf_key,
-            leaf_pkcs8,
+            signing_key,
             rate,
             state: Mutex::new(State {
                 cache: LruCache::new(cap),
@@ -133,11 +136,18 @@ impl LeafIssuer {
         let now = OffsetDateTime::now_utc();
         let mut params = CertificateParams::default();
         params.not_before = now - Duration::days(1);
-        params.not_after = (now + Duration::days(LEAF_VALIDITY_DAYS))
+        let not_after = (now + Duration::days(LEAF_VALIDITY_DAYS))
             .min(self.ca.inner.not_after - Duration::days(1));
+        if not_after <= now {
+            return Err(CaError::CaExpired);
+        }
+        params.not_after = not_after;
         params.serial_number = Some(random_serial()?);
         params.distinguished_name = DistinguishedName::new();
-        params.distinguished_name.push(DnType::CommonName, cn);
+        // RFC 5280 ub-common-name is 64; longer hosts rely on the SAN alone.
+        if cn.len() <= 64 {
+            params.distinguished_name.push(DnType::CommonName, cn);
+        }
         params.subject_alt_names = vec![san];
         params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
         params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
@@ -145,16 +155,12 @@ impl LeafIssuer {
         let cert = params
             .signed_by(&self.leaf_key, &self.ca.inner.issuer)
             .map_err(|e| gen(&e))?;
-        let signing_key = rustls::crypto::ring::sign::any_ecdsa_type(&PrivateKeyDer::Pkcs8(
-            PrivatePkcs8KeyDer::from(self.leaf_pkcs8.clone()),
-        ))
-        .map_err(|e| gen(&e))?;
         Ok(CertifiedKey::new(
             vec![
                 CertificateDer::from(cert.der().to_vec()),
                 CertificateDer::from(self.ca.cert_der()),
             ],
-            signing_key,
+            Arc::clone(&self.signing_key),
         ))
     }
 }
