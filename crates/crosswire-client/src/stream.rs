@@ -217,16 +217,6 @@ impl<'a> ResponseStream<'a> {
         &self.interim
     }
 
-    fn push_raw(&mut self, bytes: &[u8]) {
-        self.raw_len += bytes.len() as u64;
-        let room = self.session.raw_cap.saturating_sub(self.raw.len());
-        let take = room.min(bytes.len());
-        self.raw.extend_from_slice(&bytes[..take]);
-        if take < bytes.len() && self.raw_truncated_at.is_none() {
-            self.raw_truncated_at = Some(self.raw.len() as u64);
-        }
-    }
-
     /// Diagnostics found in the body framing so far.
     #[must_use]
     pub fn body_diagnostics(&self) -> &[Diagnostic] {
@@ -234,7 +224,7 @@ impl<'a> ResponseStream<'a> {
     }
 
     /// Reads until the final response head is complete and returns it,
-    /// skipping interim 1xx responses (recorded in
+    /// skipping up to the session's `max_interim` interim 1xx responses (recorded in
     /// [`interim_responses`](ResponseStream::interim_responses)); `101` is a
     /// final head. Calling it again returns the same head.
     ///
@@ -252,6 +242,9 @@ impl<'a> ResponseStream<'a> {
             };
             let status = msg.head().status_code(msg.bytes());
             if matches!(status, Some(100..=199)) && status != Some(101) {
+                if self.interim.len() >= self.session.max_interim {
+                    return Err(ClientError::Protocol("too many interim responses".into()));
+                }
                 self.interim.push(msg);
                 self.session.parser.reset_response(self.ctx);
                 continue;
@@ -372,9 +365,16 @@ impl<'a> ResponseStream<'a> {
         }
     }
 
+    /// Records the first `n` bytes of `pending` as consumed; only the part
+    /// within the cap is copied.
     fn push_raw_from_pending(&mut self, n: usize) {
-        let chunk = self.session.pending[..n].to_vec();
-        self.push_raw(&chunk);
+        self.raw_len += n as u64;
+        let room = self.session.raw_cap.saturating_sub(self.raw.len());
+        let take = room.min(n);
+        self.raw.extend_from_slice(&self.session.pending[..take]);
+        if take < n && self.raw_truncated_at.is_none() {
+            self.raw_truncated_at = Some(self.raw.len() as u64);
+        }
     }
 
     /// Reads into `pending` after the unconsumed tail. At end of input,

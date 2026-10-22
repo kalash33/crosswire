@@ -363,3 +363,39 @@ async fn interim_responses_are_skipped_and_recorded() {
     drop(r);
     assert!(s.is_reusable());
 }
+
+#[tokio::test]
+async fn endless_interim_responses_are_bounded() {
+    static RESP: [u8; 25 * 50 + 38] = {
+        let mut a = [0u8; 25 * 50 + 38];
+        let one = b"HTTP/1.1 100 Continue\r\n\r\n";
+        let fin = b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n";
+        let mut i = 0;
+        while i < one.len() * 50 {
+            a[i] = one[i % one.len()];
+            i += 1;
+        }
+        let mut j = 0;
+        while j < fin.len() {
+            a[one.len() * 50 + j] = fin[j];
+            j += 1;
+        }
+        a
+    };
+    assert_eq!(b"HTTP/1.1 100 Continue\r\n\r\n".len(), 25);
+    assert_eq!(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n".len(), 38);
+    let addr = common::spawn_scripted(&RESP, &[]).await;
+    let mut s = Session::new(connect_plain(addr).await, ParserConfig::default());
+    let mut r = s
+        .send(WritePlan::raw(req()), ResponseContext::for_method(b"GET"))
+        .await
+        .unwrap();
+    let e = r.head().await.err().unwrap();
+    assert!(
+        matches!(&e, ClientError::Protocol(m) if m == "too many interim responses"),
+        "{e:?}"
+    );
+    assert_eq!(r.interim_responses().len(), 16);
+    drop(r);
+    assert!(!s.is_reusable());
+}

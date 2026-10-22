@@ -18,6 +18,9 @@ const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(60);
 /// Default cap on retained response bytes (the spec's `capture_cap`).
 const DEFAULT_RAW_CAP: usize = 50 * 1024 * 1024;
 
+/// Default number of interim (1xx) responses allowed per exchange.
+const DEFAULT_MAX_INTERIM: usize = 16;
+
 /// Sends requests over one [`Connection`] and reads their responses with
 /// `crosswire-h1`, one exchange at a time.
 ///
@@ -35,6 +38,7 @@ pub struct Session {
     info: ConnectionInfo,
     pub(crate) read_timeout: Duration,
     pub(crate) raw_cap: usize,
+    pub(crate) max_interim: usize,
     pub(crate) reusable: bool,
     pub(crate) in_flight: bool,
 }
@@ -54,6 +58,7 @@ impl Session {
             info,
             read_timeout: DEFAULT_READ_TIMEOUT,
             raw_cap: DEFAULT_RAW_CAP,
+            max_interim: DEFAULT_MAX_INTERIM,
             reusable: true,
             in_flight: false,
         }
@@ -72,6 +77,15 @@ impl Session {
     #[must_use]
     pub fn with_raw_cap(mut self, bytes: usize) -> Session {
         self.raw_cap = bytes;
+        self
+    }
+
+    /// Sets how many interim (1xx) responses one exchange may receive
+    /// (default 16). One more fails with [`ClientError::Protocol`] and the
+    /// session stops being reusable.
+    #[must_use]
+    pub fn with_max_interim(mut self, n: usize) -> Session {
+        self.max_interim = n;
         self
     }
 
