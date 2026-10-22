@@ -105,3 +105,24 @@ pub fn load_cases() -> Vec<Case> {
     cases.sort_by(|a, b| a.name.cmp(&b.name));
     cases
 }
+
+/// Builds the parser a case expects: a request parser, or a response parser
+/// with the case's `ctx`.
+pub fn parser_for(case: &Case, cfg: &crosswire_h1::ParserConfig) -> crosswire_h1::Parser {
+    use crosswire_h1::{Parser, ResponseContext};
+    let name = &case.name;
+    match case.expect.kind.as_str() {
+        "request" => Parser::request(cfg),
+        "response" => {
+            let c = case
+                .expect
+                .ctx
+                .as_ref()
+                .unwrap_or_else(|| panic!("case {name}: response needs ctx"));
+            let mut ctx = ResponseContext::for_method(c.method.as_bytes());
+            ctx.is_connect = c.is_connect;
+            Parser::response(cfg, ctx)
+        }
+        k => panic!("case {name}: bad kind {k}"),
+    }
+}
