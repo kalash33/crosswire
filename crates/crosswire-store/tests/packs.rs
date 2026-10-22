@@ -403,3 +403,166 @@ fn rotation_opens_next_pack_and_registers_it() {
         assert_eq!(got, noise(60 * 1024, 30 + i as u64));
     }
 }
+
+fn committed_three(dir: &std::path::Path) -> (Project, Vec<Ulid>, Vec<Vec<u8>>, Vec<u64>) {
+    let mut p = Project::create(dir).unwrap();
+    let mut store = BodyStore::new(PackWriter::open(&mut p).unwrap());
+    let mut ids = Vec::new();
+    let mut bodies = Vec::new();
+    let mut ends = Vec::new();
+    for i in 0..3u64 {
+        let b = noise(20 * 1024, 100 + i);
+        ids.push(put_one(&mut p, &mut store, &b));
+        bodies.push(b);
+        ends.push(store.committed_len());
+    }
+    store.fsync().unwrap();
+    let tx = p.writer_mut().transaction().unwrap();
+    Project::set_pack_committed_len(&tx, 1, 0).unwrap();
+    tx.commit().unwrap();
+    (p, ids, bodies, ends)
+}
+
+fn state_of(p: &mut Project, id: Ulid) -> String {
+    p.writer_mut()
+        .query_row(
+            "SELECT state FROM exchanges WHERE ulid = ?1",
+            [id.to_string()],
+            |r| r.get(0),
+        )
+        .unwrap()
+}
+
+#[test]
+fn sweep_repairs_index_after_crash_between_truncate_and_cleanup() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut p, ids, _b, ends) = committed_three(&tmp.path().join("p"));
+    // A previous sweep truncated the file but died before the database cleanup.
+    OpenOptions::new()
+        .write(true)
+        .open(p.pack_path(1))
+        .unwrap()
+        .set_len(ends[1])
+        .unwrap();
+    let r = sweep(&mut p).unwrap();
+    assert_eq!(r.truncated_bytes, 0);
+    assert_eq!(r.exchanges_marked, 1);
+    assert_eq!(state_of(&mut p, ids[2]), "error");
+    assert_eq!(state_of(&mut p, ids[1]), "complete");
+    let n: i64 = p
+        .writer_mut()
+        .query_row("SELECT count(*) FROM blobs", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(n, 2);
+}
+
+#[test]
+fn mid_file_bad_record_loses_everything_after_it() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut p, ids, bodies, ends) = committed_three(&tmp.path().join("p"));
+    let path = p.pack_path(1);
+    let mut bytes = std::fs::read(&path).unwrap();
+    bytes[ends[0] as usize] ^= 0xff; // magic of record 2
+    std::fs::write(&path, bytes).unwrap();
+    let r = sweep(&mut p).unwrap();
+    assert_eq!(std::fs::metadata(&path).unwrap().len(), ends[0]);
+    assert_eq!(r.exchanges_marked, 2);
+    assert_eq!(state_of(&mut p, ids[0]), "complete");
+    assert_eq!(state_of(&mut p, ids[1]), "error");
+    assert_eq!(state_of(&mut p, ids[2]), "error");
+    let got = BodyStore::get(&p.reader().unwrap(), p.dir(), ids[0], BodySide::Resp)
+        .unwrap()
+        .unwrap();
+    assert_eq!(got, bodies[0]);
+}
+
+#[test]
+fn missing_pack_file_loses_its_blobs() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut p, ids, _b, _e) = committed_three(&tmp.path().join("p"));
+    std::fs::remove_file(p.pack_path(1)).unwrap();
+    let r = sweep(&mut p).unwrap();
+    assert_eq!(r.exchanges_marked, 3);
+    for id in ids {
+        assert_eq!(state_of(&mut p, id), "error");
+    }
+}
+
+#[test]
+fn committed_len_beyond_file_is_handled() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut p, ids, _b, ends) = committed_three(&tmp.path().join("p"));
+    let tx = p.writer_mut().transaction().unwrap();
+    Project::set_pack_committed_len(&tx, 1, ends[2] + 1000).unwrap();
+    tx.commit().unwrap();
+    OpenOptions::new()
+        .write(true)
+        .open(p.pack_path(1))
+        .unwrap()
+        .set_len(ends[1] + 5)
+        .unwrap();
+    let r = sweep(&mut p).unwrap();
+    assert_eq!(r.exchanges_marked, 1);
+    assert_eq!(state_of(&mut p, ids[2]), "error");
+    assert_eq!(state_of(&mut p, ids[0]), "complete");
+}
+
+#[test]
+fn missing_exchange_is_counted_without_marker() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut p, ids, _b, ends) = committed_three(&tmp.path().join("p"));
+    p.writer_mut()
+        .execute(
+            "DELETE FROM exchanges WHERE ulid = ?1",
+            [ids[2].to_string()],
+        )
+        .unwrap();
+    OpenOptions::new()
+        .write(true)
+        .open(p.pack_path(1))
+        .unwrap()
+        .set_len(ends[1])
+        .unwrap();
+    let r = sweep(&mut p).unwrap();
+    assert_eq!((r.exchanges_marked, r.missing_exchanges), (0, 1));
+    let n: i64 = p
+        .writer_mut()
+        .query_row("SELECT count(*) FROM markers", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(n, 0);
+}
+
+#[test]
+fn set_committed_len_requires_a_row() {
+    let (_t, mut p) = setup();
+    let tx = p.writer_mut().transaction().unwrap();
+    assert!(Project::set_pack_committed_len(&tx, 9, 1).is_err());
+}
+
+#[cfg(unix)]
+#[test]
+fn symlinked_pack_is_refused_and_never_touched() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut p, ids, _b, _e) = committed_three(&tmp.path().join("p"));
+    let victim = tmp.path().join("victim");
+    std::fs::write(&victim, vec![7u8; 5000]).unwrap();
+    std::fs::remove_file(p.pack_path(1)).unwrap();
+    std::os::unix::fs::symlink(&victim, p.pack_path(1)).unwrap();
+    assert!(matches!(sweep(&mut p), Err(StoreError::Corrupt(_))));
+    assert_eq!(std::fs::metadata(&victim).unwrap().len(), 5000);
+    let r = BodyStore::get(&p.reader().unwrap(), p.dir(), ids[0], BodySide::Resp);
+    assert!(matches!(r, Err(StoreError::Corrupt(_))), "{r:?}");
+    assert!(PackWriter::open(&mut p).is_err());
+}
+
+#[cfg(unix)]
+#[test]
+fn symlinked_packs_dir_is_refused() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut p, _ids, _b, _e) = committed_three(&tmp.path().join("p"));
+    let real = tmp.path().join("p").join("packs");
+    let moved = tmp.path().join("elsewhere");
+    std::fs::rename(&real, &moved).unwrap();
+    std::os::unix::fs::symlink(&moved, &real).unwrap();
+    assert!(matches!(sweep(&mut p), Err(StoreError::Corrupt(_))));
+}

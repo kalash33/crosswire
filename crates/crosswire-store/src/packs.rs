@@ -60,6 +60,9 @@ pub struct PackWriter {
     id: u32,
     offset: u64,
     limit: u64,
+    poisoned: bool,
+    #[cfg(test)]
+    fail_write_after: Option<usize>,
 }
 
 impl PackWriter {
@@ -87,6 +90,9 @@ impl PackWriter {
             id,
             offset,
             limit: PACK_LIMIT,
+            poisoned: false,
+            #[cfg(test)]
+            fail_write_after: None,
         })
     }
 
@@ -102,6 +108,11 @@ impl PackWriter {
     /// `packs` row through `tx`. If `tx` is rolled back after a rotation, the
     /// caller must drop this writer and reopen it.
     pub fn append(&mut self, tx: &Transaction<'_>, raw: &[u8]) -> Result<BlobRef, StoreError> {
+        if self.poisoned {
+            return Err(StoreError::Io(std::io::Error::other(
+                "pack writer poisoned; reopen",
+            )));
+        }
         let raw_len = raw.len() as u64;
         if raw_len > MAX_RAW {
             return Err(StoreError::Io(std::io::Error::new(
@@ -126,7 +137,22 @@ impl PackWriter {
         rec.extend_from_slice(&len.to_le_bytes());
         rec.extend_from_slice(&hash);
         rec.extend_from_slice(&frame);
-        self.file.write_all(&rec)?;
+        // A rolled-back rotation must not leave records in a pack without a row.
+        tx.execute(
+            "INSERT OR IGNORE INTO packs (id, committed_len) VALUES (?1, 0)",
+            [self.id],
+        )?;
+        if let Err(e) = self.write_record(&rec) {
+            // Drop the torn bytes so the next record lands at `self.offset`.
+            let undone = self
+                .file
+                .set_len(self.offset)
+                .and_then(|()| self.file.sync_all());
+            if undone.is_err() {
+                self.poisoned = true;
+            }
+            return Err(e.into());
+        }
         let blob = BlobRef {
             hash,
             pack_id: self.id,
@@ -136,6 +162,15 @@ impl PackWriter {
         };
         self.offset += record_len;
         Ok(blob)
+    }
+
+    fn write_record(&mut self, rec: &[u8]) -> std::io::Result<()> {
+        #[cfg(test)]
+        if let Some(n) = self.fail_write_after.take() {
+            self.file.write_all(&rec[..n.min(rec.len())])?;
+            return Err(std::io::Error::other("injected write failure"));
+        }
+        self.file.write_all(rec)
     }
 
     fn rotate(&mut self, tx: &Transaction<'_>) -> Result<(), StoreError> {
@@ -174,16 +209,51 @@ impl PackWriter {
 }
 
 fn open_append(path: &Path) -> Result<(File, u64), StoreError> {
+    check_pack_path(path, true)?;
     let mut o = OpenOptions::new();
     o.append(true).create(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        o.mode(0o600);
-    }
+    harden_open(&mut o);
     let file = o.open(path)?;
     let len = file.metadata()?.len();
     Ok((file, len))
+}
+
+/// Opens an existing pack for reading (and writing when `write`), refusing symlinks.
+pub(crate) fn open_pack(path: &Path, write: bool) -> Result<File, StoreError> {
+    check_pack_path(path, false)?;
+    let mut o = OpenOptions::new();
+    o.read(true).write(write);
+    harden_open(&mut o);
+    Ok(o.open(path)?)
+}
+
+/// `packs/` must be a real directory and the pack a regular file (or absent
+/// when `allow_missing`); a hostile project must not redirect us elsewhere.
+fn check_pack_path(path: &Path, allow_missing: bool) -> Result<(), StoreError> {
+    let refuse = || StoreError::Corrupt("pack path is not a regular file".into());
+    if let Some(dir) = path.parent() {
+        let m = std::fs::symlink_metadata(dir)?;
+        if !m.file_type().is_dir() {
+            return Err(refuse());
+        }
+    }
+    match std::fs::symlink_metadata(path) {
+        Ok(m) if m.file_type().is_file() => Ok(()),
+        Ok(_) => Err(refuse()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound && allow_missing => Ok(()),
+        Err(e) => Err(e.into()),
+    }
+}
+
+fn harden_open(o: &mut OpenOptions) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        o.mode(0o600)
+            .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32);
+    }
+    #[cfg(not(unix))]
+    let _ = o;
 }
 
 /// A record that decoded and verified.
@@ -275,4 +345,38 @@ fn decompress_bounded(frame: &[u8]) -> Result<Vec<u8>, BadRecord> {
         return Err(BadRecord::Bad("frame size mismatch"));
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Project;
+
+    #[test]
+    fn failed_write_is_undone_and_next_append_keeps_its_offset() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut p = Project::create(&tmp.path().join("p")).unwrap();
+        let mut w = PackWriter::open(&mut p).unwrap();
+        let tx = p.writer_mut().transaction().unwrap();
+        let a = w.append(&tx, &vec![1u8; 30_000]).unwrap();
+        let before = w.committed_len();
+        w.fail_write_after = Some(25);
+        assert!(w.append(&tx, &vec![2u8; 30_000]).is_err());
+        assert_eq!(w.committed_len(), before);
+        let path = pack_file(tmp.path().join("p").as_path(), 1);
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), before);
+        let b = w.append(&tx, &vec![3u8; 30_000]).unwrap();
+        assert_eq!(b.offset, a.offset + a.record_len());
+        assert_eq!(b.offset, before);
+    }
+
+    #[test]
+    fn poisoned_writer_refuses_appends() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut p = Project::create(&tmp.path().join("p")).unwrap();
+        let mut w = PackWriter::open(&mut p).unwrap();
+        w.poisoned = true;
+        let tx = p.writer_mut().transaction().unwrap();
+        assert!(w.append(&tx, b"x").is_err());
+    }
 }

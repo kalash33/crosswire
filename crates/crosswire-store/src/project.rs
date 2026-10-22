@@ -181,17 +181,20 @@ impl Project {
     /// Records that the first `len` bytes of pack `id` are committed.
     ///
     /// Call inside the transaction that commits the batch whose records end at
-    /// `len`, after the pack was fsynced. Never lowers the stored value.
+    /// `len`, after the pack was fsynced. Never lowers the stored value; fails if the pack has no row.
     pub fn set_pack_committed_len(
         tx: &rusqlite::Transaction<'_>,
         id: u32,
         len: u64,
     ) -> Result<(), StoreError> {
         let len = i64::try_from(len).map_err(|_| StoreError::Corrupt("pack too large".into()))?;
-        tx.execute(
+        let n = tx.execute(
             "UPDATE packs SET committed_len = max(committed_len, ?2) WHERE id = ?1",
             rusqlite::params![id, len],
         )?;
+        if n == 0 {
+            return Err(StoreError::Corrupt(format!("no packs row for pack {id}")));
+        }
         Ok(())
     }
 }

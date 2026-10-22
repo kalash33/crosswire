@@ -6,7 +6,6 @@ use crate::Project;
 use crosswire_model::{Marker, MarkerKind};
 use rusqlite::Transaction;
 use std::collections::BTreeSet;
-use std::fs::OpenOptions;
 
 /// What [`sweep`] did.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
@@ -19,6 +18,8 @@ pub struct SweepReport {
     pub truncated_bytes: u64,
     /// Exchanges set to `state = 'error'` with a gap marker.
     pub exchanges_marked: u64,
+    /// Bodies whose exchange row does not exist (no marker written).
+    pub missing_exchanges: u64,
     /// Unreferenced blob rows deleted.
     pub orphans_deleted: u64,
 }
@@ -51,7 +52,7 @@ pub fn sweep(project: &mut Project) -> Result<SweepReport, StoreError> {
     for (id, committed) in packs {
         report.packs_checked += 1;
         let path = project.pack_path(id);
-        let (cut, file_len) = match OpenOptions::new().read(true).write(true).open(&path) {
+        let cut = match crate::packs::open_pack(&path, true) {
             Ok(mut file) => {
                 let file_len = file.metadata()?.len();
                 let mut pos = committed.min(file_len);
@@ -70,15 +71,14 @@ pub fn sweep(project: &mut Project) -> Result<SweepReport, StoreError> {
                     file.sync_all()?;
                     report.truncated_bytes += file_len - pos;
                 }
-                (pos, file_len)
+                pos
             }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (0, 0),
-            Err(e) => return Err(e.into()),
+            Err(StoreError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => 0,
+            Err(e) => return Err(e),
         };
-        // A committed region shorter than the database claims loses blobs too.
-        if cut < file_len || cut < committed {
-            cuts.push((id, cut));
-        }
+        // Always reconcile the index with the file, so a crash between the
+        // truncate and the database cleanup is repaired by the next sweep.
+        cuts.push((id, cut));
     }
     let tx = project.writer_mut().transaction()?;
     let mut lost: BTreeSet<String> = BTreeSet::new();
@@ -90,6 +90,10 @@ pub fn sweep(project: &mut Project) -> Result<SweepReport, StoreError> {
             "UPDATE exchanges SET state = 'error' WHERE ulid = ?1",
             [ulid],
         )?;
+        if changed == 0 {
+            report.missing_exchanges += 1;
+            continue;
+        }
         let marker = Marker::new(MarkerKind::Gap, "pack torn");
         let kind = serde_json::to_value(marker.kind())
             .ok()
@@ -99,9 +103,7 @@ pub fn sweep(project: &mut Project) -> Result<SweepReport, StoreError> {
             "INSERT INTO markers (ulid, kind, from_ulid, detail) VALUES (?1, ?2, ?3, ?4)",
             rusqlite::params![marker.id().to_string(), kind, ulid, marker.detail()],
         )?;
-        if changed > 0 {
-            report.exchanges_marked += 1;
-        }
+        report.exchanges_marked += 1;
     }
     report.orphans_deleted = tx.execute(
         "DELETE FROM blobs WHERE refcount <= 0 \
@@ -121,8 +123,9 @@ fn lose_blobs(
 ) -> Result<(), StoreError> {
     let cut = i64::try_from(cut).unwrap_or(i64::MAX);
     let hashes: Vec<Vec<u8>> = {
-        let mut st =
-            tx.prepare("SELECT hash FROM blobs WHERE pack_id = ?1 AND offset + len > ?2")?;
+        let mut st = tx.prepare(
+            "SELECT hash FROM blobs WHERE pack_id = ?1 AND offset >= ?2 OR offset + len > ?2",
+        )?;
         let rows = st.query_map(rusqlite::params![id, cut], |r| r.get(0))?;
         rows.collect::<Result<_, _>>()?
     };

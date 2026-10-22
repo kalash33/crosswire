@@ -182,7 +182,7 @@ impl BodyStore {
         let (Ok(pack_id), Ok(offset)) = (u32::try_from(pack_id), u64::try_from(offset)) else {
             return Err(StoreError::Corrupt("blob location out of range".into()));
         };
-        let mut file = std::fs::File::open(crate::packs::pack_file(dir, pack_id))?;
+        let mut file = crate::packs::open_pack(&crate::packs::pack_file(dir, pack_id), false)?;
         let file_len = file.metadata()?.len();
         let rec = match read_record(&mut file, offset, file_len) {
             Ok(r) => r,
