@@ -8,7 +8,7 @@ use rusqlite::{Connection, ErrorCode, OpenFlags};
 use std::fs::{self, DirBuilder, OpenOptions};
 use std::path::{Path, PathBuf};
 
-const DB_FILE: &str = "project.db";
+pub(crate) const DB_FILE: &str = "project.db";
 
 #[cfg(test)]
 thread_local! {
@@ -150,21 +150,22 @@ impl Project {
 
     /// A new read-only connection with bounded cache and mmap.
     pub fn reader(&self) -> Result<Connection, StoreError> {
-        let conn = Connection::open_with_flags(
-            self.dir.join(DB_FILE),
-            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-        )?;
-        harden(&conn)?;
-        conn.execute_batch(
-            "PRAGMA query_only=ON; PRAGMA busy_timeout=5000; \
-             PRAGMA cache_size=-16384; PRAGMA mmap_size=268435456;",
-        )?;
-        Ok(conn)
+        open_reader(&self.dir)
     }
 
     /// Records a clean shutdown in the lock file (the store's `close` calls this).
     pub fn mark_clean(&self) -> Result<(), StoreError> {
         self.lock.mark_clean()
+    }
+
+    /// Records `clean=0` in the lock file.
+    pub(crate) fn mark_dirty(&self) -> Result<(), StoreError> {
+        self.lock.mark_dirty()
+    }
+
+    /// Whether the run before this one left `clean=0` (it did not close).
+    pub(crate) fn previous_unclean(&self) -> bool {
+        self.lock.previous_unclean()
     }
 
     /// The writer connection; the writer thread uses it to run transactions.
@@ -197,6 +198,20 @@ impl Project {
         }
         Ok(())
     }
+}
+
+/// A read-only connection to the project in `dir` (see [`Project::reader`]).
+pub(crate) fn open_reader(dir: &Path) -> Result<Connection, StoreError> {
+    let conn = Connection::open_with_flags(
+        dir.join(DB_FILE),
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    harden(&conn)?;
+    conn.execute_batch(
+        "PRAGMA query_only=ON; PRAGMA busy_timeout=5000; \
+         PRAGMA cache_size=-16384; PRAGMA mmap_size=268435456;",
+    )?;
+    Ok(conn)
 }
 
 /// Maps `SQLITE_CORRUPT` and `SQLITE_NOTADB` to their store errors.
@@ -245,7 +260,7 @@ fn configure_writer(conn: &Connection) -> Result<(), StoreError> {
 }
 
 /// Creates `path` (and missing parents) with mode 0700; existing directories are left alone.
-fn make_dir(path: &Path) -> Result<(), StoreError> {
+pub(crate) fn make_dir(path: &Path) -> Result<(), StoreError> {
     let mut b = DirBuilder::new();
     b.recursive(true);
     #[cfg(unix)]

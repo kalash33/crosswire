@@ -1,6 +1,6 @@
 # Crosswire project format, version 1
 
-A project is a directory. Everything Crosswire records lives in it. This document is the on-disk contract; `crosswire-store` is its implementation. Sections on the pack record and the journal describe formats implemented in later tasks of the recorder plan and are fixed here so the format is reviewed once.
+A project is a directory. Everything Crosswire records lives in it. This document is the on-disk contract; `crosswire-store` is its implementation. The pack record was implemented in Task 6 and the write path, journal and audit log in Task 7.
 
 ## Directory layout
 
@@ -11,8 +11,10 @@ A project is a directory. Everything Crosswire records lives in it. This documen
   project.db-shm      SQLite shared memory (created by SQLite)
   project.lock        lock and status file, mode 0600
   packs/              content packs, {id:06}.pack
-  journal/            one fsynced JSON file per exchange not yet in the database
+  journal/            one fsynced JSON file per spilled exchange not yet in the database
+  journal/bad/        journal files and exchanges the writer could not commit
   audit.jsonl         append-only audit log, mode 0600
+  audit.jsonl.1       the previous audit generation (after rotation)
 ```
 
 Directories are created 0700 and files 0600 on unix. Other platforms use the platform default.
@@ -37,7 +39,7 @@ Directories are created 0700 and files 0600 on unix. Other platforms use the pla
 | `state` | TEXT NOT NULL | exchange state |
 | `scope_state` | TEXT NOT NULL | in / out / empty |
 | `created_at` | INTEGER NOT NULL | unix milliseconds |
-| `json` | TEXT NOT NULL | the `Exchange` JSON without inline bodies |
+| `json` | TEXT NOT NULL | the `Exchange` JSON with `state` `committed`; each inline body is replaced by a `blob` body (`hash` = SHA-256, `len`), its bytes being in `bodies` |
 | `req_method`, `req_host`, `req_path` | TEXT | denormalised for search |
 | `resp_status` | INTEGER | NULL when no response |
 | `resp_len` | INTEGER | response body length |
@@ -64,7 +66,7 @@ Primary key `(ulid, side)`. At most one of `inline` and `blob_hash` is set (`CHE
 
 `meta` (`WITHOUT ROWID`): `key TEXT PRIMARY KEY`, `value TEXT NOT NULL`. Keys:
 
-- `last_committed_ulid`: id of the last exchange whose row and bodies are committed (empty string initially). Journal files with a greater id are replayed on open.
+- `last_committed_ulid`: the greatest (in ULID order) exchange id whose row and bodies are committed (empty string initially). Updated in the transaction that commits the batch; never moves backwards. Gap markers start here.
 
 ### Indexes
 
@@ -83,7 +85,7 @@ Primary key `(ulid, side)`. At most one of `inline` and `blob_hash` is set (`CHE
 clean=0|1
 ```
 
-Opening writes `clean=0`; a clean close writes `clean=1`. If the previous contents say `clean=0`, the previous run died, so open runs `PRAGMA integrity_check` and replays the journal.
+Opening writes `clean=0` (and `Store::open` writes it again); only `Store::close` writes `clean=1`. If the previous contents say `clean=0`, the previous run died, so `Project::open` runs `PRAGMA integrity_check` and `Store::open` writes a `gap` marker (`from_ulid` = `last_committed_ulid`, detail `unclean shutdown`) after replaying the journal.
 
 ## Pack record (implemented in Task 6)
 
@@ -98,6 +100,25 @@ frame    clen bytes   one zstd frame
 
 The `blobs` row points at the record start with `offset` and `len` (the whole record). Reading verifies the SHA-256. A pack rotates to a new file at 256 MiB. Only bytes up to `packs.committed_len` are trusted.
 
-## Journal (implemented in Task 7)
+## Write path (Task 7)
 
-Before the sink returns for an exchange it writes `journal/<ulid>.json` (one JSON `Exchange`, bodies inline) and fsyncs the file and the directory. The writer thread moves exchanges into the database in batches, advances `meta.last_committed_ulid`, and deletes the journal files it has committed. On open after an unclean run, journal files with an id greater than `last_committed_ulid` are replayed.
+One writer thread owns the writer connection. Exchanges reach it through a bounded queue (10,000 exchanges and 64 MiB, an exchange costing its message bytes plus 1 KiB). It commits a batch when 1,000 exchanges are waiting or 250 ms after the first one arrived. Per batch, in order:
+
+1. `BEGIN IMMEDIATE`.
+2. A pending `gap` marker (exchanges were dropped), starting at `last_committed_ulid`.
+3. For each exchange not already stored: its bodies (inline or appended to a pack), then its `exchanges` row.
+4. `last_committed_ulid` advances to the greatest id in the batch.
+5. The current pack is fsynced; `packs.committed_len` is raised to the end of the last record written to each pack.
+6. `COMMIT`; only then is the `committed` event sent and are the batch's journal files deleted.
+
+`PRAGMA wal_checkpoint(PASSIVE)` runs every 30 s or when the WAL passes 64 MiB, followed by an fsync of the WAL; `close` ends with `wal_checkpoint(TRUNCATE)`.
+
+## Journal (Task 7)
+
+When the queue has no room, the sink writes the exchange to `journal/<ulid>.json.tmp` (one JSON `Exchange`, bodies inline, mode 0600), fsyncs it, renames it to `journal/<ulid>.json` and fsyncs the directory before returning. The journal is capped at 1 GiB; past that the exchange is dropped, one `error` event is sent per episode, and the writer's next commit writes a `gap` marker.
+
+The writer commits journal files oldest ULID first whenever the queue is below a quarter full, and all of them on every open. Replay is idempotent: an id already in `exchanges` is skipped and its file deleted. Leftover `.tmp` files were never acknowledged and are deleted on open. A file that cannot be read or committed is moved to `journal/bad/` with an `error` event.
+
+## Audit log (Task 7)
+
+`audit.jsonl` holds one JSON object per line: `ts` (unix milliseconds), `ulid`, `actor`, `action`, `target`, `result`. Each row is `fdatasync`ed before the call returns. When a row would take the file past 64 MiB it is renamed to `audit.jsonl.1` (replacing any previous one) and a new file is started.

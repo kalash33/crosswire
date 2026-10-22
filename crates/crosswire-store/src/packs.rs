@@ -245,7 +245,7 @@ fn check_pack_path(path: &Path, allow_missing: bool) -> Result<(), StoreError> {
     }
 }
 
-fn harden_open(o: &mut OpenOptions) {
+pub(crate) fn harden_open(o: &mut OpenOptions) {
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;

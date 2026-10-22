@@ -403,13 +403,17 @@ dependencies = [
 name = "crosswire-store"
 version = "0.0.0"
 dependencies = [
+ "bytes",
+ "crosswire-core",
  "crosswire-model",
  "rusqlite",
  "rustix",
+ "serde",
  "serde_json",
  "sha2",
  "tempfile",
  "thiserror",
+ "tokio",
  "ulid",
  "zstd",
 ]

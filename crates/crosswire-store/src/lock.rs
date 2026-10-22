@@ -57,12 +57,21 @@ impl ProjectLock {
 
     /// Records a clean shutdown.
     pub(crate) fn mark_clean(&self) -> Result<(), StoreError> {
+        self.set_clean(true)
+    }
+
+    /// Records that the project is in use (a crash from here on is unclean).
+    pub(crate) fn mark_dirty(&self) -> Result<(), StoreError> {
+        self.set_clean(false)
+    }
+
+    fn set_clean(&self, clean: bool) -> Result<(), StoreError> {
         let mut text = String::new();
         let mut f = &self.file;
         f.seek(SeekFrom::Start(0))?;
         f.read_to_string(&mut text)?;
         let head: Vec<&str> = text.lines().take(2).collect();
-        let status = format!("{}\nclean=1\n", head.join("\n"));
+        let status = format!("{}\nclean={}\n", head.join("\n"), u8::from(clean));
         self.write_status(&status)
     }
 

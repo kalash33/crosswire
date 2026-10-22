@@ -31,4 +31,11 @@ pub enum StoreError {
     /// The store is closed.
     #[error("store is closed")]
     Closed,
+    /// An exchange or journal file could not be encoded or decoded as JSON.
+    #[error("json error: {0}")]
+    Json(#[from] serde_json::Error),
+    /// The writer thread stopped abnormally, or losses could not be recorded;
+    /// the project is left marked unclean.
+    #[error("writer failed: {0}")]
+    Writer(String),
 }
