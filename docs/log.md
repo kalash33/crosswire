@@ -29,3 +29,4 @@
 - LoC/h: not measured.
 - Against the spec: no LoC/h figure exists to compare with the 60 LoC/h assumption (section 5) or the 45 LoC/h re-dating threshold (section 16). The section 16 velocity check is not due: it starts after 100 logged hours, and none have been measured.
 - Caveat: this work was done by AI-paired implementers, and the hours column first held a running index (0.1, 0.2, ... 0.12) rather than measurements. Nothing in this log is comparable to the maintainer's part-time hours or may be used to re-date the roadmap. The roadmap needs a real measurement of the maintainer's own hours against reviewed lines.
+| 2026-10-23 | recorder foundations 5: crosswire-store project and schema | n/m | Project create/open/open_or_create, flock project.lock with pid/start/clean status, schema v1 (6 tables, 4 indexes), defensive + trusted_schema=OFF, read-only bounded readers, integrity_check only after unclean run, docs/format.md; tests: project 10 |

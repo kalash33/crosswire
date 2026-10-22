@@ -17,6 +17,8 @@ zstd = { workspace = true }
 sha2 = { workspace = true }
 ulid = { workspace = true }
 serde_json = { workspace = true }
+rustix = { workspace = true }
+thiserror = { workspace = true }
 crosswire-model = { path = "../crosswire-model", version = "0.0.0" }
 
 

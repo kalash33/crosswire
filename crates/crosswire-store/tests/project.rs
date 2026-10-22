@@ -1,0 +1,175 @@
+//! Project layout, schema, locking and open-time checks.
+
+use crosswire_store::{Project, StoreError};
+use rusqlite::Connection;
+
+fn raw(dir: &std::path::Path) -> Connection {
+    Connection::open(dir.join("project.db")).unwrap()
+}
+
+#[test]
+fn create_then_open_roundtrip() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("proj");
+    let p = Project::create(&dir).unwrap();
+    assert_eq!(p.dir(), dir);
+    drop(p);
+    for sub in ["packs", "journal"] {
+        assert!(dir.join(sub).is_dir(), "{sub}");
+    }
+    for f in ["project.db", "audit.jsonl", "project.lock"] {
+        assert!(dir.join(f).is_file(), "{f}");
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode =
+            |p: std::path::PathBuf| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(dir.clone()), 0o700);
+        assert_eq!(mode(dir.join("project.db")), 0o600);
+        assert_eq!(mode(dir.join("audit.jsonl")), 0o600);
+        assert_eq!(mode(dir.join("project.lock")), 0o600);
+    }
+    let p = Project::open(&dir).unwrap();
+    let r = p.reader().unwrap();
+    let v: i64 = r
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(v, 1);
+    let a: i64 = r
+        .query_row("PRAGMA application_id", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(a, 0x4357_5052);
+    let n: i64 = r
+        .query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN \
+             ('exchanges','bodies','blobs','packs','markers','meta')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(n, 6);
+    let jm: String = r
+        .query_row("PRAGMA journal_mode", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(jm, "wal");
+}
+
+#[test]
+fn open_or_create_does_both() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("p");
+    drop(Project::open_or_create(&dir).unwrap());
+    drop(Project::open_or_create(&dir).unwrap());
+}
+
+#[test]
+fn second_open_is_locked() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("p");
+    let first = Project::create(&dir).unwrap();
+    assert!(matches!(Project::open(&dir), Err(StoreError::Locked)));
+    assert!(matches!(Project::create(&dir), Err(StoreError::Locked)));
+    drop(first);
+    drop(Project::open(&dir).unwrap());
+}
+
+#[test]
+fn newer_format_refused() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("p");
+    drop(Project::create(&dir).unwrap());
+    raw(&dir).pragma_update(None, "user_version", 2).unwrap();
+    assert!(matches!(
+        Project::open(&dir),
+        Err(StoreError::NewerFormat(2))
+    ));
+}
+
+#[test]
+fn wrong_application_id_refused() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("p");
+    drop(Project::create(&dir).unwrap());
+    raw(&dir).pragma_update(None, "application_id", 7).unwrap();
+    assert!(matches!(Project::open(&dir), Err(StoreError::NotAProject)));
+}
+
+#[test]
+fn uninitialised_db_is_not_a_project() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("p");
+    drop(Project::create(&dir).unwrap());
+    raw(&dir).pragma_update(None, "user_version", 0).unwrap();
+    assert!(matches!(Project::open(&dir), Err(StoreError::NotAProject)));
+}
+
+#[test]
+fn missing_db_is_not_a_project() {
+    let tmp = tempfile::tempdir().unwrap();
+    assert!(matches!(
+        Project::open(tmp.path()),
+        Err(StoreError::NotAProject)
+    ));
+}
+
+#[test]
+fn reader_is_read_only() {
+    let tmp = tempfile::tempdir().unwrap();
+    let p = Project::create(&tmp.path().join("p")).unwrap();
+    let r = p.reader().unwrap();
+    let err = r
+        .execute("INSERT INTO meta(key, value) VALUES ('x', 'y')", [])
+        .unwrap_err();
+    assert!(
+        err.to_string().to_lowercase().contains("readonly")
+            || err.to_string().contains("read-only"),
+        "{err}"
+    );
+    let ts: i64 = r
+        .query_row("PRAGMA trusted_schema", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(ts, 0);
+}
+
+#[test]
+fn lock_file_tracks_clean_shutdown() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("p");
+    let p = Project::create(&dir).unwrap();
+    let text = std::fs::read_to_string(dir.join("project.lock")).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.len(), 3, "{text}");
+    assert_eq!(lines[0], std::process::id().to_string());
+    assert!(lines[1].parse::<u64>().is_ok());
+    assert_eq!(lines[2], "clean=0");
+    p.mark_clean().unwrap();
+    let text = std::fs::read_to_string(dir.join("project.lock")).unwrap();
+    assert!(text.ends_with("clean=1\n"), "{text}");
+}
+
+#[test]
+fn unclean_previous_run_triggers_integrity_check_and_corruption_is_reported() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("p");
+    // Clean cycle: opens fine.
+    let p = Project::create(&dir).unwrap();
+    p.mark_clean().unwrap();
+    drop(p);
+    drop(Project::open(&dir).unwrap()); // leaves clean=0 behind (simulated crash)
+                                        // Previous run was unclean: still opens (db is healthy).
+    drop(Project::open(&dir).unwrap());
+    // Now damage the file after an unclean run: pages beyond the header.
+    let db = dir.join("project.db");
+    let mut bytes = std::fs::read(&db).unwrap();
+    for b in bytes.iter_mut().skip(4096).take(8192) {
+        *b = 0xA5;
+    }
+    std::fs::write(&db, bytes).unwrap();
+    let _ = std::fs::remove_file(dir.join("project.db-wal"));
+    let _ = std::fs::remove_file(dir.join("project.db-shm"));
+    assert!(matches!(
+        Project::open(&dir),
+        Err(StoreError::Corrupt(_) | StoreError::Sqlite(_))
+    ));
+}
