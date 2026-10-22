@@ -4,5 +4,11 @@
   "diagnostics": [
     "trailer_present"
   ],
-  "body": "abc"
+  "body": "abc",
+  "trailers": [
+    [
+      "X-T",
+      "1"
+    ]
+  ]
 }

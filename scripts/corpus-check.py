@@ -18,6 +18,8 @@ CODES = [
     "unknown_transfer_coding", "body_after_no_body_status", "expect_100_continue",
     "http_0_9_request", "version_unusual",
 ]
+RULES = {"transfer_encoding_wins", "first_content_length", "no_body_status",
+         "head_method", "connect_success"}
 KINDS = {"request", "response"}
 FRAMINGS = {"none", "content_length", "chunked", "until_close", "upgrade", "ambiguous"}
 
@@ -54,14 +56,25 @@ def main():
             errors.append(f"{n}: invalid framing {e.get('framing')!r}")
         if e.get("kind") == "response" and not is_gen and "ctx" not in e:
             errors.append(f"{n}: response without ctx")
+        if "resolved" in e and e["resolved"] not in FRAMINGS - {"ambiguous"}:
+            errors.append(f"{n}: invalid resolved {e['resolved']!r}")
+        if "rule" in e and e["rule"] not in RULES:
+            errors.append(f"{n}: invalid rule {e['rule']!r}")
+        if "body" in e and "body_hex" in e:
+            errors.append(f"{n}: body and body_hex are mutually exclusive")
+        if "pipelined" in e and not isinstance(e["pipelined"], bool):
+            errors.append(f"{n}: pipelined must be a bool")
+        skip = "known_bug" in e
         for d in e.get("diagnostics", []):
             if d not in CODES:
                 errors.append(f"{n}: unknown code {d!r}")
-            covered.add(d)
+            if not skip:
+                covered.add(d)
         if "error" in e:
             if e["error"] not in CODES:
                 errors.append(f"{n}: unknown error code {e['error']!r}")
-            covered.add(e["error"])
+            if not skip:
+                covered.add(e["error"])
     missing = [c for c in CODES if c not in covered]
     for c in missing:
         errors.append(f"code not covered: {c}")

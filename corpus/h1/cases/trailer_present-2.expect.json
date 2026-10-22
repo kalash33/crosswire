@@ -8,5 +8,15 @@
   "diagnostics": [
     "trailer_present"
   ],
-  "body": "{\"ok\":1}"
+  "body": "{\"ok\":1}",
+  "trailers": [
+    [
+      "Server-Timing",
+      "db;dur=53"
+    ],
+    [
+      "Digest",
+      "sha-256=abc="
+    ]
+  ]
 }

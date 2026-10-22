@@ -29,6 +29,7 @@ pub struct Expect {
     pub body: Option<String>,
     pub body_hex: Option<String>,
     pub error: Option<String>,
+    pub trailers: Option<Vec<[String; 2]>>,
     pub known_bug: Option<String>,
 }
 
@@ -95,6 +96,7 @@ pub fn load_cases() -> Vec<Case> {
                     body: None,
                     body_hex: None,
                     error: None,
+                    trailers: None,
                     known_bug: None,
                 },
             });

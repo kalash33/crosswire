@@ -9,5 +9,15 @@
     "chunk_extension_present",
     "trailer_present"
   ],
-  "body": "hello"
+  "body": "hello",
+  "trailers": [
+    [
+      "X-T",
+      "1"
+    ],
+    [
+      "X-U",
+      "2"
+    ]
+  ]
 }

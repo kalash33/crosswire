@@ -29,10 +29,13 @@ fn rule_name(r: &ResolutionRule) -> &'static str {
     }
 }
 
-fn hex(s: &str) -> Vec<u8> {
+fn hex(name: &str, s: &str) -> Vec<u8> {
     (0..s.len())
         .step_by(2)
-        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+        .map(|i| {
+            u8::from_str_radix(&s[i..i + 2], 16)
+                .unwrap_or_else(|_| panic!("case {name}: bad body_hex {s:?}"))
+        })
         .collect()
 }
 
@@ -59,7 +62,8 @@ fn run(case: &Case) {
     let mut head: Option<RawMessage> = None;
     let mut head_len = 0;
     let mut payload = vec![];
-    let mut raw_body = vec![];
+    let mut raw_spans: Vec<(usize, usize)> = vec![];
+    let mut trailers: Option<Vec<(Vec<u8>, Vec<u8>)>> = None;
     let mut done = false;
     let mut err = None;
     for _ in 0..(input.len() + 100) {
@@ -87,8 +91,20 @@ fn run(case: &Case) {
                 head = Some(m);
             }
             Progress::BodyData { raw, data } => {
-                raw_body.extend_from_slice(&rest[raw.range()]);
+                raw_spans.push((off + raw.range().start, off + raw.range().end));
                 payload.extend_from_slice(&rest[data.range()]);
+            }
+            Progress::Trailers(t) => {
+                trailers = Some(
+                    t.iter()
+                        .map(|h| {
+                            (
+                                rest[h.name().range()].to_vec(),
+                                rest[h.value().range()].to_vec(),
+                            )
+                        })
+                        .collect(),
+                );
             }
             Progress::Done => done = true,
             _ => {}
@@ -147,25 +163,44 @@ fn run(case: &Case) {
         &input[..head_len],
         "case {name}: write_exact differs from the head bytes"
     );
-    let mut rebuilt = out.to_vec();
-    rebuilt.extend_from_slice(&input[head_len..off]);
-    assert_eq!(
-        rebuilt,
-        &input[..off],
-        "case {name}: round trip is not byte-identical"
-    );
+    // Raw body spans tile the body bytes contiguously, in absolute offsets.
+    let mut pos = head_len;
+    for &(start, end) in &raw_spans {
+        assert!(
+            start == pos && end >= start,
+            "case {name}: raw spans are not contiguous at offset {pos} (got {start}..{end})"
+        );
+        pos = end;
+    }
+    let resolved = match framing {
+        BodyFraming::Ambiguous { resolved, .. } => &**resolved,
+        f => f,
+    };
     if matches!(
-        framing_name(match framing {
-            BodyFraming::Ambiguous { resolved, .. } => resolved,
-            f => f,
-        }),
-        "content_length" | "until_close"
+        resolved,
+        BodyFraming::ContentLength(_) | BodyFraming::UntilClose
     ) {
         assert_eq!(
-            &raw_body[..],
-            &input[head_len..off],
-            "case {name}: raw body bytes differ"
+            pos, off,
+            "case {name}: raw spans do not cover the whole body"
         );
+    } else if matches!(resolved, BodyFraming::Chunked) && e.error.is_none() {
+        let term = &input[pos..off];
+        assert!(
+            term.first() == Some(&b'0'),
+            "case {name}: terminator section does not start with 0: {term:?}"
+        );
+        assert!(
+            term.ends_with(b"\r\n\r\n") || term.ends_with(b"\n\n") || term.ends_with(b"\n\r\n"),
+            "case {name}: terminator section does not end with an empty line: {term:?}"
+        );
+    }
+    if let Some(want) = &e.trailers {
+        let want: Vec<(Vec<u8>, Vec<u8>)> = want
+            .iter()
+            .map(|[n, v]| (n.clone().into_bytes(), v.clone().into_bytes()))
+            .collect();
+        assert_eq!(trailers.as_ref(), Some(&want), "case {name}: trailers");
     }
 
     // (4) consumed
@@ -188,7 +223,7 @@ fn run(case: &Case) {
     if let Some(b) = &e.body {
         assert_eq!(payload, b.as_bytes(), "case {name}: body");
     } else if let Some(h) = &e.body_hex {
-        assert_eq!(payload, hex(h), "case {name}: body_hex");
+        assert_eq!(payload, hex(name, h), "case {name}: body_hex");
     }
 }
 
