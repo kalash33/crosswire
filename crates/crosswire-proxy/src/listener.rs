@@ -18,9 +18,9 @@ use tokio::sync::watch;
 use tokio::task::JoinSet;
 
 use crate::front::{self, FirstRequest};
-use crate::mitm;
 use crate::rejections::RejectionTracker;
 use crate::{generated, info_page, Counters, Handler, ProxyConfig, ProxyError};
+use crate::{mitm, relay};
 
 /// How long [`Proxy::run`] waits for live connections after shutdown.
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
@@ -392,24 +392,17 @@ pub(crate) async fn respond_and_close(mut tcp: TcpStream, resp: &[u8]) {
     let _ = tokio::time::timeout(LINGER, drain).await;
 }
 
-/// Relays an absolute-form request. Stub until Task 5 (`relay::serve_plain`):
-/// it closes the connection.
+/// Relays an absolute-form request and whatever follows it on the
+/// connection.
 async fn serve_plain(
-    _client: TcpStream,
+    client: TcpStream,
     ctx: ConnCtx,
     host: String,
     port: u16,
     tls: bool,
-    _head: RawMessage,
-    _leftover: Bytes,
+    head: RawMessage,
+    leftover: Bytes,
 ) -> Result<(), ProxyError> {
-    tracing::debug!(
-        peer = %ctx.peer,
-        %host,
-        port,
-        tls,
-        local = %ctx.shared.local_addr,
-        "absolute-form request (relay not yet implemented)"
-    );
-    Ok(())
+    let dest = relay::Dest::absolute(&ctx.shared, &host, port, tls);
+    relay::run(Box::new(client), Some((head, leftover)), dest, ctx).await
 }

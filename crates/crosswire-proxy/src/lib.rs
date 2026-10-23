@@ -1,5 +1,6 @@
 //! HTTP/1.1 MITM proxy engine for Crosswire.
 
+mod capture;
 mod config;
 mod counters;
 mod error;
@@ -10,9 +11,11 @@ mod info_page;
 mod limits;
 mod listener;
 mod mitm;
+mod pump;
 mod record;
 mod rejections;
 mod relay;
+mod rewrite;
 mod sni;
 mod tunnel;
 

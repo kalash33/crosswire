@@ -185,6 +185,34 @@ fn classify(head: RawMessage, leftover: Bytes, local: SocketAddr) -> FirstReques
     }
 }
 
+/// The destination of an absolute-form target (`http[s]://authority/...`):
+/// whether it is TLS, the authority as written, the host without IPv6
+/// brackets, and the port (the scheme's default when absent). `None` when
+/// the target is not absolute-form or its authority is invalid.
+pub(crate) fn absolute_parts(target: &str) -> Option<AbsoluteTarget> {
+    let (tls, rest) = strip_scheme(target)?;
+    let authority = &rest[..rest.find(['/', '?', '#']).unwrap_or(rest.len())];
+    let (host, port) = split_authority(authority)?;
+    if !valid_authority(host) {
+        return None;
+    }
+    Some(AbsoluteTarget {
+        tls,
+        authority: authority.to_string(),
+        host: unbracket(host).to_string(),
+        port: port.unwrap_or(if tls { 443 } else { 80 }),
+    })
+}
+
+/// See [`absolute_parts`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct AbsoluteTarget {
+    pub(crate) tls: bool,
+    pub(crate) authority: String,
+    pub(crate) host: String,
+    pub(crate) port: u16,
+}
+
 /// `http://` or `https://` (any case) stripped, with whether it was TLS.
 fn strip_scheme(target: &str) -> Option<(bool, &str)> {
     let lower = |n: usize| target.get(..n).map(str::to_ascii_lowercase);

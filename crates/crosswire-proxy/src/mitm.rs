@@ -231,8 +231,13 @@ async fn terminate(
         Ok(Ok(tls)) => tls,
     };
     ctx.pending.release();
-    let target = upstream_tls_target(&shared, authority, port, leaf_host);
-    relay::run_stub(Box::new(tls), target, ctx).await
+    let dest = relay::Dest {
+        host: authority.to_string(),
+        port,
+        tls: true,
+        target: upstream_tls_target(&shared, authority, port, leaf_host),
+    };
+    relay::run(Box::new(tls), None, dest, ctx).await
 }
 
 /// Counts a rejected client handshake and, once per window when the host

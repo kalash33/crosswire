@@ -2,6 +2,7 @@
 //! loopback port with a fresh CA, an in-memory sink and raw TCP helpers.
 #![allow(dead_code, missing_docs)]
 
+pub mod relay;
 pub mod upstream;
 
 use std::net::{IpAddr, SocketAddr};
