@@ -15,11 +15,11 @@ use crosswire_h1::{
 use crosswire_model::{ConnectionInfo, Diff, ExchangeState, Marker, MarkerKind, Message, Timing};
 use tokio::io::AsyncWriteExt;
 
-use crate::capture::{Capture, CaptureResult};
+use crate::capture::{CaptureBuf, CaptureResult};
 use crate::listener::{ConnCtx, Shared};
 use crate::pump::{Probe, Pump, PumpEnd};
 use crate::rewrite::{rewrite_request_head, Mode};
-use crate::{front, mitm, record, Decision, ProxyError};
+use crate::{front, mitm, Decision, ProxyError};
 
 /// Most interim (1xx) responses forwarded before the final one.
 const MAX_INTERIM: usize = 16;
@@ -218,7 +218,7 @@ impl Relay {
         // Request head and body, client to upstream.
         up.io.write_all(&rewritten).await.map_err(ProxyError::Io)?;
         up.io.flush().await.map_err(ProxyError::Io)?;
-        let mut req_cap = Capture::new();
+        let mut req_cap = CaptureBuf::new(limits.capture_cap, &shared.budget);
         let end = self
             .req_pump
             .body(
@@ -278,7 +278,7 @@ impl Relay {
             .await
             .map_err(ProxyError::Io)?;
         client.flush().await.map_err(ProxyError::Io)?;
-        let mut resp_cap = Capture::new();
+        let mut resp_cap = CaptureBuf::new(limits.capture_cap, &shared.budget);
         let end = self
             .resp_pump
             .body(
@@ -318,23 +318,19 @@ impl Relay {
             body_diagnostics: (req_body_diags, resp_body_diags),
         };
         shared.counters.exchanges.fetch_add(1, Ordering::Relaxed);
-        record::record_draft(&shared.deps.sink, &shared.counters, &limits.parse, draft);
+        shared.recorder.record(draft);
         if stray {
             self.extra_bytes_marker();
             self.drop_upstream();
         }
         if depth > limits.max_pipelined {
-            record::submit_marker(
-                &shared.deps.sink,
-                &shared.counters,
-                Marker::new(
-                    MarkerKind::LimitExceeded,
-                    format!(
-                        "pipelining: {depth} requests queued on one connection from {} (max {})",
-                        self.peer, limits.max_pipelined
-                    ),
+            shared.recorder.submit_marker(Marker::new(
+                MarkerKind::LimitExceeded,
+                format!(
+                    "pipelining: {depth} requests queued on one connection from {} (max {})",
+                    self.peer, limits.max_pipelined
                 ),
-            );
+            ));
             return Err(ProxyError::Limit("pipelining"));
         }
         Ok(if close { Next::Close } else { Next::Continue })
@@ -348,17 +344,13 @@ impl Relay {
     }
 
     fn extra_bytes_marker(&self) {
-        record::submit_marker(
-            &self.shared.deps.sink,
-            &self.shared.counters,
-            Marker::new(
-                MarkerKind::Error,
-                format!(
-                    "extra bytes after response from {}:{}",
-                    self.dest.host, self.dest.port
-                ),
+        self.shared.recorder.submit_marker(Marker::new(
+            MarkerKind::Error,
+            format!(
+                "extra bytes after response from {}:{}",
+                self.dest.host, self.dest.port
             ),
-        );
+        ));
     }
 
     /// How to rewrite a request with `target`, switching the destination

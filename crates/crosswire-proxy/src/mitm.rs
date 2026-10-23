@@ -18,7 +18,7 @@ use tokio::net::TcpStream;
 use tokio_rustls::TlsAcceptor;
 
 use crate::listener::{ConnCtx, Shared};
-use crate::record::{self, RecordCtx};
+use crate::record::RecordCtx;
 use crate::{front, relay, sni, tunnel, ProxyError};
 
 /// How long the client has to send its ClientHello after the 200.
@@ -181,8 +181,7 @@ async fn passthrough(
         info = info.with_sni(sni);
     }
     let rec = RecordCtx {
-        sink: Arc::clone(&shared.deps.sink),
-        counters: Arc::clone(&shared.counters),
+        recorder: shared.recorder.clone(),
         info,
     };
     let stats = tunnel::run(
@@ -249,16 +248,10 @@ fn record_rejection(shared: &Shared, host: &str) {
         .fetch_add(1, Ordering::Relaxed);
     if shared.rejections.record(host, Instant::now()) {
         tracing::warn!(%host, "client keeps rejecting the Crosswire certificate");
-        record::submit_marker(
-            &shared.deps.sink,
-            &shared.counters,
-            Marker::new(
-                MarkerKind::Error,
-                format!(
-                    "Browser rejected the Crosswire certificate for {host} — is the CA trusted?"
-                ),
-            ),
-        );
+        shared.recorder.submit_marker(Marker::new(
+            MarkerKind::Error,
+            format!("Browser rejected the Crosswire certificate for {host} — is the CA trusted?"),
+        ));
     }
 }
 

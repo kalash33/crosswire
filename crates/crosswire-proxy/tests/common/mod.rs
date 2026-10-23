@@ -97,14 +97,14 @@ impl UpstreamWiring {
 }
 
 /// Dependencies for a proxy with `ca`, recording into `sink`.
-pub fn deps(ca: &Arc<Ca>, sink: Arc<TestSink>, handler: Arc<dyn Handler>) -> ProxyDeps {
+pub fn deps(ca: &Arc<Ca>, sink: Arc<dyn ExchangeSink>, handler: Arc<dyn Handler>) -> ProxyDeps {
     deps_with(ca, sink, handler, &UpstreamWiring::default())
 }
 
 /// As [`deps`], wired to reach in-process upstreams.
 pub fn deps_with(
     ca: &Arc<Ca>,
-    sink: Arc<TestSink>,
+    sink: Arc<dyn ExchangeSink>,
     handler: Arc<dyn Handler>,
     wiring: &UpstreamWiring,
 ) -> ProxyDeps {
@@ -153,9 +153,31 @@ impl ProxyHarness {
         handler: Arc<dyn Handler>,
         wiring: UpstreamWiring,
     ) -> ProxyHarness {
-        let ca = Arc::new(Ca::generate("proxy-test").unwrap());
         let sink = Arc::new(TestSink::default());
-        let proxy = Proxy::bind(cfg, deps_with(&ca, Arc::clone(&sink), handler, &wiring))
+        let external: Arc<dyn ExchangeSink> = Arc::clone(&sink) as Arc<dyn ExchangeSink>;
+        ProxyHarness::start_inner(cfg, handler, wiring, sink, external).await
+    }
+
+    /// Binds and runs a proxy that records into `sink` (a real store, or a
+    /// sink that refuses). The harness's own [`TestSink`] stays empty.
+    pub async fn start_with_sink(
+        sink: Arc<dyn ExchangeSink>,
+        cfg: ProxyConfig,
+        wiring: UpstreamWiring,
+    ) -> ProxyHarness {
+        let unused = Arc::new(TestSink::default());
+        ProxyHarness::start_inner(cfg, Arc::new(NoopHandler), wiring, unused, sink).await
+    }
+
+    async fn start_inner(
+        cfg: ProxyConfig,
+        handler: Arc<dyn Handler>,
+        wiring: UpstreamWiring,
+        sink: Arc<TestSink>,
+        external: Arc<dyn ExchangeSink>,
+    ) -> ProxyHarness {
+        let ca = Arc::new(Ca::generate("proxy-test").unwrap());
+        let proxy = Proxy::bind(cfg, deps_with(&ca, external, handler, &wiring))
             .await
             .unwrap();
         let addr = proxy.local_addr();

@@ -10,7 +10,7 @@ use crosswire_client::Conn;
 use crosswire_h1::{Parser, Progress, RawMessage};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, ReadBuf};
 
-use crate::capture::Capture;
+use crate::capture::CaptureBuf;
 use crate::{Decision, ProxyError};
 
 /// Size of one read: the most bytes read ahead of the parser.
@@ -147,7 +147,7 @@ impl Pump {
         from: &mut dyn Conn,
         parser: &mut Parser,
         to: &mut dyn Conn,
-        capture: &mut Capture,
+        capture: &mut CaptureBuf,
         mut on_data: impl FnMut(&[u8]) -> Decision,
     ) -> Result<PumpEnd, ProxyError> {
         loop {
@@ -194,4 +194,18 @@ impl Pump {
 
 fn parse_error(e: crosswire_h1::ParseError) -> ProxyError {
     ProxyError::Protocol(format!("parse error: {e:?}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Review focus: a slow reader holds back at most one read of the
+    /// other side, never the whole body.
+    #[test]
+    fn read_buffer_is_64_kib() {
+        assert_eq!(READ_BUF, 64 * 1024);
+        let pump = Pump::new(Bytes::new());
+        assert_eq!(pump.scratch.len(), 64 * 1024);
+    }
 }

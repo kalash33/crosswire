@@ -17,7 +17,9 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::watch;
 use tokio::task::JoinSet;
 
+use crate::capture::Budget;
 use crate::front::{self, FirstRequest};
+use crate::record::Recorder;
 use crate::rejections::RejectionTracker;
 use crate::{generated, info_page, Counters, Handler, ProxyConfig, ProxyError};
 use crate::{mitm, relay};
@@ -70,6 +72,10 @@ pub(crate) struct Shared {
     pub(crate) expected_auth: Option<Vec<u8>>,
     /// Client handshake rejections per host.
     pub(crate) rejections: RejectionTracker,
+    /// The in-flight body budget (`body_budget`) every capture draws from.
+    pub(crate) budget: Arc<Budget>,
+    /// Builds and submits what the relays and tunnels carried.
+    pub(crate) recorder: Recorder,
     active: AtomicUsize,
     pending_connect: AtomicUsize,
     per_ip: Mutex<HashMap<IpAddr, usize>>,
@@ -170,12 +176,21 @@ impl Proxy {
                 .encode(format!("{}:{}", a.user(), a.pass()))
                 .into_bytes()
         });
+        let counters = Arc::new(Counters::default());
+        let budget = Arc::new(Budget::new(cfg.limits.body_budget));
+        let recorder = Recorder::new(
+            Arc::clone(&deps.sink),
+            Arc::clone(&counters),
+            cfg.limits.parse,
+        );
         Ok(Proxy {
             listener,
             shared: Arc::new(Shared {
                 cfg,
                 deps,
-                counters: Arc::new(Counters::default()),
+                counters,
+                budget,
+                recorder,
                 local_addr,
                 expected_auth,
                 rejections: RejectionTracker::new(cfg_rejections.0, cfg_rejections.1),
