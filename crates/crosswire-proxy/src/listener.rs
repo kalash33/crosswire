@@ -163,14 +163,32 @@ impl Proxy {
     /// Whatever [`ProxyConfig::validate`] returns, or [`ProxyError::Bind`].
     pub async fn bind(cfg: ProxyConfig, deps: ProxyDeps) -> Result<Proxy, ProxyError> {
         cfg.validate()?;
+        let listener = TcpListener::bind(cfg.bind)
+            .await
+            .map_err(ProxyError::Bind)?;
+        Proxy::from_listener(cfg, listener, deps)
+    }
+
+    /// Serves on an already-bound `listener`, for callers that need the
+    /// bound port before building `deps` (the destination gate protects the
+    /// proxy's own port, which is only known after binding port 0).
+    /// `cfg.bind` is replaced by the listener's address before validating.
+    ///
+    /// # Errors
+    /// Whatever [`ProxyConfig::validate`] returns, or [`ProxyError::Bind`]
+    /// if the listener's address cannot be read.
+    pub fn from_listener(
+        mut cfg: ProxyConfig,
+        listener: TcpListener,
+        deps: ProxyDeps,
+    ) -> Result<Proxy, ProxyError> {
+        let local_addr = listener.local_addr().map_err(ProxyError::Bind)?;
+        cfg.bind = local_addr;
+        cfg.validate()?;
         let cfg_rejections = (
             cfg.limits.rejections_per_window,
             cfg.limits.rejection_window,
         );
-        let listener = TcpListener::bind(cfg.bind)
-            .await
-            .map_err(ProxyError::Bind)?;
-        let local_addr = listener.local_addr().map_err(ProxyError::Bind)?;
         let expected_auth = cfg.proxy_auth.as_ref().map(|a| {
             base64::engine::general_purpose::STANDARD
                 .encode(format!("{}:{}", a.user(), a.pass()))

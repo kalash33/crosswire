@@ -1,5 +1,7 @@
 //! Config validation.
 
+mod common;
+
 use crosswire_proxy::{ProxyAuth, ProxyConfig, ProxyError};
 
 fn cfg(bind: &str) -> ProxyConfig {
@@ -71,4 +73,35 @@ fn proxy_auth_rejects_empty_parts() {
         Err(ProxyError::Config(_))
     ));
     assert!(ProxyAuth::new("u", "p").is_ok());
+}
+
+#[tokio::test]
+async fn from_listener_serves_on_the_given_listener() {
+    use std::sync::Arc;
+
+    use crosswire_ca::Ca;
+    use crosswire_proxy::{NoopHandler, Proxy};
+
+    let ca = Arc::new(Ca::generate("proxy-test").unwrap());
+    let sink = Arc::new(common::TestSink::default());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    // `cfg.bind` is overridden by the listener's address.
+    let proxy = Proxy::from_listener(
+        cfg("127.0.0.1:1"),
+        listener,
+        common::deps(&ca, sink, Arc::new(NoopHandler)),
+    )
+    .unwrap();
+    assert_eq!(proxy.local_addr(), addr);
+
+    // A non-loopback listener is validated like a non-loopback bind.
+    let wide = tokio::net::TcpListener::bind("0.0.0.0:0").await.unwrap();
+    let sink = Arc::new(common::TestSink::default());
+    let refused = Proxy::from_listener(
+        cfg("127.0.0.1:0"),
+        wide,
+        common::deps(&ca, sink, Arc::new(NoopHandler)),
+    );
+    assert!(matches!(refused, Err(ProxyError::NonLoopbackBind)));
 }
