@@ -507,6 +507,7 @@ dependencies = [
 name = "crosswire-server"
 version = "0.0.0"
 dependencies = [
+ "base64 0.22.1",
  "clap",
  "crosswire-ca",
  "crosswire-client",
@@ -516,12 +517,14 @@ dependencies = [
  "dirs",
  "rustls",
  "rustls-pki-types",
+ "sha2",
  "tempfile",
  "thiserror",
  "tokio",
  "tokio-rustls",
  "tracing",
  "tracing-subscriber",
+ "x509-parser",
 ]
 
 [[package]]
