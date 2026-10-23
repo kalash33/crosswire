@@ -12,7 +12,7 @@ use crosswire_ca::LeafIssuer;
 use crosswire_client::Transport;
 use crosswire_h1::RawMessage;
 use crosswire_model::{ConnectionInfo, ExchangeSink};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::watch;
 use tokio::task::JoinSet;
@@ -394,11 +394,21 @@ pub(crate) async fn respond_and_close(mut tcp: TcpStream, resp: &[u8]) {
     if tcp.write_all(resp).await.is_err() || tcp.shutdown().await.is_err() {
         return;
     }
+    linger(&mut tcp).await;
+}
+
+/// Reads and discards what a half-closed client still sends, for at most
+/// two seconds and 256 KiB, so closing does not turn unread request bytes
+/// into a reset that destroys the response just written.
+pub(crate) async fn linger<R>(io: &mut R)
+where
+    R: AsyncRead + Unpin + ?Sized,
+{
     let drain = async {
         let mut buf = [0u8; 8 * 1024];
         let mut total = 0;
         while total < LINGER_BYTES {
-            match tcp.read(&mut buf).await {
+            match io.read(&mut buf).await {
                 Ok(0) | Err(_) => break,
                 Ok(n) => total += n,
             }

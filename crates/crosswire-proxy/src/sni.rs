@@ -148,12 +148,19 @@ fn server_name(mut data: Rd<'_>) -> Result<Option<String>, SniError> {
     Ok(None)
 }
 
-/// Peeks (without consuming) the client's first TLS record and returns its
-/// SNI, retrying until the whole record has arrived or `timeout` passes.
-pub(crate) async fn peek_sni(
-    tcp: &TcpStream,
-    timeout: Duration,
-) -> Result<Option<String>, ProxyError> {
+/// What a client sent first after the CONNECT was answered.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Hello {
+    /// A TLS ClientHello, with its SNI when it has one.
+    Tls(Option<String>),
+    /// Something that does not start a TLS record (plain HTTP, usually).
+    NotTls,
+}
+
+/// Peeks (without consuming) the client's first bytes: when they start a
+/// TLS record, waits until the whole record has arrived (or `timeout`
+/// passes) and returns its SNI.
+pub(crate) async fn peek_hello(tcp: &TcpStream, timeout: Duration) -> Result<Hello, ProxyError> {
     let mut buf = vec![0u8; MAX_RECORD];
     let peek = async {
         let mut last = 0;
@@ -164,8 +171,11 @@ pub(crate) async fn peek_sni(
                     "client closed before its ClientHello".into(),
                 ));
             }
+            if buf[0] != 0x16 {
+                return Ok(Hello::NotTls);
+            }
             match parse_sni(&buf[..n]) {
-                Ok(name) => return Ok(name),
+                Ok(name) => return Ok(Hello::Tls(name)),
                 Err(SniError::Incomplete) => {
                     // peek returns at once while the same bytes are
                     // buffered; wait a little for more rather than spin.

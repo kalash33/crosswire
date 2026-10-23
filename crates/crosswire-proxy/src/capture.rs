@@ -91,6 +91,9 @@ pub(crate) struct CaptureBuf {
     total: u64,
     hasher: Sha256,
     dropped: bool,
+    /// The body ended early (a side closed, timed out, or the response
+    /// came first): the kept bytes are not the whole message.
+    cut: bool,
     reservation: Option<Reservation>,
     budget: Arc<Budget>,
     /// Times the buffer grew (tests only).
@@ -108,6 +111,8 @@ pub(crate) struct CaptureResult {
     pub(crate) truncated_at: Option<u64>,
     /// The budget refused the bytes; only `relay` describes the body.
     pub(crate) capture_dropped: bool,
+    /// The body was cut short; `relay` describes what passed.
+    pub(crate) cut: bool,
     /// Length and SHA-256 of every byte relayed.
     pub(crate) relay: Capture,
     /// The kept bytes' share of the in-flight budget.
@@ -123,6 +128,7 @@ impl CaptureBuf {
             total: 0,
             hasher: Sha256::new(),
             dropped: false,
+            cut: false,
             reservation: None,
             budget: Arc::clone(budget),
             #[cfg(test)]
@@ -206,6 +212,11 @@ impl CaptureBuf {
         debug_assert!(self.kept.capacity() as u64 <= self.reserved());
     }
 
+    /// Marks the body as cut short: it did not end where its framing said.
+    pub(crate) fn cut(&mut self) {
+        self.cut = true;
+    }
+
     /// Ends the capture.
     pub(crate) fn finish(self) -> CaptureResult {
         let truncated_at = (!self.dropped && self.total > self.cap).then_some(self.cap);
@@ -213,6 +224,7 @@ impl CaptureBuf {
             bytes: Bytes::from(self.kept),
             truncated_at,
             capture_dropped: self.dropped,
+            cut: self.cut,
             relay: Capture {
                 len: self.total,
                 sha256: self.hasher.finalize().into(),
@@ -223,14 +235,29 @@ impl CaptureBuf {
 }
 
 impl CaptureResult {
+    /// The capture of a body that never started.
+    pub(crate) fn empty() -> CaptureResult {
+        CaptureResult {
+            bytes: Bytes::new(),
+            truncated_at: None,
+            capture_dropped: false,
+            cut: false,
+            relay: Capture {
+                len: 0,
+                sha256: Sha256::digest(b"").into(),
+            },
+            reservation: None,
+        }
+    }
+
     /// The body to record: `Body::None` for an empty body, otherwise the
     /// kept bytes inline, with the relay record when they are not the
-    /// whole body (cut at the cap, or dropped for the budget).
+    /// whole body (cut at the cap, dropped for the budget, or cut short).
     pub(crate) fn body(&self) -> Body {
         if self.relay.len == 0 && !self.capture_dropped {
             return Body::None;
         }
-        let partial = self.truncated_at.is_some() || self.capture_dropped;
+        let partial = self.truncated_at.is_some() || self.capture_dropped || self.cut;
         Body::Inline {
             bytes: self.bytes.clone(),
             truncated_at: self.truncated_at,
@@ -267,6 +294,29 @@ mod tests {
         assert!(!r.capture_dropped);
         assert_eq!(r.relay.len, 3072);
         assert_eq!(r.relay.sha256, sha(&data));
+    }
+
+    #[test]
+    fn a_cut_body_carries_its_relay_record() {
+        let budget = Arc::new(Budget::new(KIB * KIB));
+        let mut c = CaptureBuf::new(KIB, &budget);
+        c.push(b"abc");
+        c.cut();
+        match c.finish().body() {
+            Body::Inline {
+                bytes,
+                truncated_at: None,
+                capture_dropped: false,
+                relay: Some(relay),
+            } => {
+                assert_eq!(&bytes[..], b"abc");
+                assert_eq!(relay.len, 3);
+                assert_eq!(relay.sha256, sha(b"abc"));
+            }
+            other => panic!("expected a cut inline body, got {other:?}"),
+        }
+        assert_eq!(CaptureResult::empty().body(), Body::None);
+        assert_eq!(CaptureResult::empty().relay.sha256, sha(b""));
     }
 
     #[test]

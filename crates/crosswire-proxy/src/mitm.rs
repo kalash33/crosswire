@@ -135,7 +135,10 @@ pub(crate) async fn serve_connect(
         .write_all(CONNECTION_ESTABLISHED)
         .await
         .map_err(ProxyError::Io)?;
-    let sni = sni::peek_sni(&client, SNI_PEEK_TIMEOUT).await?;
+    let sni = match sni::peek_hello(&client, SNI_PEEK_TIMEOUT).await? {
+        sni::Hello::Tls(sni) => sni,
+        sni::Hello::NotTls => return plain(client, ctx, &authority, port).await,
+    };
     if let Some(name) = &sni {
         if !front::valid_authority(name) {
             return Err(ProxyError::Protocol(format!(
@@ -156,7 +159,31 @@ pub(crate) async fn serve_connect(
     }
 }
 
+/// A tunnel whose client speaks plain HTTP: relayed as such to
+/// `authority:port` (or tunnelled unread when the authority is on the
+/// passthrough list).
+async fn plain(
+    client: TcpStream,
+    mut ctx: ConnCtx,
+    authority: &str,
+    port: u16,
+) -> Result<(), ProxyError> {
+    if passthrough_matches(&ctx.shared.cfg.passthrough, authority) {
+        return passthrough(client, ctx, authority, port, None).await;
+    }
+    ctx.pending.release();
+    let dest = relay::Dest {
+        host: authority.to_string(),
+        port,
+        tls: false,
+        target: Target::plain(&dial_host(&ctx.shared, authority), port),
+    };
+    relay::run(Box::new(client), None, dest, ctx).await
+}
+
 /// Tunnels the client to `authority:port` without reading the TLS inside.
+/// The client already has its 200, so a failed upstream connect can only
+/// close it; a marker records why.
 async fn passthrough(
     client: TcpStream,
     mut ctx: ConnCtx,
@@ -166,8 +193,19 @@ async fn passthrough(
 ) -> Result<(), ProxyError> {
     let shared = Arc::clone(&ctx.shared);
     let target = Target::plain(&dial_host(&shared, authority), port);
-    // On failure the client is dropped (closed); Task 7 adds a 502.
-    let upstream = shared.deps.transport.connect(&target).await?;
+    let upstream = match shared.deps.transport.connect(&target).await {
+        Ok(upstream) => upstream,
+        Err(e) => {
+            shared.recorder.submit_marker(Marker::new(
+                MarkerKind::Error,
+                format!(
+                    "passthrough upstream failed for {authority}:{port}: {}",
+                    crate::generated::cap(&e.to_string())
+                ),
+            ));
+            return Err(e.into());
+        }
+    };
     ctx.pending.release();
     shared.counters.tunnels.fetch_add(1, Ordering::Relaxed);
     let (io, up_info, _, _) = upstream.into_parts();
@@ -207,11 +245,21 @@ async fn terminate(
     leaf_host: &str,
 ) -> Result<(), ProxyError> {
     let shared = Arc::clone(&ctx.shared);
-    let key = shared
-        .deps
-        .issuer
-        .issue(&leaf_name(leaf_host)?)
-        .map_err(|e| ProxyError::Tls(format!("leaf for {leaf_host}: {e}")))?;
+    let key = match shared.deps.issuer.issue(&leaf_name(leaf_host)?) {
+        Ok(key) => key,
+        Err(e) => {
+            // After the 200 nothing but a close reaches the client.
+            let reason = e.to_string();
+            shared.recorder.submit_marker(Marker::new(
+                MarkerKind::Error,
+                format!(
+                    "leaf issue failed for {leaf_host}: {}",
+                    crate::generated::cap(&reason)
+                ),
+            ));
+            return Err(ProxyError::Tls(format!("leaf for {leaf_host}: {reason}")));
+        }
+    };
     let mut cfg = ServerConfig::builder_with_provider(provider())
         .with_protocol_versions(&[&rustls::version::TLS13, &rustls::version::TLS12])
         .map_err(|e| ProxyError::Tls(e.to_string()))?
@@ -222,7 +270,12 @@ async fn terminate(
     let tls = match tokio::time::timeout(shared.cfg.limits.tls_handshake, acceptor.accept(client))
         .await
     {
-        Err(_) => return Err(ProxyError::Timeout("client TLS handshake")),
+        Err(_) => {
+            // A client that stalls the handshake rejects the leaf as surely
+            // as one that aborts it.
+            record_rejection(&shared, leaf_host);
+            return Err(ProxyError::Timeout("client TLS handshake"));
+        }
         Ok(Err(e)) => {
             record_rejection(&shared, leaf_host);
             return Err(ProxyError::Tls(format!("client handshake: {e}")));
