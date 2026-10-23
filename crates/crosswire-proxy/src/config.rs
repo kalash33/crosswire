@@ -13,12 +13,17 @@ pub struct ProxyAuth {
 
 impl ProxyAuth {
     /// Creates credentials.
-    #[must_use]
-    pub fn new(user: impl Into<String>, pass: impl Into<String>) -> ProxyAuth {
-        ProxyAuth {
-            user: user.into(),
-            pass: pass.into(),
+    ///
+    /// # Errors
+    /// [`ProxyError::Config`] if the user or password is empty.
+    pub fn new(user: impl Into<String>, pass: impl Into<String>) -> Result<ProxyAuth, ProxyError> {
+        let (user, pass) = (user.into(), pass.into());
+        if user.is_empty() || pass.is_empty() {
+            return Err(ProxyError::Config(
+                "proxy auth user and password must be non-empty".into(),
+            ));
         }
+        Ok(ProxyAuth { user, pass })
     }
 
     /// The user name.
