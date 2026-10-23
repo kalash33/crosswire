@@ -9,11 +9,9 @@ use bytes::Bytes;
 use crosswire_model::{Body, Capture};
 use sha2::{Digest, Sha256};
 
-/// The first growth of a capture buffer; each later step doubles, up to
-/// [`MAX_STEP`].
+/// The first capacity of a capture buffer; each growth doubles it, up to
+/// the cap.
 pub(crate) const FIRST_STEP: u64 = 4 * 1024;
-/// The largest growth of a capture buffer.
-pub(crate) const MAX_STEP: u64 = 64 * 1024;
 
 /// The in-flight body budget: the most captured body bytes held across
 /// every connection of one listener at once (`body_budget`). Request and
@@ -95,8 +93,9 @@ pub(crate) struct CaptureBuf {
     dropped: bool,
     reservation: Option<Reservation>,
     budget: Arc<Budget>,
-    /// The next growth step.
-    step: u64,
+    /// Times the buffer grew (tests only).
+    #[cfg(test)]
+    growths: u32,
 }
 
 /// A finished capture. Holds its budget reservation until dropped: the
@@ -126,7 +125,8 @@ impl CaptureBuf {
             dropped: false,
             reservation: None,
             budget: Arc::clone(budget),
-            step: FIRST_STEP,
+            #[cfg(test)]
+            growths: 0,
         }
     }
 
@@ -147,15 +147,22 @@ impl CaptureBuf {
         true
     }
 
-    /// Grows the buffer by the next step (never past `cap`), reserving
-    /// the budget first. The reservation always covers the capacity.
+    /// Doubles the buffer's capacity (at least [`FIRST_STEP`], never past
+    /// `cap`), reserving the whole increase from the budget first. The
+    /// reservation always covers the capacity, so capture memory stays
+    /// within the budget; the copy during a growth briefly also holds the
+    /// old buffer, which is not charged.
     fn grow(&mut self) -> bool {
+        #[cfg(test)]
+        {
+            self.growths += 1;
+        }
         let capacity = self.kept.capacity() as u64;
-        let step = self.step.min(self.cap.saturating_sub(capacity));
+        let target = capacity.saturating_mul(2).max(FIRST_STEP).min(self.cap);
+        let step = target.saturating_sub(capacity);
         if step == 0 || !self.reserve(step) {
             return false;
         }
-        self.step = (self.step * 2).min(MAX_STEP);
         #[allow(
             clippy::cast_possible_truncation,
             reason = "bounded by cap, which fits in memory"
@@ -294,17 +301,45 @@ mod tests {
 
     #[test]
     fn budget_refusal_mid_body_releases_what_was_kept() {
-        // The 4 KiB and 8 KiB steps fit; the 16 KiB one does not.
-        let budget = Arc::new(Budget::new(12 * KIB + 1));
+        // Growth to 16 KiB fits; the next growth (to 32 KiB) does not.
+        let budget = Arc::new(Budget::new(16 * KIB));
         let mut c = CaptureBuf::new(KIB * KIB, &budget);
-        c.push(&vec![1u8; 12 * KIB as usize]);
-        assert_eq!(budget.used(), 12 * KIB);
+        c.push(&vec![1u8; 16 * KIB as usize]);
+        assert_eq!(budget.used(), 16 * KIB);
         c.push(b"x");
         assert_eq!(budget.used(), 0);
         let r = c.finish();
         assert!(r.capture_dropped);
         assert!(r.bytes.is_empty());
-        assert_eq!(r.relay.len, 12 * KIB + 1);
+        assert_eq!(r.relay.len, 16 * KIB + 1);
+    }
+
+    #[test]
+    fn growth_is_geometric() {
+        let budget = Arc::new(Budget::new(64 * KIB * KIB));
+        let cap = 50 * KIB * KIB;
+        let slice = vec![3u8; 64 * KIB as usize];
+        // Uncapped: 3 MiB + 1 byte ends in a 4 MiB buffer.
+        let mut c = CaptureBuf::new(cap, &budget);
+        for _ in 0..48 {
+            c.push(&slice);
+        }
+        c.push(b"+");
+        let kept = c.kept.len() as u64;
+        assert_eq!(kept, 3 * KIB * KIB + 1);
+        assert!(c.kept.capacity() as u64 <= 2 * kept);
+        assert_eq!(c.reserved(), c.kept.capacity() as u64);
+        drop(c);
+        // Capped: 50 MiB in 64 KiB slices. 4 KiB doubling to 32 MiB is 14
+        // growths, plus one to the cap.
+        let mut c = CaptureBuf::new(cap, &budget);
+        for _ in 0..cap / (64 * KIB) {
+            c.push(&slice);
+        }
+        assert!(c.growths <= 15, "{} growths", c.growths);
+        assert_eq!(c.kept.len() as u64, cap);
+        assert_eq!(c.kept.capacity() as u64, cap);
+        assert_eq!(budget.used(), cap);
     }
 
     #[test]
@@ -340,8 +375,8 @@ mod tests {
         }
         assert_eq!(c.reserved(), c.kept.capacity() as u64);
         assert_eq!(budget.used(), c.kept.capacity() as u64);
-        // 4 + 8 + 16 + 32 + 64 + 64 + 64 KiB.
-        assert_eq!(c.reserved(), 252 * KIB);
+        // Doubling from 4 KiB: the first capacity holding 200 KiB.
+        assert_eq!(c.reserved(), 256 * KIB);
         let r = c.finish();
         assert_eq!(r.bytes.len() as u64, 200 * KIB);
     }
