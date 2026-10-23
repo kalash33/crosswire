@@ -63,6 +63,21 @@ the raw body spans tile the body, that all the input is consumed (or, when
 case may stop before the head; then only the error and an empty diagnostic list
 are checked.
 
+## The proxy relay golden
+
+`crates/crosswire-proxy/tests/corpus_relay.rs` reuses these cases to prove the
+proxy relays them byte-exact: every case goes through a CONNECT tunnel
+carrying plain HTTP, written whole and in 7-byte fragments, with the case's
+`limits` as the proxy's parser limits. Request cases must reach the upstream
+unchanged (only `Proxy-Connection`/`Proxy-Authorization` lines are removed,
+and recorded as diffs); response cases must reach the client unchanged. The
+recorded head, diagnostic set, raw stored body and its decoded payload are
+checked against this file's expectations; `error` cases must take the
+proxy's failure path (a generated 400 for requests, an undelimitable tunnel
+for responses). Run it with
+`cargo test -p crosswire-proxy --test corpus_relay -- --nocapture` to see the
+totals. A new case is picked up automatically.
+
 ## Adding a case
 
 1. Write the raw bytes to `cases/<name>.msg` (use `printf` or a script, never an

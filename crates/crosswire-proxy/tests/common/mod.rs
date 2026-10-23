@@ -2,6 +2,7 @@
 //! loopback port with a fresh CA, an in-memory sink and raw TCP helpers.
 #![allow(dead_code, missing_docs)]
 
+pub mod corpus;
 pub mod relay;
 pub mod upstream;
 
