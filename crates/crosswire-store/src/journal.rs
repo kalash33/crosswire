@@ -44,7 +44,7 @@ impl Journal {
     /// `.tmp` files and counting the size of the rest.
     pub(crate) fn open(project_dir: &Path, cap: u64) -> Result<Journal, StoreError> {
         let dir = project_dir.join("journal");
-        crate::project::make_dir(&dir)?;
+        crate::project::make_real_dir(&dir, "journal/")?;
         let mut bytes = 0u64;
         for e in fs::read_dir(&dir)? {
             let e = e?;
@@ -161,7 +161,7 @@ impl Journal {
     /// Moves a file the writer cannot use to `journal/bad/`.
     pub(crate) fn quarantine(&self, entry: &Entry) -> Result<(), StoreError> {
         let bad = self.dir.join("bad");
-        crate::project::make_dir(&bad)?;
+        crate::project::make_real_dir(&bad, "journal/bad/")?;
         let name = entry.path.file_name().unwrap_or_default();
         fs::rename(&entry.path, bad.join(name))?;
         self.release(entry.len);
@@ -171,7 +171,7 @@ impl Journal {
     /// Writes an exchange that could not be committed to `journal/bad/`.
     pub(crate) fn quarantine_exchange(&self, ex: &Exchange) -> Result<(), StoreError> {
         let bad = self.dir.join("bad");
-        crate::project::make_dir(&bad)?;
+        crate::project::make_real_dir(&bad, "journal/bad/")?;
         let data = serde_json::to_vec(ex)?;
         write_synced(&bad.join(format!("{}.json", ex.id())), &data)?;
         File::open(&bad)?.sync_all()?;

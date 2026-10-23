@@ -245,3 +245,84 @@ fn packs_table_has_no_path_column() {
         .collect();
     assert_eq!(cols, ["id", "committed_len"]);
 }
+
+#[cfg(unix)]
+#[test]
+fn symlinked_lock_file_is_refused_and_target_untouched() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("p");
+    drop(Project::create(&dir).unwrap());
+    let outside = tmp.path().join("authorized_keys");
+    let original = b"ssh-ed25519 AAAA... user@host\n".repeat(4);
+    std::fs::write(&outside, &original).unwrap();
+    std::fs::remove_file(dir.join("project.lock")).unwrap();
+    std::os::unix::fs::symlink(&outside, dir.join("project.lock")).unwrap();
+    assert!(Project::open(&dir).is_err());
+    assert!(Project::open_or_create(&dir).is_err());
+    assert_eq!(std::fs::read(&outside).unwrap(), original);
+}
+
+#[cfg(unix)]
+#[test]
+fn symlinked_database_files_are_refused() {
+    for name in ["project.db", "project.db-wal", "project.db-shm"] {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("p");
+        drop(Project::create(&dir).unwrap());
+        let real = tmp.path().join("elsewhere");
+        if name == "project.db" {
+            std::fs::rename(dir.join(name), &real).unwrap();
+        } else {
+            let _ = std::fs::remove_file(dir.join(name));
+            std::fs::write(&real, b"").unwrap();
+        }
+        std::os::unix::fs::symlink(&real, dir.join(name)).unwrap();
+        let err = Project::open(&dir).unwrap_err();
+        assert!(
+            matches!(&err, StoreError::Corrupt(m) if m.contains("symlink")),
+            "{name}: {err:?}"
+        );
+        let err = Project::open_or_create(&dir).unwrap_err();
+        assert!(
+            matches!(&err, StoreError::Corrupt(m) if m.contains("symlink")),
+            "{name}: {err:?}"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn symlinked_journal_directory_is_refused() {
+    use crosswire_store::{Store, StoreConfig};
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("p");
+    drop(Project::create(&dir).unwrap());
+    let outside = tmp.path().join("outside");
+    std::fs::create_dir(&outside).unwrap();
+    std::fs::write(outside.join("keep.json.tmp"), b"x").unwrap();
+    std::fs::write(outside.join("01ARZ3NDEKTSV4RRFFQ69G5FAV.json"), b"not json").unwrap();
+    std::fs::remove_dir(dir.join("journal")).unwrap();
+    std::os::unix::fs::symlink(&outside, dir.join("journal")).unwrap();
+    let err = Store::open(Project::open(&dir).unwrap(), StoreConfig::default()).unwrap_err();
+    assert!(
+        matches!(&err, StoreError::Corrupt(m) if m.contains("journal")),
+        "{err:?}"
+    );
+    assert!(outside.join("keep.json.tmp").exists());
+    assert!(outside.join("01ARZ3NDEKTSV4RRFFQ69G5FAV.json").exists());
+    assert!(!outside.join("bad").exists());
+
+    // A symlinked journal/bad is refused too, and nothing is moved into it.
+    std::fs::remove_file(dir.join("journal")).unwrap();
+    std::fs::create_dir(dir.join("journal")).unwrap();
+    std::fs::write(
+        dir.join("journal/01ARZ3NDEKTSV4RRFFQ69G5FAV.json"),
+        b"not json",
+    )
+    .unwrap();
+    let outside_bad = tmp.path().join("outside_bad");
+    std::fs::create_dir(&outside_bad).unwrap();
+    std::os::unix::fs::symlink(&outside_bad, dir.join("journal/bad")).unwrap();
+    let _ = Store::open(Project::open(&dir).unwrap(), StoreConfig::default());
+    assert_eq!(std::fs::read_dir(&outside_bad).unwrap().count(), 0);
+}

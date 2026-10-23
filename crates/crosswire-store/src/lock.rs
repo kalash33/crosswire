@@ -25,12 +25,16 @@ impl ProjectLock {
     pub(crate) fn acquire(path: &Path) -> Result<ProjectLock, StoreError> {
         let mut opts = OpenOptions::new();
         opts.read(true).write(true).create(true).truncate(false);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            opts.mode(0o600);
-        }
-        let mut file = opts.open(path)?;
+        // Mode 0600 and O_NOFOLLOW: a hostile project's `project.lock` symlink
+        // must not make us write (and truncate) a file outside the project.
+        crate::packs::harden_open(&mut opts);
+        let mut file = opts.open(path).map_err(|e| {
+            if e.raw_os_error() == Some(rustix::io::Errno::LOOP.raw_os_error()) {
+                StoreError::Corrupt("project.lock is a symlink".into())
+            } else {
+                StoreError::Io(e)
+            }
+        })?;
         match rustix::fs::flock(&file, rustix::fs::FlockOperation::NonBlockingLockExclusive) {
             Ok(()) => {}
             Err(e) if e == rustix::io::Errno::WOULDBLOCK => return Err(StoreError::Locked),

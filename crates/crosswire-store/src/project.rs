@@ -54,8 +54,8 @@ impl Project {
                 StoreError::Io(e)
             }
         })?;
-        make_dir(&dir.join("packs"))?;
-        make_dir(&dir.join("journal"))?;
+        make_real_dir(&dir.join("packs"), "packs/")?;
+        make_real_dir(&dir.join("journal"), "journal/")?;
         let mut audit = OpenOptions::new();
         audit.append(true).create(true);
         restrict(&mut audit);
@@ -75,9 +75,11 @@ impl Project {
     ///
     /// Refuses a database whose `application_id` is not Crosswire's, or whose
     /// `user_version` is 0 ([`StoreError::NotAProject`]) or above 1
-    /// ([`StoreError::NewerFormat`]). Runs `PRAGMA integrity_check` only when
+    /// ([`StoreError::NewerFormat`]), and (before taking the lock) a project
+    /// whose `project.db`, `-wal` or `-shm` is a symlink ([`StoreError::Corrupt`]). Runs `PRAGMA integrity_check` only when
     /// the previous run did not shut down cleanly.
     pub fn open(dir: &Path) -> Result<Project, StoreError> {
+        refuse_symlinked_db(dir)?;
         if !dir.join(DB_FILE).is_file() {
             return Err(StoreError::NotAProject);
         }
@@ -126,6 +128,7 @@ impl Project {
     /// the schema) is deleted and recreated.
     pub fn open_or_create(dir: &Path) -> Result<Project, StoreError> {
         make_dir(dir)?;
+        refuse_symlinked_db(dir)?;
         let lock = ProjectLock::acquire(&dir.join("project.lock"))?;
         let db_path = dir.join(DB_FILE);
         match fs::metadata(&db_path) {
@@ -269,6 +272,36 @@ pub(crate) fn make_dir(path: &Path) -> Result<(), StoreError> {
         b.mode(0o700);
     }
     b.create(path)?;
+    Ok(())
+}
+
+/// Like [`make_dir`], then requires `path` itself to be a real directory, not
+/// a symlink: a hostile project must not redirect our moves and deletes.
+pub(crate) fn make_real_dir(path: &Path, label: &str) -> Result<(), StoreError> {
+    make_dir(path)?;
+    if fs::symlink_metadata(path)?.file_type().is_dir() {
+        Ok(())
+    } else {
+        Err(StoreError::Corrupt(format!(
+            "{label} is a symlink or not a directory"
+        )))
+    }
+}
+
+/// Refuses a project whose database files are symlinks. `SQLite` writes and
+/// truncates the `-wal` and `-shm` files, so it must never follow one out of
+/// the project.
+fn refuse_symlinked_db(dir: &Path) -> Result<(), StoreError> {
+    for name in [DB_FILE, "project.db-wal", "project.db-shm"] {
+        match fs::symlink_metadata(dir.join(name)) {
+            Ok(m) if m.file_type().is_symlink() => {
+                return Err(StoreError::Corrupt(format!("{name} is a symlink")));
+            }
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
     Ok(())
 }
 
