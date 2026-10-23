@@ -119,7 +119,9 @@ impl Recorder {
             .with_diagnostics(req_diags);
         let mut exchange = Exchange::new(request);
         let response = match (generated, resp_head) {
-            (Some(generated), _) => Some(generated),
+            // Interim heads already reached the client before the
+            // generated final response, so they are part of it too.
+            (Some(generated), _) => Some(generated.with_interim(interim)),
             (None, Some(head)) => {
                 let mut diags = head.diagnostics().to_vec();
                 diags.extend(resp_body_diags);

@@ -176,6 +176,30 @@ async fn upstream_connect_refused_gives_502_and_error_exchange() {
 }
 
 #[tokio::test]
+async fn interim_then_close_keeps_the_interim_on_the_generated_502() {
+    const CONTINUE: &[u8] = b"HTTP/1.1 100 Continue\r\n\r\n";
+    let (port, connections) = spawn_custom(|_, mut s| async move {
+        let _ = read_head(&mut s).await;
+        s.write_all(CONTINUE).await.unwrap();
+        let _ = s.shutdown().await;
+    })
+    .await;
+    let rig = plain_rig(port, loopback_config(), connections).await;
+    let mut c = rig.open("u.test").await;
+    c.write_all(get(&rig, "/i").as_bytes()).await.unwrap();
+    let got = read_close(&mut c).await;
+    assert!(got.starts_with(CONTINUE), "{got:?}");
+    assert!(got[CONTINUE.len()..].starts_with(b"HTTP/1.1 502 Bad Gateway\r\n"));
+    let ex = rig.exchanges(1).await;
+    assert_eq!(ex[0].state(), ExchangeState::Error);
+    let resp = ex[0].response().unwrap();
+    assert_eq!(resp.fidelity(), Fidelity::Generated);
+    // The client saw the 100 before the 502: the record keeps it.
+    assert_eq!(resp.interim().len(), 1);
+    assert_eq!(&resp.interim()[0][..], CONTINUE);
+}
+
+#[tokio::test]
 async fn connect_to_own_listener_is_refused_with_hint() {
     let h = ProxyHarness::start_default().await;
     let port = h.addr.port();
