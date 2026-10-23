@@ -82,6 +82,7 @@ fn blob_body_untouched_and_tunnel_unchanged() {
         len: 5,
         truncated_at: None,
         capture_dropped: false,
+        relay: None,
     };
     let m = Message::http1_raw(&raw, blob.clone(), conn("x", 80));
     let r = RedactionPolicy::default_policy().redact_message(&m);
@@ -203,4 +204,22 @@ fn overlapping_and_out_of_order_spans_do_not_panic() {
     let b = head_bytes(&r);
     assert!(!contains(&b, b"abcdef"));
     assert!(contains(&b, b"Cookie: [REDACTED]\r\n"));
+}
+
+#[test]
+fn interim_heads_are_redacted_like_the_head() {
+    let raw = parse_resp(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+    let m = Message::http1_raw(&raw, Body::None, conn("x", 80)).with_interim(vec![
+        bytes::Bytes::from_static(b"HTTP/1.1 100 Continue\r\n\r\n"),
+        bytes::Bytes::from_static(
+            b"HTTP/1.1 103 Early Hints\r\nSet-Cookie: s=SECRET\r\nLink: </a?api_key=K1>\r\n\r\n",
+        ),
+    ]);
+    let r = RedactionPolicy::default_policy().redact_message(&m);
+    assert_eq!(r.interim().len(), 2);
+    assert_eq!(&r.interim()[0][..], b"HTTP/1.1 100 Continue\r\n\r\n");
+    let hints = &r.interim()[1][..];
+    assert!(!contains(hints, b"SECRET") && !contains(hints, b"K1"));
+    assert!(contains(hints, b"Set-Cookie: [REDACTED]\r\n"));
+    assert!(contains(hints, b"Link: </a?[REDACTED]\r\n"));
 }

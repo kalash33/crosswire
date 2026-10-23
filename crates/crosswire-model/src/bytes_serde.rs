@@ -108,6 +108,40 @@ pub(crate) mod hash {
     }
 }
 
+/// `#[serde(with)]` for a list of byte payloads, each encoded like any
+/// other byte payload.
+pub(crate) mod vec {
+    use super::{de_bytes, ser_bytes};
+    use alloc::vec::Vec;
+    use bytes::Bytes;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    struct Ref<'a>(&'a [u8]);
+
+    impl Serialize for Ref<'_> {
+        fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+            ser_bytes(self.0, s)
+        }
+    }
+
+    struct Own(Vec<u8>);
+
+    impl<'de> Deserialize<'de> for Own {
+        fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Own, D::Error> {
+            de_bytes(d).map(Own)
+        }
+    }
+
+    pub(crate) fn serialize<S: Serializer>(v: &[Bytes], s: S) -> Result<S::Ok, S::Error> {
+        s.collect_seq(v.iter().map(|b| Ref(b)))
+    }
+
+    pub(crate) fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<Bytes>, D::Error> {
+        let v = Vec::<Own>::deserialize(d)?;
+        Ok(v.into_iter().map(|o| Bytes::from(o.0)).collect())
+    }
+}
+
 /// `#[serde(with)]` for ordered `(name, bytes)` pairs: each value is encoded
 /// like any other byte payload.
 pub(crate) mod pairs {

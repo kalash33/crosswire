@@ -3,7 +3,7 @@
 use crate::atomic::try_update_usize;
 use crate::events::Events;
 use crate::journal::{Journal, SpillError};
-use crosswire_model::{Body, Event, Exchange, ExchangeSink, Head, Message, SinkError};
+use crosswire_model::{Body, Event, Exchange, ExchangeSink, Head, Marker, Message, SinkError};
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{SyncSender, TrySendError};
@@ -30,6 +30,9 @@ pub(crate) enum Stop {
 pub(crate) enum Msg {
     /// An exchange and the queue bytes it reserved.
     Exchange(Box<Exchange>, usize),
+    /// A marker and the queue bytes it reserved (one slot, not in
+    /// `in_memory`: a marker is not an exchange a crash could lose).
+    Marker(Box<Marker>, usize),
     /// Stop after draining.
     Stop(Stop),
 }
@@ -68,8 +71,8 @@ pub(crate) fn slack_ulid() -> Ulid {
 }
 
 impl Shared {
-    /// Reserves one queue slot and `size` bytes for `id`, or nothing.
-    fn reserve(&self, id: Ulid, size: usize) -> bool {
+    /// Reserves one queue slot and `size` bytes, or nothing.
+    fn reserve_slot(&self, size: usize) -> bool {
         if try_update_usize(&self.queued, |c| (c < self.queue_max).then_some(c + 1)).is_err() {
             return false;
         }
@@ -79,6 +82,20 @@ impl Shared {
         .is_err()
         {
             self.queued.fetch_sub(1, Ordering::SeqCst);
+            return false;
+        }
+        true
+    }
+
+    /// Returns what [`Shared::reserve_slot`] took.
+    pub(crate) fn release_slot(&self, size: usize) {
+        self.queued.fetch_sub(1, Ordering::SeqCst);
+        self.queued_bytes.fetch_sub(size, Ordering::SeqCst);
+    }
+
+    /// Reserves one queue slot and `size` bytes for `id`, or nothing.
+    fn reserve(&self, id: Ulid, size: usize) -> bool {
+        if !self.reserve_slot(size) {
             return false;
         }
         *self
@@ -104,8 +121,7 @@ impl Shared {
             }
         }
         drop(ids);
-        self.queued.fetch_sub(1, Ordering::SeqCst);
-        self.queued_bytes.fetch_sub(size, Ordering::SeqCst);
+        self.release_slot(size);
     }
 
     /// The oldest exchange id held in memory, skipping `except`.
@@ -244,12 +260,46 @@ impl ExchangeSink for StoreSink {
                 shared.release(id, size);
                 match msg {
                     Msg::Exchange(ex, _) => shared.spill(&ex),
-                    Msg::Stop(_) => Err(SinkError::Closed),
+                    Msg::Marker(..) | Msg::Stop(_) => Err(SinkError::Closed),
                 }
             }
         }
     }
+
+    /// The marker takes one queue slot (its size is its JSON length); the
+    /// writer inserts it with the next batch and then sends
+    /// [`Event::Marker`]. Markers are not spilled to the journal: with the
+    /// queue full this returns [`SinkError::Full`] and the marker is not
+    /// recorded. [`SinkError::Closed`] once the store is closed or its writer
+    /// stopped. Never blocks.
+    fn submit_marker(&self, marker: Marker) -> Result<(), SinkError> {
+        let shared = &*self.shared;
+        let closed = shared.closed.read().unwrap_or_else(PoisonError::into_inner);
+        if *closed || shared.writer_dead.load(Ordering::SeqCst) {
+            return Err(SinkError::Closed);
+        }
+        let size = serde_json::to_string(&marker).map_or(MARKER_SIZE_FALLBACK, |s| s.len());
+        if !shared.reserve_slot(size) {
+            return Err(SinkError::Full);
+        }
+        match shared.tx.try_send(Msg::Marker(Box::new(marker), size)) {
+            Ok(()) => Ok(()),
+            Err(TrySendError::Disconnected(_)) => {
+                shared.release_slot(size);
+                shared.writer_died("the writer thread is gone");
+                Err(SinkError::Closed)
+            }
+            // Unreachable while reservations bound the channel.
+            Err(TrySendError::Full(_)) => {
+                shared.release_slot(size);
+                Err(SinkError::Full)
+            }
+        }
+    }
 }
+
+/// Queue bytes charged for a marker whose JSON cannot be measured.
+const MARKER_SIZE_FALLBACK: usize = 256;
 
 /// An exchange's queue cost: its message bytes plus 1 KiB.
 fn approx_size(ex: &Exchange) -> usize {
@@ -260,7 +310,7 @@ fn approx_size(ex: &Exchange) -> usize {
             _ => 0,
         };
         let body = match m.body() {
-            Body::Inline { bytes } => bytes.len(),
+            Body::Inline { bytes, .. } => bytes.len(),
             _ => 0,
         };
         head + body

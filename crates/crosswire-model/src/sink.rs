@@ -3,9 +3,9 @@
 use core::fmt;
 use serde::{Deserialize, Serialize};
 
-use crate::Exchange;
+use crate::{Exchange, Marker};
 
-/// Why a [`ExchangeSink::submit`] failed.
+/// Why an [`ExchangeSink::submit`] or [`ExchangeSink::submit_marker`] failed.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 #[non_exhaustive]
@@ -44,4 +44,15 @@ pub trait ExchangeSink: Send + Sync {
     /// [`SinkError::Full`] if the queue is at capacity, [`SinkError::Closed`]
     /// if the sink has shut down.
     fn submit(&self, exchange: Exchange) -> Result<(), SinkError>;
+
+    /// Queues a marker row (a gap, a limit hit or an error the relay saw)
+    /// for recording in the same timeline as the exchanges. The store writes
+    /// the row with its next batch and then publishes
+    /// [`Event::Marker`](crate::Event::Marker).
+    ///
+    /// # Errors
+    ///
+    /// [`SinkError::Full`] if the marker cannot be accepted now,
+    /// [`SinkError::Closed`] if the sink has shut down.
+    fn submit_marker(&self, marker: Marker) -> Result<(), SinkError>;
 }

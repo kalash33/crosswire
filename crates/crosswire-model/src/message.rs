@@ -286,6 +286,18 @@ pub enum Head {
     },
 }
 
+/// The length and SHA-256 of a whole body as it passed through the relay
+/// path, recorded when the stored capture is not the whole body (cut off at
+/// the capture limit, or dropped because the capture window was full).
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct Capture {
+    /// Bytes relayed.
+    pub len: u64,
+    /// SHA-256 of the relayed bytes.
+    #[serde(with = "crate::bytes_serde::hash")]
+    pub sha256: [u8; 32],
+}
+
 /// The body of a message.
 ///
 /// Serialised internally tagged by `type`.
@@ -295,11 +307,22 @@ pub enum Head {
 pub enum Body {
     /// No body.
     None,
-    /// A body held inline (raw framed bytes, as on the wire).
+    /// A body held inline (raw framed bytes, as on the wire). Build one
+    /// with [`Body::inline`] when only the bytes are known.
     Inline {
         /// The bytes.
         #[serde(with = "crate::bytes_serde")]
         bytes: Bytes,
+        /// If the capture was cut off, the number of bytes kept.
+        #[serde(default)]
+        truncated_at: Option<u64>,
+        /// The capture window was full; length and hash come from `relay`.
+        #[serde(default)]
+        capture_dropped: bool,
+        /// Length and hash of the whole body on the relay path, when the
+        /// capture is not the whole body.
+        #[serde(default)]
+        relay: Option<Capture>,
     },
     /// A body stored in the blob store.
     Blob {
@@ -314,7 +337,25 @@ pub enum Body {
         /// The capture window was full; length and hash come from the relay.
         #[serde(default)]
         capture_dropped: bool,
+        /// Length and hash of the whole body on the relay path, when the
+        /// capture is not the whole body.
+        #[serde(default)]
+        relay: Option<Capture>,
     },
+}
+
+impl Body {
+    /// An inline body holding exactly `bytes`: not truncated, not dropped,
+    /// no separate relay record.
+    #[must_use]
+    pub fn inline(bytes: Bytes) -> Body {
+        Body::Inline {
+            bytes,
+            truncated_at: None,
+            capture_dropped: false,
+            relay: None,
+        }
+    }
 }
 
 /// A recorded edit to a message (`ChangeOp` and `ChangeReason` come from
@@ -409,7 +450,12 @@ pub enum ChainResult {
         reason: String,
     },
     /// Validation failure was overridden for this host.
-    Overridden,
+    Overridden {
+        /// The validation error that was overridden (empty in data written
+        /// before the field existed).
+        #[serde(default)]
+        reason: String,
+    },
 }
 
 /// Connection facts recorded with each message.
@@ -418,6 +464,7 @@ pub enum ChainResult {
 pub struct ConnectionInfo {
     target_addr: String,
     port: u16,
+    peer_addr: Option<String>,
     client_addr: Option<String>,
     sni: Option<String>,
     alpn: Option<String>,
@@ -431,6 +478,10 @@ pub struct ConnectionInfo {
 
 impl ConnectionInfo {
     /// Creates a record for a target; everything else starts empty.
+    ///
+    /// `target_addr` is the host as configured or requested (a name or an
+    /// address literal, spec section 4.6), not the address it resolved to;
+    /// record that with [`ConnectionInfo::with_peer_addr`].
     #[must_use]
     pub fn new(target_addr: impl Into<String>, port: u16) -> ConnectionInfo {
         ConnectionInfo {
@@ -438,6 +489,13 @@ impl ConnectionInfo {
             port,
             ..ConnectionInfo::default()
         }
+    }
+
+    /// Sets the address actually connected to (the resolved IP).
+    #[must_use]
+    pub fn with_peer_addr(mut self, v: impl Into<String>) -> Self {
+        self.peer_addr = Some(v.into());
+        self
     }
 
     /// Sets the client's address.
@@ -491,10 +549,17 @@ impl ConnectionInfo {
         self
     }
 
-    /// The connection target host or address.
+    /// The connection target as configured: a host name or an address
+    /// literal (spec section 4.6).
     #[must_use]
     pub fn target_addr(&self) -> &str {
         &self.target_addr
+    }
+
+    /// The address actually connected to, if recorded.
+    #[must_use]
+    pub fn peer_addr(&self) -> Option<&str> {
+        self.peer_addr.as_deref()
     }
 
     /// The target port.
@@ -572,6 +637,9 @@ pub struct Message {
     diffs: Vec<Diff>,
     #[serde(default)]
     connection: ConnectionInfo,
+    /// Interim (1xx) heads forwarded before the final response, raw bytes.
+    #[serde(default, with = "crate::bytes_serde::vec")]
+    interim: Vec<Bytes>,
 }
 
 impl Message {
@@ -594,6 +662,7 @@ impl Message {
             body,
             diffs: Vec::new(),
             connection,
+            interim: Vec::new(),
         }
     }
 
@@ -618,6 +687,7 @@ impl Message {
             body,
             diffs: Vec::new(),
             connection,
+            interim: Vec::new(),
         }
     }
 
@@ -625,6 +695,14 @@ impl Message {
     #[must_use]
     pub fn with_diffs(mut self, diffs: Vec<Diff>) -> Message {
         self.diffs = diffs;
+        self
+    }
+
+    /// Sets the interim (1xx) heads forwarded before this final response,
+    /// as raw head bytes in the order they were sent.
+    #[must_use]
+    pub fn with_interim(mut self, interim: Vec<Bytes>) -> Message {
+        self.interim = interim;
         self
     }
 
@@ -698,6 +776,12 @@ impl Message {
     #[must_use]
     pub fn connection(&self) -> &ConnectionInfo {
         &self.connection
+    }
+
+    /// Interim (1xx) heads forwarded before the final response, raw bytes.
+    #[must_use]
+    pub fn interim(&self) -> &[Bytes] {
+        &self.interim
     }
 }
 

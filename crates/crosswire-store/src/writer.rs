@@ -1,11 +1,13 @@
 //! The writer thread: batches exchanges into `SQLite` and packs.
 //!
-//! Per batch, in this order: `BEGIN IMMEDIATE`; a pending gap marker; for
+//! Per batch, in this order: `BEGIN IMMEDIATE`; a pending gap marker and
+//! any markers submitted through the sink; for
 //! each exchange the bodies (`BodyStore::put`, appending to packs) and the
 //! `exchanges` row; advance `meta.last_committed_ulid` and
 //! `meta.last_commit_watermark`; fsync the pack; record each touched pack's
 //! `committed_len`; `COMMIT`; then (if journal files were committed) fsync
-//! the WAL and delete them; then broadcast `Committed`. Nothing is announced
+//! the WAL and delete them; then broadcast `Committed` and one `Marker` per
+//! marker row written. Nothing is announced
 //! as committed before `COMMIT` returned, and `COMMIT` never happens before
 //! the pack bytes it references are synced.
 //!
@@ -68,7 +70,8 @@ impl Item {
 /// What a successful commit produced.
 struct Committed {
     ids: Vec<Ulid>,
-    marker: Option<Marker>,
+    /// The gap marker and the submitted markers whose rows were inserted.
+    markers: Vec<Marker>,
 }
 
 /// Why a commit failed.
@@ -125,6 +128,9 @@ pub(crate) struct Writer {
     last_checkpoint: Instant,
     /// Queued exchanges that could be neither committed nor written back.
     held: Vec<Item>,
+    /// Markers from the sink not yet committed, and the queue bytes each
+    /// reserved.
+    markers: Vec<(Marker, usize)>,
     /// The current backoff delay and when to try again, while the database fails.
     backoff: Option<(Duration, Instant)>,
     /// In a database failure streak (its one `Error` was sent).
@@ -144,6 +150,7 @@ impl Writer {
             cfg,
             last_checkpoint: Instant::now(),
             held: Vec::new(),
+            markers: Vec::new(),
             backoff: None,
             failing: false,
             stuck: HashSet::new(),
@@ -242,8 +249,10 @@ impl Writer {
         self.backoff = None;
         let mut batch = std::mem::take(&mut self.held);
         while let Ok(msg) = rx.try_recv() {
-            if let Msg::Exchange(ex, size) = msg {
-                batch.push(Item::queued(*ex, size));
+            match msg {
+                Msg::Exchange(ex, size) => batch.push(Item::queued(*ex, size)),
+                Msg::Marker(m, size) => self.markers.push((*m, size)),
+                Msg::Stop(_) => {}
             }
         }
         for chunk in chunked(batch, self.cfg.batch_max.max(1)) {
@@ -268,6 +277,16 @@ impl Writer {
                 self.shared.release(item.ex.id(), size);
             }
         }
+        let lost = std::mem::take(&mut self.markers);
+        if !lost.is_empty() {
+            self.shared.events.error(format!(
+                "{} marker(s) could not be stored at shutdown",
+                lost.len()
+            ));
+        }
+        for (_, size) in lost {
+            self.shared.release_slot(size);
+        }
         if clean {
             self.checkpoint("TRUNCATE");
         }
@@ -290,6 +309,7 @@ impl Writer {
         }
         match rx.recv_timeout((at - now).min(Duration::from_millis(50))) {
             Ok(Msg::Exchange(ex, size)) => self.held.push(Item::queued(*ex, size)),
+            Ok(Msg::Marker(m, size)) => self.markers.push((*m, size)),
             Ok(Msg::Stop(s)) => *stop = Some(s),
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => *stop = Some(Stop::Abandon),
@@ -297,9 +317,10 @@ impl Writer {
         true
     }
 
-    /// Waits up to `batch_interval` for a first exchange, then collects until
-    /// `batch_max` or `batch_interval` after the first.
-    fn collect(&self, rx: &Receiver<Msg>, stop: &mut Option<Stop>) -> Vec<Item> {
+    /// Waits up to `batch_interval` for a first message, then collects until
+    /// `batch_max` exchanges or `batch_interval` after the first. Markers
+    /// go to `self.markers` and ride along with the batch.
+    fn collect(&mut self, rx: &Receiver<Msg>, stop: &mut Option<Stop>) -> Vec<Item> {
         // Clamped so `Instant + interval` cannot overflow.
         let interval = self.cfg.batch_interval.min(Duration::from_secs(86_400));
         let mut batch = Vec::new();
@@ -308,6 +329,7 @@ impl Writer {
         loop {
             match next {
                 Ok(Msg::Exchange(ex, size)) => batch.push(Item::queued(*ex, size)),
+                Ok(Msg::Marker(m, size)) => self.markers.push((*m, size)),
                 Ok(Msg::Stop(s)) => {
                     *stop = Some(s);
                     break;
@@ -462,7 +484,7 @@ impl Writer {
         let mut removed = 0;
         loop {
             let gap = self.shared.take_gap();
-            if items.is_empty() && gap.is_none() {
+            if items.is_empty() && gap.is_none() && self.markers.is_empty() {
                 return removed;
             }
             match self.try_commit(&items, gap) {
@@ -550,7 +572,10 @@ impl Writer {
     /// before deleting the batch's journal files (so a spilled exchange is
     /// never only in an unsynced WAL), then broadcasts.
     fn after_commit(&mut self, items: Vec<Item>, done: Committed) -> usize {
-        let Committed { ids, marker } = done;
+        let Committed { ids, markers } = done;
+        for (_, size) in std::mem::take(&mut self.markers) {
+            self.shared.release_slot(size);
+        }
         let mut journaled = Vec::new();
         for item in items {
             if let Some(size) = item.reserved {
@@ -583,7 +608,7 @@ impl Writer {
         if !ids.is_empty() {
             self.shared.events.emit(|seq| Event::Committed { ids, seq });
         }
-        if let Some(marker) = marker {
+        for marker in markers {
             self.shared.events.emit(|seq| Event::Marker { marker, seq });
         }
         removed
@@ -603,7 +628,10 @@ impl Writer {
         #[cfg(test)]
         let hooks = Arc::clone(&self.cfg.hooks);
         let Writer {
-            project, bodies, ..
+            project,
+            bodies,
+            markers: submitted,
+            ..
         } = self;
         let Some(bodies) = bodies.as_mut() else {
             return Err(CommitError::Db(StoreError::Closed));
@@ -612,15 +640,21 @@ impl Writer {
         let tx = project
             .writer_mut()
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        // (2) A pending gap: from the earliest lost id to now.
-        let marker = match gap {
-            Some(from) => Some(insert_gap(
+        // (2) A pending gap: from the earliest lost id to now; then the
+        // markers submitted through the sink (a repeated id is skipped).
+        let mut markers = Vec::new();
+        if let Some(from) = gap {
+            markers.push(insert_gap(
                 &tx,
                 Some(from),
                 "exchanges were dropped: the queue and journal were full or unwritable",
-            )?),
-            None => None,
-        };
+            )?);
+        }
+        for (marker, _) in submitted.iter() {
+            if insert_marker(&tx, marker, true)? > 0 {
+                markers.push(marker.clone());
+            }
+        }
         // Packs appended to in this batch, and the end of the last record in each.
         let mut touched: BTreeMap<u32, u64> = BTreeMap::new();
         let mut ids = Vec::with_capacity(items.len());
@@ -693,7 +727,7 @@ impl Writer {
         }
         // (6) COMMIT.
         tx.commit()?;
-        Ok(Committed { ids, marker })
+        Ok(Committed { ids, markers })
     }
 
     fn wal_path(&self) -> PathBuf {
@@ -766,8 +800,25 @@ fn insert_gap(
     }
     let to = marker.id();
     marker = marker.with_to(to);
-    tx.execute(
-        "INSERT INTO markers (ulid, kind, from_ulid, to_ulid, detail) VALUES (?1, ?2, ?3, ?4, ?5)",
+    insert_marker(tx, &marker, false)?;
+    Ok(marker)
+}
+
+/// Inserts one marker row; returns how many rows were written. With
+/// `skip_existing` a row with the same id is left alone (0).
+fn insert_marker(
+    tx: &Transaction<'_>,
+    marker: &Marker,
+    skip_existing: bool,
+) -> Result<usize, StoreError> {
+    let sql = if skip_existing {
+        "INSERT OR IGNORE INTO markers (ulid, kind, from_ulid, to_ulid, detail) \
+         VALUES (?1, ?2, ?3, ?4, ?5)"
+    } else {
+        "INSERT INTO markers (ulid, kind, from_ulid, to_ulid, detail) VALUES (?1, ?2, ?3, ?4, ?5)"
+    };
+    Ok(tx.execute(
+        sql,
         rusqlite::params![
             marker.id().to_string(),
             wire_name(&marker.kind()),
@@ -775,8 +826,7 @@ fn insert_gap(
             marker.to_ulid().map(|u| u.to_string()),
             marker.detail(),
         ],
-    )?;
-    Ok(marker)
+    )?)
 }
 
 /// Stores one exchange's bodies and row inside `tx`.
@@ -798,7 +848,13 @@ fn insert_exchange(
         (BodySide::Resp, ex.response(), "/response/body"),
     ];
     for (side, msg, key) in sides {
-        let Some(Body::Inline { bytes }) = msg.map(Message::body) else {
+        let Some(Body::Inline {
+            bytes,
+            truncated_at,
+            capture_dropped,
+            relay,
+        }) = msg.map(Message::body)
+        else {
             continue;
         };
         let hash: [u8; 32] = match bodies.put(tx, id, side, bytes)? {
@@ -812,22 +868,20 @@ fn insert_exchange(
             }
         };
         // The JSON keeps a reference; the bytes live in `bodies` and packs.
+        // The capture bookkeeping travels with it.
         let blob = serde_json::to_value(Body::Blob {
             hash,
             len: bytes.len() as u64,
-            truncated_at: None,
-            capture_dropped: false,
+            truncated_at: *truncated_at,
+            capture_dropped: *capture_dropped,
+            relay: *relay,
         })?;
         set_field(&mut json, key, blob)?;
     }
     let (method, path) = request_line(ex.request());
     let host = request_host(ex.request());
     let status = ex.response().and_then(status_code);
-    let resp_len = ex.response().map(|m| match m.body() {
-        Body::Inline { bytes } => bytes.len() as u64,
-        Body::Blob { len, .. } => *len,
-        _ => 0,
-    });
+    let resp_len = ex.response().map(|m| body_len(m.body()));
     let resp_len = resp_len.map(|l| i64::try_from(l).unwrap_or(i64::MAX));
     let tags = if ex.tags().is_empty() {
         String::new()
@@ -855,6 +909,17 @@ fn insert_exchange(
         ],
     )?;
     Ok(())
+}
+
+/// A body's length for the `resp_len` column: the relayed length when the
+/// capture is not the whole body, else the stored length.
+fn body_len(body: &Body) -> u64 {
+    match body {
+        Body::Inline { relay: Some(r), .. } | Body::Blob { relay: Some(r), .. } => r.len,
+        Body::Inline { bytes, .. } => bytes.len() as u64,
+        Body::Blob { len, .. } => *len,
+        _ => 0,
+    }
 }
 
 /// Replaces the value at `pointer` (which must exist) without indexing panics.

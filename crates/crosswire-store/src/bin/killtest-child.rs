@@ -39,9 +39,7 @@ fn message(body: Vec<u8>) -> Message {
         FramingRecord::ContentLength {
             len: body.len() as u64,
         },
-        Body::Inline {
-            bytes: Bytes::from(body),
-        },
+        Body::inline(Bytes::from(body)),
         ConnectionInfo::new("example.test", 443),
     )
 }

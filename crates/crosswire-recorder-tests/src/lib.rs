@@ -140,6 +140,6 @@ fn inline(bytes: Bytes) -> Body {
     if bytes.is_empty() {
         Body::None
     } else {
-        Body::Inline { bytes }
+        Body::inline(bytes)
     }
 }

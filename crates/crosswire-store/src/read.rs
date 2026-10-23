@@ -307,9 +307,22 @@ impl Store {
                 let slot = value
                     .pointer_mut(pointer)
                     .ok_or_else(|| corrupt("exchange json lacks a body slot"))?;
-                *slot = serde_json::to_value(Body::Inline {
-                    bytes: bytes::Bytes::from(bytes),
-                })?;
+                // Keep the capture bookkeeping the stored reference carries.
+                let body = match serde_json::from_value::<Body>(slot.take())? {
+                    Body::Blob {
+                        truncated_at,
+                        capture_dropped,
+                        relay,
+                        ..
+                    } => Body::Inline {
+                        bytes: bytes::Bytes::from(bytes),
+                        truncated_at,
+                        capture_dropped,
+                        relay,
+                    },
+                    _ => Body::inline(bytes::Bytes::from(bytes)),
+                };
+                *slot = serde_json::to_value(body)?;
             }
             Ok(Some(serde_json::from_value(value)?))
         })

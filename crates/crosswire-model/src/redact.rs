@@ -95,9 +95,45 @@ impl RedactionPolicy {
     /// labelled [`Fidelity::Normalized`]: it is no longer what was on the
     /// wire. A normalized head is redacted per pair. A tunnel head has
     /// nothing to redact and the message is returned unchanged. Diffs are
-    /// redacted; the body is not (see the type docs).
+    /// redacted; the body is not (see the type docs). Interim (1xx) heads
+    /// are redacted with the same header policy, each rebuilt the way an
+    /// HTTP/1 head is; one that does not parse is scrubbed like a diff.
     #[must_use]
     pub fn redact_message(&self, m: &Message) -> Message {
+        let out = self.redact_head(m);
+        if m.interim().is_empty() {
+            return out;
+        }
+        let interim = m.interim().iter().map(|h| self.redact_interim(h)).collect();
+        out.with_interim(interim)
+    }
+
+    /// One interim head: parsed for spans and rebuilt by span; bytes that do
+    /// not parse as one complete head are scrubbed as opaque bytes.
+    fn redact_interim(&self, head: &Bytes) -> Bytes {
+        let mut p = Parser::response(
+            &ParserConfig::default(),
+            ResponseContext::for_method(b"GET"),
+        );
+        if let Ok(step) = p.feed(head) {
+            if let Progress::Head(raw) = step.event {
+                if step.consumed == head.len() {
+                    let spans = HeadSpans::from(raw.head());
+                    return Bytes::from(self.rebuild_http1(head, &spans).0);
+                }
+            }
+        }
+        self.scrub(head)
+    }
+
+    /// Value patterns anywhere, and listed `Name: value` lines.
+    fn scrub(&self, b: &Bytes) -> Bytes {
+        let mut r = self.find_matches(b);
+        r.extend(self.find_header_lines(b));
+        Bytes::from(replace_ranges(b, &r))
+    }
+
+    fn redact_head(&self, m: &Message) -> Message {
         match m.head() {
             Head::Http1Raw {
                 bytes,
@@ -142,19 +178,14 @@ impl RedactionPolicy {
     }
 
     fn redact_diffs(&self, diffs: &[Diff]) -> Vec<Diff> {
-        let scrub = |b: &Bytes| {
-            let mut r = self.find_matches(b);
-            r.extend(self.find_header_lines(b));
-            Bytes::from(replace_ranges(b, &r))
-        };
         diffs
             .iter()
             .map(|d| {
                 Diff::new(
                     d.op(),
                     d.span(),
-                    scrub(d.before()),
-                    scrub(d.after()),
+                    self.scrub(d.before()),
+                    self.scrub(d.after()),
                     d.reason().clone(),
                 )
             })

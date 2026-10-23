@@ -75,13 +75,39 @@ async fn accept_invalid_overrides_and_records_the_reason() {
         ))
         .await
         .unwrap();
-    assert!(matches!(
-        c.info().upstream_chain_result(),
-        ChainResult::Overridden
-    ));
     assert!(c.info().cert_override());
     let reason = c.chain_error().expect("override reason recorded");
     assert!(reason.contains("UnknownIssuer"), "{reason}");
+    assert_eq!(
+        c.info().upstream_chain_result(),
+        &ChainResult::Overridden {
+            reason: reason.to_string()
+        },
+        "the recorded chain result carries the overridden error"
+    );
+}
+
+#[tokio::test]
+async fn target_addr_is_the_configured_host_and_peer_addr_the_ip() {
+    let (ca, addr) = common::spawn_tls_echo_with_ca().await;
+    let mut g = DestinationGate::new(vec![]);
+    g.allow("localhost", addr.port());
+    let t = Transport::new(
+        Arc::new(RustlsBackend::with_extra_roots(vec![ca.cert_der()])),
+        Arc::new(g),
+    );
+    let c = t
+        .connect(&Target::tls(
+            "localhost",
+            addr.port(),
+            "example.test",
+            VerifyMode::WebPki,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(c.info().target_addr(), "localhost");
+    assert_eq!(c.info().peer_addr(), Some("127.0.0.1"));
+    assert_eq!(c.info().port(), addr.port());
 }
 
 #[tokio::test]
@@ -149,6 +175,7 @@ async fn records_alpn_version_cipher() {
     assert!(!i.cipher().unwrap().is_empty());
     assert_eq!(i.sni(), Some("example.test"));
     assert_eq!(i.target_addr(), "127.0.0.1");
+    assert_eq!(i.peer_addr(), Some("127.0.0.1"));
     assert_eq!(i.port(), addr.port());
     assert!(!i.reused());
     // Bytes flow through the boxed connection.

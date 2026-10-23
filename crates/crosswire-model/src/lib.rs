@@ -42,8 +42,8 @@ pub use exchange::{Exchange, ExchangeState, Namespace, NamespaceKind, ScopeState
 pub use fidelity::{Fidelity, MessageKind};
 pub use marker::{Marker, MarkerKind};
 pub use message::{
-    Body, ChainResult, ConnectionInfo, Diff, FramingRecord, Head, HeadSpans, HeaderSpanRecord,
-    Message, StartLineSpans, TunnelReason, HTTP1_PARSER_VERSION,
+    Body, Capture, ChainResult, ConnectionInfo, Diff, FramingRecord, Head, HeadSpans,
+    HeaderSpanRecord, Message, StartLineSpans, TunnelReason, HTTP1_PARSER_VERSION,
 };
 pub use redact::RedactionPolicy;
 pub use sink::{ExchangeSink, SinkError};

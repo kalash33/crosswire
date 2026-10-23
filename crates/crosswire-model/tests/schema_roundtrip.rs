@@ -21,9 +21,7 @@ fn full_exchange_roundtrips_with_response_and_blob() {
         ex.id(),
         Message::http1_raw(
             &req,
-            Body::Inline {
-                bytes: bytes::Bytes::from_static(b"\x00\xffhi"),
-            },
+            Body::inline(bytes::Bytes::from_static(b"\x00\xffhi")),
             conn("x", 443),
         ),
     );
@@ -32,6 +30,7 @@ fn full_exchange_roundtrips_with_response_and_blob() {
         len: 99,
         truncated_at: Some(50),
         capture_dropped: true,
+        relay: None,
     };
     ex.set_response(Message::http1_raw(&resp, blob, conn("x", 443)));
     ex.add_tag("t1");

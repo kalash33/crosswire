@@ -4,7 +4,7 @@ use bytes::Bytes;
 use crosswire_core::Span;
 use crosswire_model::{
     Body, ConnectionInfo, Event, Exchange, Fidelity, FramingRecord, Head, HeadSpans,
-    HeaderSpanRecord, Marker, Message, MessageKind, SinkError, StartLineSpans,
+    HeaderSpanRecord, Marker, MarkerKind, Message, MessageKind, SinkError, StartLineSpans,
     HTTP1_PARSER_VERSION,
 };
 use crosswire_store::{BodySide, BodyStore, EventStream, Project, Store, StoreConfig};
@@ -35,9 +35,7 @@ fn msg(body: &[u8]) -> Message {
         FramingRecord::ContentLength {
             len: body.len() as u64,
         },
-        Body::Inline {
-            bytes: Bytes::copy_from_slice(body),
-        },
+        Body::inline(Bytes::copy_from_slice(body)),
         ConnectionInfo::new("example.test", 443),
     )
 }
@@ -185,12 +183,12 @@ async fn committed_follows_received_and_is_readable() {
             matches!(stored.request().body(), Body::Blob { .. }),
             "bodies are not kept in the json"
         );
-        let Body::Inline { bytes } = ex.request().body() else {
+        let Body::Inline { bytes, .. } = ex.request().body() else {
             unreachable!()
         };
         let got = BodyStore::get(&conn, &dir, ex.id(), BodySide::Req).unwrap();
         assert_eq!(got.as_deref(), Some(&bytes[..]));
-        let Body::Inline { bytes } = ex.response().unwrap().body() else {
+        let Body::Inline { bytes, .. } = ex.response().unwrap().body() else {
             unreachable!()
         };
         let got = BodyStore::get(&conn, &dir, ex.id(), BodySide::Resp).unwrap();
@@ -689,6 +687,48 @@ fn closed_sink_refuses() {
 }
 
 #[test]
+fn submit_marker_writes_row_and_event() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (_dir, store) = new_store(&tmp, cfg());
+    let mut ev = store.subscribe();
+    let sink = store.sink();
+    let from = Ulid::from_parts(1_700_000_000_000, 1);
+    let marker = Marker::new(MarkerKind::LimitExceeded, "body capture limit")
+        .with_from(from)
+        .with_to(from);
+    sink.submit_marker(marker.clone()).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut seen = None;
+    while seen.is_none() && Instant::now() < deadline {
+        match ev.try_recv() {
+            Some(Event::Marker { marker: m, .. }) => seen = Some(m),
+            Some(_) => {}
+            None => std::thread::sleep(Duration::from_millis(2)),
+        }
+    }
+    assert_eq!(
+        seen.as_ref(),
+        Some(&marker),
+        "Event::Marker for the submitted marker"
+    );
+    let page = store.markers(None, 10).unwrap();
+    assert_eq!(page.items, vec![marker]);
+    store.close().unwrap();
+}
+
+#[test]
+fn submit_marker_on_a_closed_sink_refuses() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (_dir, store) = new_store(&tmp, cfg());
+    let sink = store.sink();
+    store.close().unwrap();
+    assert_eq!(
+        sink.submit_marker(Marker::new(MarkerKind::Error, "x")),
+        Err(SinkError::Closed)
+    );
+}
+
+#[test]
 fn http1_heads_fill_search_columns() {
     let tmp = tempfile::tempdir().unwrap();
     let (_dir, store) = new_store(&tmp, cfg());
@@ -736,9 +776,7 @@ fn http1_heads_fill_search_columns() {
             parser_version: HTTP1_PARSER_VERSION,
         },
         FramingRecord::ContentLength { len: 5 },
-        Body::Inline {
-            bytes: Bytes::from_static(b"hello"),
-        },
+        Body::inline(Bytes::from_static(b"hello")),
         ConnectionInfo::new("example.test", 443),
     );
     let mut ex = Exchange::new(req);

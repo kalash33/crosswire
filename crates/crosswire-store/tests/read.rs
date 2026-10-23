@@ -2,7 +2,8 @@
 
 use bytes::Bytes;
 use crosswire_model::{
-    Body, ConnectionInfo, Event, Exchange, Fidelity, FramingRecord, Head, Message, MessageKind,
+    Body, Capture, ConnectionInfo, Event, Exchange, Fidelity, FramingRecord, Head, Message,
+    MessageKind,
 };
 use crosswire_store::{BodySide, EventStream, ExchangeFilter, Project, Store, StoreConfig};
 use std::collections::BTreeSet;
@@ -30,9 +31,7 @@ fn msg(body: &[u8], host: &str) -> Message {
         FramingRecord::ContentLength {
             len: body.len() as u64,
         },
-        Body::Inline {
-            bytes: Bytes::copy_from_slice(body),
-        },
+        Body::inline(Bytes::copy_from_slice(body)),
         ConnectionInfo::new(host, 443),
     )
 }
@@ -171,7 +170,7 @@ fn get_rehydrates_bodies() {
     let got = store.get(id).unwrap().expect("exists");
     assert_eq!(got.id(), id);
     match got.request().body() {
-        Body::Inline { bytes } => assert_eq!(&bytes[..], &small[..]),
+        Body::Inline { bytes, .. } => assert_eq!(&bytes[..], &small[..]),
         other => panic!("request body: {other:?}"),
     }
     match got.response().expect("response").body() {
@@ -391,4 +390,59 @@ fn host_falls_back_to_target_addr_without_a_host_header() {
     assert_eq!(count("203.0.113.8"), 1, "plaintext 80 is the default");
     assert_eq!(count("203.0.113.9"), 1, "TLS 443 is the default");
     assert_eq!(count("203.0.113.10:443"), 1, "plaintext 443 is not");
+}
+
+#[test]
+fn capture_fields_survive_storage_and_resp_len_uses_relay() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = open(&tmp);
+    let mut ev = store.subscribe();
+    let relay = Capture {
+        len: 70_000,
+        sha256: [0xab; 32],
+    };
+    let kept = noise(1024, 3);
+    let small = noise(16, 4);
+    let mut ex = exchange(&small, b"", "cap.test");
+    let resp = Message::new(
+        MessageKind::Normalized,
+        Fidelity::Normalized,
+        Head::Normalized { map: Vec::new() },
+        FramingRecord::ContentLength { len: 70_000 },
+        Body::Inline {
+            bytes: Bytes::from(kept.clone()),
+            truncated_at: Some(1024),
+            capture_dropped: false,
+            relay: Some(relay),
+        },
+        ConnectionInfo::new("cap.test", 443),
+    );
+    ex.set_response(resp);
+    let id = insert(&store, &mut ev, vec![ex])[0];
+
+    let row = &store
+        .list(&ExchangeFilter::default(), None, 10)
+        .unwrap()
+        .items[0];
+    assert_eq!(row.id, id);
+    assert_eq!(row.resp_len, Some(70_000), "length from the relay record");
+
+    let got = store.get(id).unwrap().expect("exists");
+    match got.response().expect("response").body() {
+        Body::Inline {
+            bytes,
+            truncated_at,
+            capture_dropped,
+            relay: r,
+        } => {
+            assert_eq!(&bytes[..], &kept[..]);
+            assert_eq!(*truncated_at, Some(1024));
+            assert!(!capture_dropped);
+            assert_eq!(*r, Some(relay));
+        }
+        other => panic!("response body: {other:?}"),
+    }
+    // The request carried no relay record.
+    let req_only = got.request().body();
+    assert!(matches!(req_only, Body::Inline { relay: None, .. }));
 }

@@ -39,12 +39,21 @@ Directories are created 0700 and files 0600 on unix. Other platforms use the pla
 | `state` | TEXT NOT NULL | exchange state: `committed` when the writer stores it; the startup sweep sets `error` on an exchange whose pack body was lost |
 | `scope_state` | TEXT NOT NULL | in / out / empty |
 | `created_at` | INTEGER NOT NULL | unix milliseconds |
-| `json` | TEXT NOT NULL | the `Exchange` JSON with `state` `committed`; each inline body is replaced by a `blob` body (`hash` = SHA-256, `len`), its bytes being in `bodies` |
-| `req_method`, `req_host`, `req_path` | TEXT | denormalised for search. `req_host` is the request's `Host` header value, ASCII-lowercased with any port kept (the message identity; HTTP/2 will use `:authority`); with duplicate `Host` headers the first wins; only when there is no `Host` does it fall back to the connection's target address, lowercased, with `:port` appended unless the port is the scheme default (443 with TLS, 80 without), as a browser would have sent it |
+| `json` | TEXT NOT NULL | the `Exchange` JSON with `state` `committed`; each inline body is replaced by a `blob` body (`hash` = SHA-256, `len`), its bytes being in `bodies`; the body's `truncated_at`, `capture_dropped` and `relay` are copied to the `blob` body (see [Exchange JSON](#exchange-json)) |
+| `req_method`, `req_host`, `req_path` | TEXT | denormalised for search. `req_host` is the request's `Host` header value, ASCII-lowercased with any port kept (the message identity; HTTP/2 will use `:authority`); with duplicate `Host` headers the first wins; only when there is no `Host` does it fall back to the connection's `target_addr` (the configured host, not the resolved IP), lowercased, with `:port` appended unless the port is the scheme default (443 with TLS, 80 without), as a browser would have sent it |
 | `resp_status` | INTEGER | NULL when no response |
-| `resp_len` | INTEGER | response body length |
+| `resp_len` | INTEGER | response body length: the body's `relay.len` when present (the capture is not the whole body), else the stored length |
 | `tags` | TEXT NOT NULL DEFAULT '' | |
 | `notes` | TEXT NOT NULL DEFAULT '' | |
+
+#### Exchange JSON
+
+The `json` column and journal files hold the `crosswire-model` `Exchange` schema. Fields added after the first schema are optional on read (absent means the default shown), so older JSON still loads:
+
+- Bodies (`{"type":"inline",...}` and `{"type":"blob",...}`): `truncated_at` (integer or null, default null): the capture was cut off and this many bytes were kept; `capture_dropped` (bool, default false): the capture window was full, so the stored bytes are not the body and its length and hash come from `relay`; `relay` (object or null, default null): `{"len": <bytes relayed>, "sha256": "<base64 SHA-256>"}`, the length and hash of the whole body as it passed through the relay path, present when the capture is not the whole body. `inline` bodies previously had only `bytes`; `blob` bodies gain `relay`.
+- Messages: `interim` (array of base64 strings, default `[]`): interim (1xx) response heads forwarded before the final response, each the raw head bytes including the empty line, in the order sent. Redaction rebuilds each with the same header policy as the head.
+- Connection facts (`connection`): `target_addr` is the host as configured or requested (a name or an address literal, with brackets for IPv6), not the address it resolved to; `peer_addr` (string or null, default null) is the address actually connected to.
+- `upstream_chain_result` `{"type":"overridden"}` gains `reason` (string, default `""`): the chain validation error that was overridden, at most 1 KiB.
 
 `bodies` (`WITHOUT ROWID`), one row per body side:
 
@@ -62,7 +71,7 @@ Primary key `(ulid, side)`. At most one of `inline` and `blob_hash` is set (`CHE
 
 `packs`: `id INTEGER PRIMARY KEY`, `committed_len INTEGER NOT NULL DEFAULT 0` (bytes of the pack file that the database has committed and trusts; the tail beyond it is validated on open, kept while its records are intact, and truncated at the first bad record). There is no path column: the pack file is always `packs/{id:06}.pack` (for example `packs/000001.pack`), derived from the id. A project file is untrusted input, so readers must never open a path stored in the database.
 
-`markers` (`WITHOUT ROWID`), gap and error rows: `ulid TEXT PRIMARY KEY`, `kind TEXT NOT NULL`, `from_ulid TEXT`, `to_ulid TEXT`, `detail TEXT NOT NULL DEFAULT ''`. A `gap` is a time window: exchanges that were submitted and not recorded have ids (creation times) in `from_ulid..=to_ulid` (`from_ulid` NULL means from the start). An exchange created before `from_ulid` but submitted after it can also be missing. The store writes only `gap` rows today (detail `unclean shutdown`, `exchanges were dropped: ...`, or `pack torn`); a `pack torn` marker is a point marker whose `from_ulid` is the affected exchange and `to_ulid` is NULL. The `limit_exceeded` and `error` kinds exist in the schema and are written by later components.
+`markers` (`WITHOUT ROWID`), gap and error rows: `ulid TEXT PRIMARY KEY`, `kind TEXT NOT NULL`, `from_ulid TEXT`, `to_ulid TEXT`, `detail TEXT NOT NULL DEFAULT ''`. A `gap` is a time window: exchanges that were submitted and not recorded have ids (creation times) in `from_ulid..=to_ulid` (`from_ulid` NULL means from the start). An exchange created before `from_ulid` but submitted after it can also be missing. The store itself writes only `gap` rows (detail `unclean shutdown`, `exchanges were dropped: ...`, or `pack torn`); a `pack torn` marker is a point marker whose `from_ulid` is the affected exchange and `to_ulid` is NULL. Other components submit markers of any kind (`gap`, `limit_exceeded`, `error`) through the sink (`ExchangeSink::submit_marker`); they are written as given, and a submitted marker whose id is already stored is skipped.
 
 `meta` (`WITHOUT ROWID`): `key TEXT PRIMARY KEY`, `value TEXT NOT NULL`. Keys:
 
@@ -103,14 +112,14 @@ The `blobs` row points at the record start with `offset` and `len` (the whole re
 
 ## Write path
 
-One writer thread owns the writer connection. Exchanges reach it through a bounded queue (10,000 exchanges and 64 MiB, an exchange costing its message bytes plus 1 KiB). It commits a batch when 1,000 exchanges are waiting or 250 ms after the first one arrived. Per batch, in order:
+One writer thread owns the writer connection. Exchanges and submitted markers reach it through a bounded queue (10,000 entries and 64 MiB, an exchange costing its message bytes plus 1 KiB, a marker one entry and its JSON length). A marker is not spilled to the journal: when the queue is full it is refused (`full`). It commits a batch when 1,000 exchanges are waiting or 250 ms after the first one arrived. Per batch, in order:
 
 1. `BEGIN IMMEDIATE`.
-2. A pending `gap` marker (exchanges were dropped): from the earliest dropped id (or one second before the first drop, if earlier) to now.
+2. A pending `gap` marker (exchanges were dropped): from the earliest dropped id (or one second before the first drop, if earlier) to now. Then the markers submitted since the last commit.
 3. For each exchange not already stored: its bodies (inline or appended to a pack), then its `exchanges` row.
 4. `last_committed_ulid` advances to the greatest id in the batch; `last_commit_watermark` is rewritten.
 5. The current pack is fsynced; `packs.committed_len` is raised to the end of the last record written to each pack.
-6. `COMMIT`. If the batch came from journal files, the WAL is fsynced and only then are the files deleted. Then the `committed` event is sent.
+6. `COMMIT`. If the batch came from journal files, the WAL is fsynced and only then are the files deleted. Then the `committed` event is sent, then one `marker` event per marker row written.
 
 A failure caused by one exchange (an oversized body, a JSON or constraint error) moves that exchange to `journal/bad/`, records a gap, and commits the rest. Any other failure (disk full, I/O error) is treated as the database being unavailable: queued exchanges are written back to `journal/` (held in memory if that fails too), journal files stay, one `error` event is sent per failure streak, and the writer retries with a backoff of 250 ms doubling to 30 s.
 

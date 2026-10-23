@@ -309,9 +309,7 @@ mod tests {
             Fidelity::Normalized,
             Head::Normalized { map: Vec::new() },
             FramingRecord::None,
-            Body::Inline {
-                bytes: bytes::Bytes::copy_from_slice(body),
-            },
+            Body::inline(bytes::Bytes::copy_from_slice(body)),
             ConnectionInfo::new("example.test", 443),
         );
         Exchange::new(msg)

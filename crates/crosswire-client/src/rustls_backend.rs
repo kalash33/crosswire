@@ -115,6 +115,21 @@ impl ServerCertVerifier for RecordingVerifier {
     }
 }
 
+/// Longest overridden-chain reason recorded in a [`ChainResult`], in bytes.
+const REASON_MAX: usize = 1024;
+
+/// `e` cut to at most [`REASON_MAX`] bytes on a character boundary.
+fn bounded_reason(e: &str) -> String {
+    if e.len() <= REASON_MAX {
+        return e.to_owned();
+    }
+    let mut end = REASON_MAX;
+    while !e.is_char_boundary(end) {
+        end -= 1;
+    }
+    e[..end].to_owned()
+}
+
 fn tls_err(e: impl std::fmt::Display) -> ClientError {
     ClientError::Tls(e.to_string())
 }
@@ -173,10 +188,11 @@ impl RustlsBackend {
             .alpn_protocol()
             .map(|p| String::from_utf8_lossy(p).into_owned());
         let chain_error = failure.lock().unwrap_or_else(|p| p.into_inner()).take();
-        let chain_result = if chain_error.is_some() {
-            ChainResult::Overridden
-        } else {
-            ChainResult::Valid
+        let chain_result = match &chain_error {
+            Some(e) => ChainResult::Overridden {
+                reason: bounded_reason(e),
+            },
+            None => ChainResult::Valid,
         };
         let info = TlsInfo {
             version,
@@ -192,5 +208,22 @@ impl RustlsBackend {
 impl TlsBackend for RustlsBackend {
     fn connect<'a>(&'a self, tcp: TcpStream, cfg: TlsConnectConfig) -> BoxFuture<'a, Handshake> {
         Box::pin(self.handshake(tcp, cfg))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reason_is_bounded_on_a_char_boundary() {
+        assert_eq!(bounded_reason("UnknownIssuer"), "UnknownIssuer");
+        let long = "é".repeat(REASON_MAX);
+        let cut = bounded_reason(&long);
+        assert!(cut.len() <= REASON_MAX);
+        assert_eq!(cut.len(), REASON_MAX);
+        let odd = format!("x{long}");
+        let cut = bounded_reason(&odd);
+        assert_eq!(cut.len(), REASON_MAX - 1);
     }
 }

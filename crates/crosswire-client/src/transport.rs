@@ -211,7 +211,10 @@ impl Transport {
         let connect_ms = ms(t0);
         let _ = tcp.set_nodelay(true);
 
-        let mut info = ConnectionInfo::new(ip.to_string(), target.port)
+        // The configured host is the target (spec 4.6); the resolved
+        // address actually dialled is the peer.
+        let mut info = ConnectionInfo::new(target.host(), target.port)
+            .with_peer_addr(ip.to_string())
             .with_conn(NEXT_CONN_ID.fetch_add(1, Ordering::Relaxed), false);
 
         let Some(cfg) = target.tls.clone() else {
