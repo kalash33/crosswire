@@ -3,7 +3,9 @@
 //! A spill is written to `journal/<ulid>.json.tmp`, fsynced, renamed to
 //! `journal/<ulid>.json` and the directory fsynced, so a `.json` file is
 //! always complete. Leftover `.tmp` files were never acknowledged and are
-//! deleted on open. Unreadable files are moved to `journal/bad/`.
+//! deleted on open. Files that cannot parse are moved to `journal/bad/`
+//! (with a gap row); files that fail with a transient I/O error stay and are
+//! retried.
 
 use crate::error::StoreError;
 use crosswire_model::Exchange;
@@ -22,6 +24,17 @@ pub(crate) enum SpillError {
     CapExceeded,
     /// Writing the file failed.
     Io(StoreError),
+}
+
+/// Why [`Journal::read`] returned no exchange.
+#[derive(Debug)]
+pub(crate) enum ReadError {
+    /// The file is gone (committed and deleted meanwhile); nothing to do.
+    Gone,
+    /// The file will never parse: quarantine it and record a gap.
+    Unusable(String),
+    /// Reading failed in a way that may pass: leave the file and retry.
+    Transient(std::io::Error),
 }
 
 /// A journal file found by [`Journal::oldest`].
@@ -127,24 +140,37 @@ impl Journal {
     }
 
     /// Reads and parses one journal file.
-    pub(crate) fn read(entry: &Entry) -> Result<Exchange, String> {
+    ///
+    /// A file that is not a regular file (a symlink is refused by
+    /// `O_NOFOLLOW`), is over 256 MiB or is not `Exchange` JSON is
+    /// [`ReadError::Unusable`]. Any other I/O error (`EMFILE`, `EIO`,
+    /// `EACCES`, ...) may pass and is [`ReadError::Transient`].
+    pub(crate) fn read(entry: &Entry) -> Result<Exchange, ReadError> {
         let mut o = OpenOptions::new();
         o.read(true);
         crate::packs::harden_open(&mut o);
-        let mut f = o.open(&entry.path).map_err(|e| e.to_string())?;
-        let meta = f.metadata().map_err(|e| e.to_string())?;
+        let mut f = o.open(&entry.path).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                ReadError::Gone
+            } else if e.raw_os_error() == Some(rustix::io::Errno::LOOP.raw_os_error()) {
+                ReadError::Unusable("a symlink".into())
+            } else {
+                ReadError::Transient(e)
+            }
+        })?;
+        let meta = f.metadata().map_err(ReadError::Transient)?;
         if !meta.is_file() {
-            return Err("not a regular file".into());
+            return Err(ReadError::Unusable("not a regular file".into()));
         }
         if meta.len() > MAX_FILE {
-            return Err("file too large".into());
+            return Err(ReadError::Unusable("file too large".into()));
         }
         let mut data = Vec::new();
         Read::by_ref(&mut f)
             .take(MAX_FILE + 1)
             .read_to_end(&mut data)
-            .map_err(|e| e.to_string())?;
-        serde_json::from_slice(&data).map_err(|e| e.to_string())
+            .map_err(ReadError::Transient)?;
+        serde_json::from_slice(&data).map_err(|e| ReadError::Unusable(e.to_string()))
     }
 
     /// Deletes a file whose exchange is committed.

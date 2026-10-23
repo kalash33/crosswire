@@ -175,6 +175,14 @@ Known limitations:
   back to the journal either (the disk is gone), the exchanges stay in memory and
   are lost if the process then dies. A gap marker is attempted at shutdown and, if
   it cannot be written, `close` returns an error and leaves the project unclean.
+- **Unreadable journal files.** A journal file that cannot be parsed is moved
+  to `journal/bad/` and recorded as a gap from the ULID in its name, so the loss
+  is findable but the exchange is not replayed. A file that fails with a
+  transient I/O error (`EMFILE`, `EIO`, `EACCES`) stays in `journal/` and is
+  retried with backoff; after 10 retries (about two minutes) it is treated as
+  unparseable, so a file that stays unreadable longer than that is set aside
+  with a gap rather than replayed later. While it is retried the writer's
+  backoff also delays queue commits by up to the current delay.
 - **Spec 9.3 refinement.** The spec says the gap is written by the startup sweep
   between the last committed ULID and the restart. The implementation writes it
   in `Store::open` from `last_commit_watermark`, which is never later than the

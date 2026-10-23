@@ -514,7 +514,8 @@ fn bad_journal_file_is_quarantined() {
     let tmp = tempfile::tempdir().unwrap();
     let (dir, store) = new_store(&tmp, cfg());
     let mut ev = store.subscribe();
-    let name = format!("{}.json", Ulid::new());
+    let lost = Ulid::new();
+    let name = format!("{lost}.json");
     std::fs::write(dir.join("journal").join(&name), b"not json").unwrap();
     let deadline = Instant::now() + Duration::from_secs(5);
     let mut saw_error = false;
@@ -534,6 +535,53 @@ fn bad_journal_file_is_quarantined() {
     store.sink().submit(ex).unwrap();
     assert!(wait_committed(&mut ev, &[id], Duration::from_secs(5)).contains(&id));
     store.close().unwrap();
+    // The loss has a gap row whose window starts at the file's ULID.
+    let gaps = gap_markers(&dir);
+    assert_eq!(gaps.len(), 1, "one gap row for the unreadable file");
+    let from = gaps[0].from.expect("a gap window start");
+    assert!(from <= lost && lost <= gaps[0].to, "{lost} outside the gap");
+}
+
+#[cfg(unix)]
+#[test]
+fn unreadable_journal_file_is_kept_and_replayed_once_readable() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::tempdir().unwrap();
+    let (dir, store) = new_store(&tmp, cfg());
+    store.close().unwrap();
+    let ex = exchange(b"held", b"held");
+    let id = ex.id();
+    let path = dir.join("journal").join(format!("{id}.json"));
+    std::fs::write(&path, serde_json::to_vec(&ex).unwrap()).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+    if std::fs::File::open(&path).is_ok() {
+        eprintln!("skipped: running as root, file permissions are not enforced");
+        return;
+    }
+
+    let store = Store::open(Project::open(&dir).unwrap(), cfg()).unwrap();
+    let mut ev = store.subscribe();
+    assert!(
+        path.exists(),
+        "a transient read error leaves the file in place"
+    );
+    assert!(!dir.join("journal/bad").join(format!("{id}.json")).exists());
+    assert!(
+        store
+            .open_report()
+            .events
+            .iter()
+            .any(|e| matches!(e, Event::Error { .. })),
+        "the read failure is reported"
+    );
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    assert!(
+        wait_committed(&mut ev, &[id], Duration::from_secs(10)).contains(&id),
+        "replayed once readable"
+    );
+    store.close().unwrap();
+    assert!(!path.exists());
+    assert!(gap_markers(&dir).is_empty(), "nothing was lost");
 }
 
 #[test]

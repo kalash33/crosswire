@@ -19,7 +19,7 @@
 
 use crate::bodies::{BodyLocator, BodySide, BodyStore};
 use crate::error::StoreError;
-use crate::journal::{Entry, Journal};
+use crate::journal::{Entry, Journal, ReadError};
 use crate::packs::PackWriter;
 use crate::sink::{slack_ulid, Msg, Shared, Stop};
 use crate::store::StoreConfig;
@@ -30,7 +30,7 @@ use crosswire_model::{
 use rusqlite::{ErrorCode, OptionalExtension, Transaction, TransactionBehavior};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
@@ -40,6 +40,9 @@ use ulid::Ulid;
 
 const BACKOFF_MIN: Duration = Duration::from_millis(250);
 const BACKOFF_MAX: Duration = Duration::from_secs(30);
+/// Transient read failures of one journal file before it is treated as
+/// unusable (with backoff, about two minutes).
+const TRANSIENT_RETRIES: u32 = 10;
 
 /// An exchange to commit, and where it came from.
 struct Item {
@@ -126,6 +129,8 @@ pub(crate) struct Writer {
     failing: bool,
     /// Journal files whose quarantine failed; skipped from then on.
     stuck: HashSet<PathBuf>,
+    /// Journal files that failed to read with a transient error, and how often.
+    transient: HashMap<PathBuf, u32>,
 }
 
 impl Writer {
@@ -140,6 +145,7 @@ impl Writer {
             backoff: None,
             failing: false,
             stuck: HashSet::new(),
+            transient: HashMap::new(),
         }
     }
 
@@ -338,6 +344,8 @@ impl Writer {
         let mut removed = 0;
         let mut items = Vec::new();
         let mut bytes = 0u64;
+        // The highest transient-failure count seen this pass (0: none).
+        let mut retry = 0u32;
         for entry in entries {
             if self.stuck.contains(&entry.path) {
                 continue;
@@ -349,19 +357,75 @@ impl Writer {
             }
             bytes = bytes.saturating_add(entry.len);
             match Journal::read(&entry) {
-                Ok(ex) => items.push(Item {
-                    ex,
-                    journal: Some(entry),
-                    reserved: None,
-                }),
-                Err(why) => {
-                    if self.quarantine_file(&entry, &why) {
+                Ok(ex) => {
+                    self.transient.remove(&entry.path);
+                    items.push(Item {
+                        ex,
+                        journal: Some(entry),
+                        reserved: None,
+                    });
+                }
+                Err(ReadError::Gone) => {}
+                Err(ReadError::Unusable(why)) => {
+                    if self.lose_file(&entry, &why) {
                         removed += 1;
+                    }
+                }
+                Err(ReadError::Transient(e)) => {
+                    let n = self.transient.entry(entry.path.clone()).or_insert(0);
+                    *n += 1;
+                    let n = *n;
+                    let name = entry.path.file_name().unwrap_or_default().to_string_lossy();
+                    if n > TRANSIENT_RETRIES {
+                        self.transient.remove(&entry.path);
+                        let why =
+                            format!("still unreadable after {TRANSIENT_RETRIES} retries: {e}");
+                        if self.lose_file(&entry, &why) {
+                            removed += 1;
+                        }
+                    } else {
+                        if n == 1 {
+                            self.shared.events.error(format!(
+                                "cannot read journal file {name} ({e}); kept in journal/ \
+                                 and retried"
+                            ));
+                        }
+                        retry = retry.max(n);
                     }
                 }
             }
         }
-        removed + self.commit(items)
+        let removed = removed + self.commit(items);
+        if retry > 0 {
+            self.retry_journal_after(retry);
+        }
+        removed
+    }
+
+    /// A journal file failed to read transiently for the `attempt`th time:
+    /// back off (doubling per attempt) before the journal is read again.
+    fn retry_journal_after(&mut self, attempt: u32) {
+        let delay = BACKOFF_MIN
+            .saturating_mul(1 << (attempt - 1).min(16))
+            .min(BACKOFF_MAX);
+        let at = Instant::now() + delay;
+        if self.backoff.is_none_or(|(_, t)| t < at) {
+            self.backoff = Some((delay, at));
+        }
+    }
+
+    /// A journal file that will never parse: records the loss as a gap
+    /// (from the file's ULID, or the slack ULID if the name is not one),
+    /// then moves it to `journal/bad/`.
+    fn lose_file(&mut self, entry: &Entry, why: &str) -> bool {
+        let from = entry
+            .path
+            .file_stem()
+            .and_then(|s| Ulid::from_string(&s.to_string_lossy()).ok())
+            .unwrap_or_else(slack_ulid);
+        self.shared
+            .dropped(from, "a journal file could not be read; see journal/bad/");
+        self.quarantine_file(entry, why)
     }
 
     /// Moves an unusable journal file to `journal/bad/` and reports it. A
