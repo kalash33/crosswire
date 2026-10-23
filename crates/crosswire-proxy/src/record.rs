@@ -14,8 +14,8 @@ use crate::capture::Reservation;
 use crate::relay::ExchangeDraft;
 use crate::Counters;
 
-/// Least time between two "sink is full" warnings.
-const FULL_WARN_EVERY: Duration = Duration::from_secs(10);
+/// Least time between two "sink refused" warnings.
+const REFUSAL_WARN_EVERY: Duration = Duration::from_secs(10);
 
 /// Turns relay drafts into exchanges and submits them, and markers, to the
 /// sink from blocking threads. One per listener; cheap to clone.
@@ -24,8 +24,27 @@ pub(crate) struct Recorder {
     sink: Arc<dyn ExchangeSink>,
     counters: Arc<Counters>,
     parse: ParserConfig,
-    /// When "sink is full" was last logged.
-    full_warned: Arc<Mutex<Option<Instant>>>,
+    /// Throttles the "sink refused" warning.
+    warn_gate: Arc<WarnGate>,
+}
+
+/// Lets a warning through at most once per [`REFUSAL_WARN_EVERY`].
+#[derive(Debug, Default)]
+pub(crate) struct WarnGate {
+    last: Mutex<Option<Instant>>,
+}
+
+impl WarnGate {
+    /// Whether a warning at `now` should be logged; if so, `now` starts
+    /// the next quiet period.
+    pub(crate) fn should_log(&self, now: Instant) -> bool {
+        let mut last = self.last.lock().unwrap_or_else(PoisonError::into_inner);
+        let open = last.is_none_or(|t| now.saturating_duration_since(t) >= REFUSAL_WARN_EVERY);
+        if open {
+            *last = Some(now);
+        }
+        open
+    }
 }
 
 /// What a tunnel needs to record what it carried.
@@ -56,7 +75,7 @@ impl Recorder {
             sink,
             counters,
             parse,
-            full_warned: Arc::new(Mutex::new(None)),
+            warn_gate: Arc::new(WarnGate::default()),
         }
     }
 
@@ -149,27 +168,15 @@ impl Recorder {
         }));
     }
 
-    /// Counts a full sink (logged at most once per [`FULL_WARN_EVERY`]);
-    /// logs any other refusal. Never logs the record's bytes.
+    /// Counts a full sink in `sink_full`; logs any refusal at most once
+    /// per [`REFUSAL_WARN_EVERY`]. Never logs the record's bytes.
     fn refused(&self, e: SinkError, what: &'static str) {
-        if e != SinkError::Full {
-            tracing::warn!(error = %e, what, "sink refused a record");
-            return;
+        if e == SinkError::Full {
+            self.counters.sink_full.fetch_add(1, Ordering::Relaxed);
         }
-        let n = self.counters.sink_full.fetch_add(1, Ordering::Relaxed) + 1;
-        let now = Instant::now();
-        let mut last = self
-            .full_warned
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        if last.is_none_or(|t| now.duration_since(t) >= FULL_WARN_EVERY) {
-            *last = Some(now);
-            drop(last);
-            tracing::warn!(
-                what,
-                sink_full = n,
-                "sink is full; records are being dropped"
-            );
+        if self.warn_gate.should_log(Instant::now()) {
+            let sink_full = self.counters.sink_full.load(Ordering::Relaxed);
+            tracing::warn!(error = %e, what, sink_full, "sink refused a record; further refusals are not logged for 10 s");
         }
     }
 }
@@ -178,5 +185,22 @@ fn reparse(cfg: &ParserConfig, head: &[u8]) -> Option<RawMessage> {
     match Parser::request(cfg).feed(head).ok()?.event {
         Progress::Head(m) => Some(m),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn warn_gate_logs_once_per_ten_seconds() {
+        let gate = WarnGate::default();
+        let t0 = Instant::now();
+        assert!(gate.should_log(t0));
+        assert!(!gate.should_log(t0 + Duration::from_secs(1)));
+        assert!(!gate.should_log(t0 + Duration::from_millis(9_999)));
+        assert!(gate.should_log(t0 + Duration::from_secs(10)));
+        assert!(!gate.should_log(t0 + Duration::from_secs(15)));
+        assert!(gate.should_log(t0 + Duration::from_secs(20)));
     }
 }

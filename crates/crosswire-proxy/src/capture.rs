@@ -5,12 +5,15 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use bytes::{Bytes, BytesMut};
+use bytes::Bytes;
 use crosswire_model::{Body, Capture};
 use sha2::{Digest, Sha256};
 
-/// Kept bytes are reserved from the [`Budget`] in steps of this size.
-pub(crate) const RESERVE_STEP: u64 = 64 * 1024;
+/// The first growth of a capture buffer; each later step doubles, up to
+/// [`MAX_STEP`].
+pub(crate) const FIRST_STEP: u64 = 4 * 1024;
+/// The largest growth of a capture buffer.
+pub(crate) const MAX_STEP: u64 = 64 * 1024;
 
 /// The in-flight body budget: the most captured body bytes held across
 /// every connection of one listener at once (`body_budget`). Request and
@@ -83,13 +86,17 @@ impl Drop for Reservation {
 /// grants them. A refusal drops what was kept (and its reservation) for
 /// the rest of the body.
 pub(crate) struct CaptureBuf {
-    kept: BytesMut,
+    /// Grown only by [`CaptureBuf::grow`], so its capacity never exceeds
+    /// the reservation.
+    kept: Vec<u8>,
     cap: u64,
     total: u64,
     hasher: Sha256,
     dropped: bool,
     reservation: Option<Reservation>,
     budget: Arc<Budget>,
+    /// The next growth step.
+    step: u64,
 }
 
 /// A finished capture. Holds its budget reservation until dropped: the
@@ -112,14 +119,64 @@ impl CaptureBuf {
     /// An empty capture keeping at most `cap` bytes, drawing from `budget`.
     pub(crate) fn new(cap: u64, budget: &Arc<Budget>) -> CaptureBuf {
         CaptureBuf {
-            kept: BytesMut::new(),
+            kept: Vec::new(),
             cap,
             total: 0,
             hasher: Sha256::new(),
             dropped: false,
             reservation: None,
             budget: Arc::clone(budget),
+            step: FIRST_STEP,
         }
+    }
+
+    fn reserved(&self) -> u64 {
+        self.reservation.as_ref().map_or(0, Reservation::len)
+    }
+
+    /// Adds `n` bytes to the reservation; `false` (and nothing taken) when
+    /// the budget refuses.
+    fn reserve(&mut self, n: u64) -> bool {
+        let Some(r) = self.budget.try_reserve(n) else {
+            return false;
+        };
+        match self.reservation.as_mut() {
+            Some(held) => held.absorb(r),
+            None => self.reservation = Some(r),
+        }
+        true
+    }
+
+    /// Grows the buffer by the next step (never past `cap`), reserving
+    /// the budget first. The reservation always covers the capacity.
+    fn grow(&mut self) -> bool {
+        let capacity = self.kept.capacity() as u64;
+        let step = self.step.min(self.cap.saturating_sub(capacity));
+        if step == 0 || !self.reserve(step) {
+            return false;
+        }
+        self.step = (self.step * 2).min(MAX_STEP);
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "bounded by cap, which fits in memory"
+        )]
+        self.kept
+            .reserve_exact((capacity + step) as usize - self.kept.len());
+        // The allocator may round up; charge any excess too.
+        let excess = (self.kept.capacity() as u64).saturating_sub(self.reserved());
+        if excess > 0 && !self.reserve(excess) {
+            return false;
+        }
+        debug_assert!(self.kept.capacity() as u64 <= self.reserved());
+        true
+    }
+
+    /// Frees the buffer and its reservation; the rest of the body is only
+    /// counted and hashed.
+    fn drop_capture(&mut self) {
+        self.dropped = true;
+        self.kept = Vec::new();
+        self.reservation = None;
     }
 
     /// Records bytes that were just forwarded.
@@ -131,31 +188,22 @@ impl CaptureBuf {
             return;
         }
         let take = (bytes.len() as u64).min(self.cap - kept);
-        let need = kept + take;
-        let mut reserved = self.reservation.as_ref().map_or(0, Reservation::len);
-        while reserved < need {
-            let step = RESERVE_STEP.min(self.cap - reserved);
-            let Some(r) = self.budget.try_reserve(step) else {
-                self.dropped = true;
-                self.kept = BytesMut::new();
-                self.reservation = None;
+        while (self.kept.capacity() as u64) < kept + take {
+            if !self.grow() {
+                self.drop_capture();
                 return;
-            };
-            reserved += step;
-            match self.reservation.as_mut() {
-                Some(held) => held.absorb(r),
-                None => self.reservation = Some(r),
             }
         }
         #[allow(clippy::cast_possible_truncation, reason = "take <= bytes.len()")]
         self.kept.extend_from_slice(&bytes[..take as usize]);
+        debug_assert!(self.kept.capacity() as u64 <= self.reserved());
     }
 
     /// Ends the capture.
     pub(crate) fn finish(self) -> CaptureResult {
         let truncated_at = (!self.dropped && self.total > self.cap).then_some(self.cap);
         CaptureResult {
-            bytes: self.kept.freeze(),
+            bytes: Bytes::from(self.kept),
             truncated_at,
             capture_dropped: self.dropped,
             relay: Capture {
@@ -246,17 +294,17 @@ mod tests {
 
     #[test]
     fn budget_refusal_mid_body_releases_what_was_kept() {
-        // One 64 KiB step fits; the second does not.
-        let budget = Arc::new(Budget::new(RESERVE_STEP + KIB));
+        // The 4 KiB and 8 KiB steps fit; the 16 KiB one does not.
+        let budget = Arc::new(Budget::new(12 * KIB + 1));
         let mut c = CaptureBuf::new(KIB * KIB, &budget);
-        c.push(&vec![1u8; RESERVE_STEP as usize]);
-        assert_eq!(budget.used(), RESERVE_STEP);
+        c.push(&vec![1u8; 12 * KIB as usize]);
+        assert_eq!(budget.used(), 12 * KIB);
         c.push(b"x");
         assert_eq!(budget.used(), 0);
         let r = c.finish();
         assert!(r.capture_dropped);
         assert!(r.bytes.is_empty());
-        assert_eq!(r.relay.len, RESERVE_STEP + 1);
+        assert_eq!(r.relay.len, 12 * KIB + 1);
     }
 
     #[test]
@@ -264,13 +312,38 @@ mod tests {
         let budget = Arc::new(Budget::new(KIB * KIB));
         let mut c = CaptureBuf::new(KIB * KIB, &budget);
         c.push(&[0u8; 100]);
-        assert_eq!(budget.used(), RESERVE_STEP);
+        assert_eq!(budget.used(), FIRST_STEP);
         let r = c.finish();
         // The reservation travels with the result until the recorder has
         // handed the bytes to the sink.
-        assert_eq!(budget.used(), RESERVE_STEP);
+        assert_eq!(budget.used(), FIRST_STEP);
         drop(r);
         assert_eq!(budget.used(), 0);
+    }
+
+    #[test]
+    fn small_bodies_reserve_small() {
+        let budget = Arc::new(Budget::new(KIB * KIB));
+        let mut c = CaptureBuf::new(50 * KIB * KIB, &budget);
+        c.push(&[9u8; 100]);
+        assert_eq!(budget.used(), 4 * KIB);
+        assert_eq!(c.finish().bytes.len(), 100);
+    }
+
+    #[test]
+    fn capacity_never_exceeds_reservation() {
+        let budget = Arc::new(Budget::new(KIB * KIB));
+        let mut c = CaptureBuf::new(KIB * KIB, &budget);
+        for i in 0..200 * KIB {
+            c.push(&[(i % 251) as u8]);
+            assert!(c.kept.capacity() as u64 <= c.reserved(), "at byte {i}");
+        }
+        assert_eq!(c.reserved(), c.kept.capacity() as u64);
+        assert_eq!(budget.used(), c.kept.capacity() as u64);
+        // 4 + 8 + 16 + 32 + 64 + 64 + 64 KiB.
+        assert_eq!(c.reserved(), 252 * KIB);
+        let r = c.finish();
+        assert_eq!(r.bytes.len() as u64, 200 * KIB);
     }
 
     #[test]
@@ -285,7 +358,7 @@ mod tests {
 
     #[test]
     fn two_captures_share_one_budget() {
-        let budget = Arc::new(Budget::new(RESERVE_STEP));
+        let budget = Arc::new(Budget::new(FIRST_STEP));
         let mut a = CaptureBuf::new(KIB * KIB, &budget);
         let mut b = CaptureBuf::new(KIB * KIB, &budget);
         a.push(b"a");

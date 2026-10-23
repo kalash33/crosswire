@@ -431,47 +431,74 @@ async fn slow_client_does_not_buffer_upstream() {
     rec.close();
 }
 
-/// A sink that is always full.
-#[derive(Default)]
-struct FullSink {
+/// A sink that refuses everything with one error.
+struct RefusingSink {
+    error: SinkError,
     calls: AtomicUsize,
 }
 
-impl ExchangeSink for FullSink {
-    fn submit(&self, _: Exchange) -> Result<(), SinkError> {
-        self.calls.fetch_add(1, Ordering::SeqCst);
-        Err(SinkError::Full)
-    }
-
-    fn submit_marker(&self, _: Marker) -> Result<(), SinkError> {
-        Err(SinkError::Full)
+impl RefusingSink {
+    fn new(error: SinkError) -> Arc<RefusingSink> {
+        Arc::new(RefusingSink {
+            error,
+            calls: AtomicUsize::new(0),
+        })
     }
 }
 
-#[tokio::test]
-async fn sink_full_never_stalls_relay() {
+impl ExchangeSink for RefusingSink {
+    fn submit(&self, _: Exchange) -> Result<(), SinkError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Err(self.error)
+    }
+
+    fn submit_marker(&self, _: Marker) -> Result<(), SinkError> {
+        Err(self.error)
+    }
+}
+
+/// Runs three keep-alive exchanges through a proxy recording into `sink`
+/// and waits until the sink has been offered all three.
+async fn three_exchanges_into(sink: &Arc<RefusingSink>) -> ProxyHarness {
     let resp = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok".to_vec();
     let up = spawn_raw(vec![resp.clone(), resp.clone(), resp.clone()], None).await;
-    let sink = Arc::new(FullSink::default());
     let h = proxy(
-        Arc::clone(&sink) as Arc<dyn ExchangeSink>,
+        Arc::clone(sink) as Arc<dyn ExchangeSink>,
         ProxyLimits::default(),
         up.port(),
     )
     .await;
-
     let mut c = connect_raw(h.addr).await;
     for i in 0..3 {
         let req = format!("GET http://u.test:{}/{i} HTTP/1.1\r\n\r\n", up.port());
         c.write_all(req.as_bytes()).await.unwrap();
         assert_eq!(read_exact_n(&mut c, resp.len()).await, resp);
     }
-    wait_for("three refusals", || {
+    wait_for("three submissions", || {
+        sink.calls.load(Ordering::SeqCst) == 3
+    })
+    .await;
+    assert_eq!(h.counters.exchanges.load(Ordering::Relaxed), 3);
+    h
+}
+
+#[tokio::test]
+async fn sink_full_never_stalls_relay() {
+    let sink = RefusingSink::new(SinkError::Full);
+    let h = three_exchanges_into(&sink).await;
+    wait_for("three refusals counted", || {
         h.counters.sink_full.load(Ordering::Relaxed) == 3
     })
     .await;
-    assert_eq!(sink.calls.load(Ordering::SeqCst), 3);
-    assert_eq!(h.counters.exchanges.load(Ordering::Relaxed), 3);
-    drop(c);
+    h.shutdown.shutdown().await;
+}
+
+#[tokio::test]
+async fn closed_sink_is_not_counted_as_full() {
+    let sink = RefusingSink::new(SinkError::Closed);
+    let h = three_exchanges_into(&sink).await;
+    // Give the refusals time to be (not) counted.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(h.counters.sink_full.load(Ordering::Relaxed), 0);
     h.shutdown.shutdown().await;
 }
