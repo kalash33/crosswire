@@ -258,6 +258,9 @@ fn configure_writer(conn: &Connection) -> Result<(), StoreError> {
         return Err(StoreError::Corrupt(format!("journal_mode is {mode}")));
     }
     conn.pragma_update(None, "synchronous", "NORMAL")?;
+    // On macOS plain fsync does not flush the drive cache; make SQLite's own
+    // checkpoint syncs use F_FULLFSYNC (a no-op elsewhere).
+    conn.pragma_update(None, "checkpoint_fullfsync", "ON")?;
     conn.pragma_update(None, "busy_timeout", 5000)?;
     Ok(())
 }
@@ -347,6 +350,11 @@ mod tests {
             .unwrap();
         tx.commit().unwrap();
         assert_eq!(p.pack_path(7).file_name().unwrap(), "000007.pack");
+        let full: i64 = p
+            .writer_mut()
+            .query_row("PRAGMA checkpoint_fullfsync", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(full, 1);
     }
 
     #[test]

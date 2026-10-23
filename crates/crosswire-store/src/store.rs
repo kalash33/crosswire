@@ -317,6 +317,19 @@ mod tests {
         Exchange::new(msg)
     }
 
+    /// Deterministic, poorly compressible bytes.
+    fn noise(n: usize, seed: u64) -> Vec<u8> {
+        let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+        (0..n)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                (x >> 24) as u8
+            })
+            .collect()
+    }
+
     fn open(tmp: &tempfile::TempDir) -> (StoreConfig, Store) {
         let cfg = StoreConfig {
             batch_interval: Duration::from_millis(20),
@@ -391,6 +404,79 @@ mod tests {
             .query_row("SELECT count(*) FROM markers", [], |r| r.get(0))
             .unwrap();
         assert_eq!(gaps, 0, "nothing was lost");
+    }
+
+    /// Every record in `[0, committed_len)` of each pack, with its offset.
+    fn committed_records(dir: &Path) -> Vec<(u32, u64, u64)> {
+        let conn = crate::project::open_reader(dir).unwrap();
+        let mut st = conn
+            .prepare("SELECT id, committed_len FROM packs ORDER BY id")
+            .unwrap();
+        let packs: Vec<(u32, u64)> = st
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        let mut out = Vec::new();
+        for (id, committed) in packs {
+            let path = crate::packs::pack_file(dir, id);
+            let mut f = std::fs::File::open(&path).unwrap();
+            let len = f.metadata().unwrap().len();
+            assert_eq!(len, committed, "pack {id}: no bytes past committed_len");
+            let mut pos = 0;
+            while pos < committed {
+                let rec = crate::packs::read_record(&mut f, pos, committed)
+                    .unwrap_or_else(|_| panic!("torn record at {pos} in pack {id}"));
+                out.push((id, pos, rec.total_len));
+                pos += rec.total_len;
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn failed_commit_reopens_the_pack_at_committed_len() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (cfg, store) = open(&tmp);
+        let mut ev = store.subscribe();
+        // The first commit appends and fsyncs the body, then fails before COMMIT.
+        cfg.hooks.fail_commits.store(1, Ordering::SeqCst);
+        let first_body = noise(40_000, 1);
+        let first = exchange(&first_body);
+        let a = first.id();
+        store.sink().submit(first).unwrap();
+        let (got, _) = watch(&mut ev, &[a], Duration::from_secs(10));
+        assert!(got.contains(&a));
+        let second_body = noise(50_000, 2);
+        let second = exchange(&second_body);
+        let b = second.id();
+        store.sink().submit(second).unwrap();
+        let (got, _) = watch(&mut ev, &[b], Duration::from_secs(10));
+        assert!(got.contains(&b));
+        assert_eq!(
+            store.get_body(a, crate::BodySide::Req).unwrap().unwrap(),
+            first_body
+        );
+        assert_eq!(
+            store.get_body(b, crate::BodySide::Req).unwrap().unwrap(),
+            second_body
+        );
+        let dir = store.dir().to_path_buf();
+        store.close().unwrap();
+        // Every committed record is referenced: no orphan from the failed attempt.
+        let records = committed_records(&dir);
+        let conn = crate::project::open_reader(&dir).unwrap();
+        for (id, offset, len) in &records {
+            let n: i64 = conn
+                .query_row(
+                    "SELECT count(*) FROM blobs WHERE pack_id = ?1 AND offset = ?2 AND len = ?3",
+                    rusqlite::params![id, offset, len],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(n, 1, "orphan record at {offset} in pack {id}");
+        }
+        assert_eq!(records.len(), 2);
     }
 
     #[test]

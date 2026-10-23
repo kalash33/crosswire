@@ -150,14 +150,16 @@ thread has not synced yet). The price is the second limitation below.
 
 Known limitations:
 
-- **macOS flush strength.** SQLite's own syncs (checkpoints) use plain `fsync`,
-  because the `fullfsync` and `checkpoint_fullfsync` pragmas are not set, and on
-  macOS plain `fsync` does not force the drive to flush its cache. The explicit
-  syncs in this crate go through `File::sync_all` and `sync_data`, which on macOS
-  issue `F_FULLFSYNC` (a flush of about 1.4 ms against about 40 microseconds for
-  plain `fsync`, measured on a development laptop). The WAL, packs, journal and
-  audit log are therefore flushed hard; the database file after a checkpoint is
-  not guaranteed to be. Linux is not affected.
+- **macOS flush strength.** The writer connection sets
+  `checkpoint_fullfsync=ON`, so SQLite's checkpoint syncs issue `F_FULLFSYNC`
+  on macOS (plain `fsync` there does not force the drive to flush its cache).
+  `fullfsync` (every WAL commit sync) is not set; with `synchronous=NORMAL`
+  SQLite does not sync the WAL on commit anyway. The explicit syncs in this
+  crate go through `File::sync_all` and `sync_data`, which on macOS issue
+  `F_FULLFSYNC` (a flush of about 1.4 ms against about 40 microseconds for
+  plain `fsync`, measured on a development laptop). The WAL, packs, journal,
+  audit log and the database file after a checkpoint are therefore flushed
+  hard. Linux is not affected.
 - **The spill fsyncs on the submitting thread.** `submit` can block for a file
   create, two fsyncs, a rename and a directory fsync when the queue is full.
   Callers must run it where blocking is acceptable (`spawn_blocking`); the

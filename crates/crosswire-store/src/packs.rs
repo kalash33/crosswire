@@ -4,7 +4,7 @@
 //! SHA-256 of the raw bytes, then one zstd frame.
 
 use crate::error::StoreError;
-use rusqlite::Transaction;
+use rusqlite::{OptionalExtension, Transaction};
 use sha2::{Digest, Sha256};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -80,7 +80,8 @@ impl PackWriter {
                 1
             }
         };
-        let (file, offset) = open_append(&pack_file(&dir, id))?;
+        let end = trusted_end(project.writer_mut(), id)?;
+        let (file, offset) = open_append(&pack_file(&dir, id), end)?;
         Ok(PackWriter {
             packs_dir: dir,
             file,
@@ -173,7 +174,9 @@ impl PackWriter {
     fn rotate(&mut self, tx: &Transaction<'_>) -> Result<(), StoreError> {
         self.file.sync_all()?;
         let id = self.id + 1;
-        let (file, offset) = open_append(&pack_file(&self.packs_dir, id))?;
+        // A pack file left by a rolled-back rotation holds nothing committed.
+        let end = trusted_end(tx, id)?;
+        let (file, offset) = open_append(&pack_file(&self.packs_dir, id), end)?;
         tx.execute(
             "INSERT OR IGNORE INTO packs (id, committed_len) VALUES (?1, 0)",
             [id],
@@ -205,13 +208,36 @@ impl PackWriter {
     }
 }
 
-fn open_append(path: &Path) -> Result<(File, u64), StoreError> {
+/// The end of what the database trusts in pack `id`: its `committed_len`,
+/// or the end of the last blob it references if that is later (0 without a row).
+fn trusted_end(conn: &rusqlite::Connection, id: u32) -> Result<u64, StoreError> {
+    let end: Option<i64> = conn
+        .query_row(
+            "SELECT max(committed_len, \
+               coalesce((SELECT max(offset + len) FROM blobs WHERE pack_id = ?1), 0)) \
+             FROM packs WHERE id = ?1",
+            [id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(end.map_or(0, |e| u64::try_from(e).unwrap_or(0)))
+}
+
+/// Opens pack `path` for appending at `end`: bytes past it (records from a
+/// transaction that failed or rolled back) are cut, so they never come
+/// inside `committed_len` at the next commit.
+fn open_append(path: &Path, end: u64) -> Result<(File, u64), StoreError> {
     check_pack_path(path, true)?;
     let mut o = OpenOptions::new();
     o.append(true).create(true);
     harden_open(&mut o);
     let file = o.open(path)?;
-    let len = file.metadata()?.len();
+    let mut len = file.metadata()?.len();
+    if len > end {
+        file.set_len(end)?;
+        file.sync_all()?;
+        len = end;
+    }
     Ok((file, len))
 }
 

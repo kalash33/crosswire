@@ -23,7 +23,7 @@ Directories are created 0700 and files 0600 on unix. Other platforms use the pla
 
 - `PRAGMA application_id = 0x43575052` (`CWPR`). A database with another value is not a project.
 - `PRAGMA user_version = 1`. `0` means an uninitialised database (not a project). A value above 1 is refused as a newer format.
-- `PRAGMA journal_mode = WAL`, `synchronous = NORMAL`, `busy_timeout = 5000` on the writer connection. `Store::open` also sets `journal_size_limit` to 1 MiB so the WAL file does not stay at its high-water size.
+- `PRAGMA journal_mode = WAL`, `synchronous = NORMAL`, `checkpoint_fullfsync = ON` (checkpoint syncs use `F_FULLFSYNC` on macOS; no effect elsewhere), `busy_timeout = 5000` on the writer connection. `Store::open` also sets `journal_size_limit` to 1 MiB so the WAL file does not stay at its high-water size.
 - The project is opened with `SQLITE_DBCONFIG_DEFENSIVE` on and `trusted_schema = OFF`, so a hostile project file cannot run SQL functions from its schema or write to shadow tables.
 - One writer connection (the store's writer thread) and any number of read-only connections (`query_only = ON`, `busy_timeout = 5000`, `cache_size = -16384` (16 MiB), `mmap_size = 268435456` (256 MiB)).
 - Migrations are in `crates/crosswire-store/migrations/` and run in one transaction that also sets `user_version`.
@@ -99,7 +99,7 @@ sha256     32 bytes   SHA-256 of the raw (uncompressed) bytes
 frame    clen bytes   one zstd frame
 ```
 
-The `blobs` row points at the record start with `offset` and `len` (the whole record). Reading verifies the SHA-256, and refuses a frame that does not declare its content size or declares more than 64 MiB. There is no compression-ratio limit on packs: the store compressed them itself, and the size cap bounds memory (a 2 MiB run of zeros is an 83-byte frame and reads back). A pack rotates to a new file at 256 MiB. Only bytes up to `packs.committed_len` are trusted.
+The `blobs` row points at the record start with `offset` and `len` (the whole record). Reading verifies the SHA-256, and refuses a frame that does not declare its content size or declares more than 64 MiB. There is no compression-ratio limit on packs: the store compressed them itself, and the size cap bounds memory (a 2 MiB run of zeros is an 83-byte frame and reads back). A pack rotates to a new file at 256 MiB. Only bytes up to `packs.committed_len` are trusted. The writer opens a pack for appending at its trusted end (`committed_len`, or the end of the last blob it references if later) and cuts any bytes past it, so records appended by a transaction that failed or rolled back never end up inside `committed_len`; a pack file left by a rolled-back rotation is cut to empty.
 
 ## Write path
 
