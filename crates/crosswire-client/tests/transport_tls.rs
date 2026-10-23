@@ -232,12 +232,25 @@ async fn gate_applies_to_alternate_spellings() {
         "localhost.",
     ] {
         let r = t.connect(&Target::plain(h, addr.port())).await;
-        // Refused by the gate, or unresolvable on this platform; never connected.
-        assert!(
-            matches!(r, Err(ClientError::Refused(_) | ClientError::Dns(_))),
-            "{h}: {:?}",
-            r.map(|_| ())
-        );
+        // A spelling the platform resolver accepts must be refused by the
+        // gate; only one it rejects may end in a DNS error (the transport
+        // may still normalise it, e.g. strip brackets, and refuse it). Never
+        // connected.
+        let resolves = std::net::ToSocketAddrs::to_socket_addrs(&(h, addr.port()))
+            .is_ok_and(|mut a| a.next().is_some());
+        if resolves {
+            assert!(
+                matches!(r, Err(ClientError::Refused(_))),
+                "{h} resolves, so the gate must refuse it: {:?}",
+                r.map(|_| ())
+            );
+        } else {
+            assert!(
+                matches!(r, Err(ClientError::Refused(_) | ClientError::Dns(_))),
+                "{h}: {:?}",
+                r.map(|_| ())
+            );
+        }
     }
 }
 

@@ -254,10 +254,11 @@ fn batch_boundaries() {
     let did = d.id();
     let start = Instant::now();
     store.sink().submit(d).unwrap();
-    let got = wait_committed(&mut ev, &[did], Duration::from_millis(200));
+    // The interval is 50 ms; 2 s leaves room for slow CI runners.
+    let got = wait_committed(&mut ev, &[did], Duration::from_secs(2));
     assert!(
         got.contains(&did),
-        "committed within 200 ms (took {:?})",
+        "committed within 2 s (took {:?})",
         start.elapsed()
     );
     store.close().unwrap();

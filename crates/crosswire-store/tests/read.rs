@@ -51,6 +51,16 @@ fn open(tmp: &tempfile::TempDir) -> Store {
     Store::open(Project::create(&tmp.path().join("p")).unwrap(), cfg).unwrap()
 }
 
+/// Asserts that one plan line is an index `SEARCH` using `index` (not a full
+/// `SCAN` that merely mentions the index).
+fn assert_searches(plan: &[String], index: &str) {
+    assert!(
+        plan.iter()
+            .any(|l| l.contains("SEARCH") && l.contains(&format!("USING INDEX {index} "))),
+        "{plan:?}"
+    );
+}
+
 fn wait_committed(ev: &mut EventStream, want: &[Ulid]) {
     let deadline = Instant::now() + Duration::from_secs(20);
     let mut got = BTreeSet::new();
@@ -126,16 +136,18 @@ fn filters_use_indexes() {
         status: Some(500..=599),
         ..ExchangeFilter::default()
     };
-    let plan = store.explain_list(&by_status).unwrap().join(" | ");
+    let lines = store.explain_list(&by_status).unwrap();
+    assert_searches(&lines, "exchanges_resp_status");
+    let plan = lines.join(" | ");
     println!("status plan: {plan}");
-    assert!(plan.contains("exchanges_resp_status"), "{plan}");
     let by_ns = ExchangeFilter {
         namespace: Some(crosswire_model::NamespaceKind::History),
         ..ExchangeFilter::default()
     };
-    let plan = store.explain_list(&by_ns).unwrap().join(" | ");
+    let lines = store.explain_list(&by_ns).unwrap();
+    assert_searches(&lines, "exchanges_namespace_created_at");
+    let plan = lines.join(" | ");
     println!("namespace plan: {plan}");
-    assert!(plan.contains("exchanges_namespace_created_at"), "{plan}");
     let by_host = ExchangeFilter {
         host_contains: Some("example".into()),
         ..ExchangeFilter::default()
@@ -307,9 +319,10 @@ fn exact_host_filter_uses_host_header_is_indexed_and_case_insensitive() {
         host: Some("example.com:8443".into()),
         ..ExchangeFilter::default()
     };
-    let plan = store.explain_list(&exact).unwrap().join(" | ");
+    let lines = store.explain_list(&exact).unwrap();
+    assert_searches(&lines, "exchanges_req_host");
+    let plan = lines.join(" | ");
     println!("exact host plan: {plan}");
-    assert!(plan.contains("exchanges_req_host"), "{plan}");
     let page = store.list(&exact, None, 10).unwrap();
     assert_eq!(page.items.len(), 1);
     assert_eq!(page.items[0].host.as_deref(), Some("example.com:8443"));
