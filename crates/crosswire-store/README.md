@@ -76,7 +76,7 @@ writer process with SIGKILL under load.
 | Pack rotation | 256 MiB | `PACK_LIMIT` (`packs.rs`) |
 | Pack compression | zstd level 3 | `LEVEL` |
 | Largest body stored, and largest decompressed on read | 64 MiB (`MAX_RAW`). A larger body fails its exchange alone: it is set aside in `journal/bad/` with a gap marker | `packs.rs` |
-| Decompression ratio on read | above 1 MiB declared size, at most 100:1 | `RATIO_FLOOR`, `MAX_RATIO` |
+| Decompression ratio on read | none for packs: the store compressed them itself and the 64 MiB declared-size cap bounds memory (the 100:1 limit applies to the Content-Encoding decode view, not built yet) | `packs.rs` |
 | Journal file read back | at most 256 MiB | `MAX_FILE` (`journal.rs`) |
 | Gap window slack | 1 s before the first drop | `GAP_SLACK_MS` (`sink.rs`) |
 | Database failure backoff | 250 ms doubling to 30 s | `BACKOFF_MIN`, `BACKOFF_MAX` (`writer.rs`) |

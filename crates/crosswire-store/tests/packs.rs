@@ -213,19 +213,17 @@ fn decompression_bomb_refused() {
 }
 
 #[test]
-fn ratio_bomb_refused() {
+fn high_ratio_frame_under_the_size_cap_reads_back() {
+    // No ratio limit on packs: memory is bounded by the 64 MiB declared size.
     let (_t, mut p) = setup();
     let _store = BodyStore::new(PackWriter::open(&mut p).unwrap());
     let id = Ulid::new();
     let big = vec![0u8; 8 * 1024 * 1024];
     plant(&mut p, &big, &big, id);
-    let m = corrupt_msg(BodyStore::get(
-        &p.reader().unwrap(),
-        p.dir(),
-        id,
-        BodySide::Resp,
-    ));
-    assert!(m.contains("ratio"), "{m}");
+    let got = BodyStore::get(&p.reader().unwrap(), p.dir(), id, BodySide::Resp)
+        .unwrap()
+        .unwrap();
+    assert_eq!(&got[..], &big[..]);
 }
 
 #[test]

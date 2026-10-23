@@ -99,7 +99,7 @@ sha256     32 bytes   SHA-256 of the raw (uncompressed) bytes
 frame    clen bytes   one zstd frame
 ```
 
-The `blobs` row points at the record start with `offset` and `len` (the whole record). Reading verifies the SHA-256. A pack rotates to a new file at 256 MiB. Only bytes up to `packs.committed_len` are trusted.
+The `blobs` row points at the record start with `offset` and `len` (the whole record). Reading verifies the SHA-256, and refuses a frame that does not declare its content size or declares more than 64 MiB. There is no compression-ratio limit on packs: the store compressed them itself, and the size cap bounds memory (a 2 MiB run of zeros is an 83-byte frame and reads back). A pack rotates to a new file at 256 MiB. Only bytes up to `packs.committed_len` are trusted.
 
 ## Write path
 

@@ -19,9 +19,6 @@ pub(crate) const PACK_LIMIT: u64 = 256 * 1024 * 1024;
 pub(crate) const MAX_RAW: u64 = 64 * 1024 * 1024;
 /// The most compressed bytes one record may carry (incompressible `MAX_RAW` plus overhead).
 pub(crate) const MAX_FRAME: u64 = MAX_RAW + 1024 * 1024;
-/// Declared sizes up to this are exempt from the ratio check (cap-bounded anyway).
-const RATIO_FLOOR: u64 = 1024 * 1024;
-const MAX_RATIO: u64 = 100;
 const LEVEL: i32 = 3;
 
 /// The file of pack `id` inside project directory `dir`.
@@ -324,7 +321,13 @@ pub(crate) fn read_record(
     })
 }
 
-/// Decompresses one frame, refusing declared sizes over 64 MiB or 100:1.
+/// Decompresses one frame, refusing frames without a declared size or
+/// declaring more than 64 MiB.
+///
+/// There is deliberately no compression-ratio limit: the store compressed
+/// these bytes itself (2 MiB of zeros is an 83-byte frame), and memory is
+/// bounded by the declared-size cap passed to `bulk::decompress`. The 100:1
+/// ratio limit belongs to the Content-Encoding decode view, not to packs.
 fn decompress_bounded(frame: &[u8]) -> Result<Vec<u8>, BadRecord> {
     let declared = match zstd::zstd_safe::get_frame_content_size(frame) {
         Ok(Some(n)) => n,
@@ -333,9 +336,6 @@ fn decompress_bounded(frame: &[u8]) -> Result<Vec<u8>, BadRecord> {
     };
     if declared > MAX_RAW {
         return Err(BadRecord::Bad("decompressed size over limit"));
-    }
-    if declared > RATIO_FLOOR && declared > MAX_RATIO * frame.len() as u64 {
-        return Err(BadRecord::Bad("compression ratio over limit"));
     }
     // `capacity` is the hard cap: a frame that expands past it is an error.
     let cap = usize::try_from(declared).map_err(|_| BadRecord::Bad("size over limit"))?;

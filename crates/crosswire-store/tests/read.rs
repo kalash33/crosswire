@@ -172,6 +172,17 @@ fn get_rehydrates_bodies() {
 }
 
 #[test]
+fn highly_compressible_body_reads_back() {
+    // 2 MiB of zeros compresses far past 100:1; a committed body must read back.
+    let tmp = tempfile::tempdir().unwrap();
+    let store = open(&tmp);
+    let mut ev = store.subscribe();
+    let zeros = vec![0u8; 2 * 1024 * 1024];
+    let id = insert(&store, &mut ev, vec![exchange(b"req", &zeros, "z.test")])[0];
+    assert_eq!(store.get_body(id, BodySide::Resp).unwrap().unwrap(), zeros);
+}
+
+#[test]
 fn sql_injection_in_filter_is_inert() {
     let tmp = tempfile::tempdir().unwrap();
     let store = open(&tmp);
