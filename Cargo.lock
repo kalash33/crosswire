@@ -469,6 +469,7 @@ dependencies = [
  "crosswire-h1",
  "crosswire-model",
  "crosswire-store",
+ "lru",
  "rustls",
  "rustls-pki-types",
  "serde_json",
@@ -480,6 +481,7 @@ dependencies = [
  "tracing",
  "ulid",
  "webpki-roots 0.26.11",
+ "x509-parser",
 ]
 
 [[package]]

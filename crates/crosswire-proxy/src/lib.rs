@@ -9,10 +9,19 @@ mod handler;
 mod info_page;
 mod limits;
 mod listener;
+mod mitm;
+mod record;
+mod rejections;
+mod relay;
+mod sni;
+mod tunnel;
 
 pub use config::{ProxyAuth, ProxyConfig};
 pub use counters::Counters;
 pub use error::ProxyError;
 pub use handler::{Decision, Handler, NoopHandler};
 pub use limits::{ProxyLimits, ProxyLimitsBuilder};
+#[doc(hidden)]
+pub use listener::ResolveOverride;
 pub use listener::{Proxy, ProxyDeps};
+pub use sni::{parse_sni, SniError};

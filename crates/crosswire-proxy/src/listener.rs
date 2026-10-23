@@ -18,6 +18,8 @@ use tokio::sync::watch;
 use tokio::task::JoinSet;
 
 use crate::front::{self, FirstRequest};
+use crate::mitm;
+use crate::rejections::RejectionTracker;
 use crate::{generated, info_page, Counters, Handler, ProxyConfig, ProxyError};
 
 /// How long [`Proxy::run`] waits for live connections after shutdown.
@@ -28,6 +30,10 @@ const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 const LINGER: Duration = Duration::from_secs(2);
 /// Most bytes drained while lingering.
 const LINGER_BYTES: usize = 256 * 1024;
+
+/// Test-only host-to-address mapping (see [`ProxyDeps::resolve_override`]).
+#[doc(hidden)]
+pub type ResolveOverride = Arc<dyn Fn(&str) -> Option<IpAddr> + Send + Sync>;
 
 /// What the proxy needs from the rest of the program.
 pub struct ProxyDeps {
@@ -46,6 +52,12 @@ pub struct ProxyDeps {
     pub sink: Arc<dyn ExchangeSink>,
     /// Observes and steers traffic.
     pub handler: Arc<dyn Handler>,
+    /// Test-only wiring: maps a requested host to a fixed address before
+    /// the upstream connection, so tests can reach in-process servers under
+    /// made-up names. The host is replaced by the address; the SNI and
+    /// recorded target stay the requested name. Leave `None` in production.
+    #[doc(hidden)]
+    pub resolve_override: Option<ResolveOverride>,
 }
 
 /// State shared by the accept loop and every connection.
@@ -56,6 +68,8 @@ pub(crate) struct Shared {
     pub(crate) local_addr: SocketAddr,
     /// `base64(user:pass)` when proxy auth is configured.
     pub(crate) expected_auth: Option<Vec<u8>>,
+    /// Client handshake rejections per host.
+    pub(crate) rejections: RejectionTracker,
     active: AtomicUsize,
     pending_connect: AtomicUsize,
     per_ip: Mutex<HashMap<IpAddr, usize>>,
@@ -108,16 +122,15 @@ impl Drop for PendingConnect {
     }
 }
 
-/// One admitted client connection, handed to the tunnel or relay.
+/// One admitted client connection, handed to the tunnel or relay alongside
+/// the client stream itself (which moves into TLS, so it is kept apart).
 pub(crate) struct ConnCtx {
-    /// The client socket.
-    pub(crate) client: TcpStream,
     /// The client's address.
     pub(crate) peer: SocketAddr,
     /// Proxy-wide state.
     pub(crate) shared: Arc<Shared>,
-    /// Released once the tunnel is established (Task 4: after the client
-    /// TLS handshake).
+    /// Released once the tunnel is established: after the client TLS
+    /// handshake, or once a passthrough tunnel's upstream is connected.
     pub(crate) pending: PendingConnect,
     /// Released when the connection ends.
     pub(crate) _slot: ConnSlot,
@@ -144,6 +157,10 @@ impl Proxy {
     /// Whatever [`ProxyConfig::validate`] returns, or [`ProxyError::Bind`].
     pub async fn bind(cfg: ProxyConfig, deps: ProxyDeps) -> Result<Proxy, ProxyError> {
         cfg.validate()?;
+        let cfg_rejections = (
+            cfg.limits.rejections_per_window,
+            cfg.limits.rejection_window,
+        );
         let listener = TcpListener::bind(cfg.bind)
             .await
             .map_err(ProxyError::Bind)?;
@@ -161,6 +178,7 @@ impl Proxy {
                 counters: Arc::new(Counters::default()),
                 local_addr,
                 expected_auth,
+                rejections: RejectionTracker::new(cfg_rejections.0, cfg_rejections.1),
                 active: AtomicUsize::new(0),
                 pending_connect: AtomicUsize::new(0),
                 per_ip: Mutex::new(HashMap::new()),
@@ -265,7 +283,6 @@ impl Proxy {
         counters.accepted.fetch_add(1, Ordering::Relaxed);
         let _ = tcp.set_nodelay(true);
         let ctx = ConnCtx {
-            client: tcp,
             peer,
             shared: Arc::clone(shared),
             pending: PendingConnect {
@@ -276,15 +293,14 @@ impl Proxy {
                 ip,
             },
         };
-        tasks.spawn(serve_connection(ctx));
+        tasks.spawn(serve_connection(tcp, ctx));
     }
 }
 
 /// Reads the first request and dispatches it.
-async fn serve_connection(mut ctx: ConnCtx) {
+async fn serve_connection(mut client: TcpStream, mut ctx: ConnCtx) {
     let shared = Arc::clone(&ctx.shared);
-    let read =
-        front::read_first_request(&mut ctx.client, &shared.cfg.limits, shared.local_addr).await;
+    let read = front::read_first_request(&mut client, &shared.cfg.limits, shared.local_addr).await;
     let first = match read {
         Ok((first, _head_bytes)) => first,
         Err(e) => {
@@ -306,7 +322,7 @@ async fn serve_connection(mut ctx: ConnCtx) {
                 .auth_failures
                 .fetch_add(1, Ordering::Relaxed);
             tracing::info!(peer = %ctx.peer, "proxy authentication failed");
-            respond_and_close(ctx.client, &front::proxy_auth_required()).await;
+            respond_and_close(client, &front::proxy_auth_required()).await;
             return;
         }
     }
@@ -317,17 +333,17 @@ async fn serve_connection(mut ctx: ConnCtx) {
                 &front::request_path(&head),
                 &shared.deps,
             );
-            respond_and_close(ctx.client, &resp).await;
+            respond_and_close(client, &resp).await;
         }
         FirstRequest::Refused { status, reason } => {
             let conn = ConnectionInfo::new("crosswire", shared.local_addr.port());
             let (resp, _) = generated::generated(status, reason_phrase(status), reason, conn);
-            respond_and_close(ctx.client, &resp).await;
+            respond_and_close(client, &resp).await;
         }
         FirstRequest::Connect {
             authority, port, ..
         } => {
-            if let Err(e) = serve_connect(ctx, authority, port).await {
+            if let Err(e) = mitm::serve_connect(client, ctx, authority, port).await {
                 tracing::debug!(error = %e, "CONNECT ended");
             }
         }
@@ -338,7 +354,7 @@ async fn serve_connection(mut ctx: ConnCtx) {
             head,
             leftover,
         } => {
-            if let Err(e) = serve_plain(ctx, host, port, tls, head, leftover).await {
+            if let Err(e) = serve_plain(client, ctx, host, port, tls, head, leftover).await {
                 tracing::debug!(error = %e, "relay ended");
             }
         }
@@ -376,22 +392,10 @@ pub(crate) async fn respond_and_close(mut tcp: TcpStream, resp: &[u8]) {
     let _ = tokio::time::timeout(LINGER, drain).await;
 }
 
-/// Answers a CONNECT. Stub until Task 4 (`mitm::serve_connect`): it
-/// acknowledges the tunnel, counts it as established and closes.
-async fn serve_connect(mut ctx: ConnCtx, authority: String, port: u16) -> Result<(), ProxyError> {
-    tracing::debug!(peer = %ctx.peer, %authority, port, "CONNECT (tunnel not yet implemented)");
-    ctx.client
-        .write_all(b"HTTP/1.1 200 Connection established\r\n\r\n")
-        .await
-        .map_err(ProxyError::Io)?;
-    ctx.pending.release();
-    ctx.client.shutdown().await.map_err(ProxyError::Io)?;
-    Ok(())
-}
-
 /// Relays an absolute-form request. Stub until Task 5 (`relay::serve_plain`):
 /// it closes the connection.
 async fn serve_plain(
+    _client: TcpStream,
     ctx: ConnCtx,
     host: String,
     port: u16,

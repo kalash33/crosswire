@@ -2,14 +2,18 @@
 //! loopback port with a fresh CA, an in-memory sink and raw TCP helpers.
 #![allow(dead_code, missing_docs)]
 
-use std::net::SocketAddr;
+pub mod upstream;
+
+use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crosswire_ca::{Ca, IssuerLimits, LeafIssuer};
 use crosswire_client::{DestinationGate, RustlsBackend, Transport};
 use crosswire_model::{Exchange, ExchangeSink, Marker, SinkError};
-use crosswire_proxy::{Counters, Handler, NoopHandler, Proxy, ProxyConfig, ProxyDeps, ProxyLimits};
+use crosswire_proxy::{
+    Counters, Handler, NoopHandler, Proxy, ProxyConfig, ProxyDeps, ProxyLimits, ResolveOverride,
+};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::watch;
@@ -65,13 +69,62 @@ pub struct ProxyHarness {
     pub ca: Arc<Ca>,
 }
 
+/// How the harness reaches in-process upstreams.
+#[derive(Clone, Default)]
+pub struct UpstreamWiring {
+    /// Extra trust roots (DER) for upstream TLS.
+    pub extra_roots: Vec<Vec<u8>>,
+    /// `(host, port)` pairs the destination gate lets through.
+    pub allow: Vec<(String, u16)>,
+    /// Names the proxy resolves to a fixed address instead of DNS.
+    pub resolve: Vec<(String, IpAddr)>,
+}
+
+impl UpstreamWiring {
+    /// Wiring for one loopback upstream: trust its CA, allow
+    /// `127.0.0.1:port`, and resolve each of `names` to 127.0.0.1.
+    pub fn loopback(ca_der: Vec<u8>, port: u16, names: &[&str]) -> UpstreamWiring {
+        UpstreamWiring {
+            extra_roots: vec![ca_der],
+            allow: vec![("127.0.0.1".to_string(), port)],
+            resolve: names
+                .iter()
+                .map(|n| ((*n).to_string(), IpAddr::from([127, 0, 0, 1])))
+                .collect(),
+        }
+    }
+}
+
 /// Dependencies for a proxy with `ca`, recording into `sink`.
 pub fn deps(ca: &Arc<Ca>, sink: Arc<TestSink>, handler: Arc<dyn Handler>) -> ProxyDeps {
+    deps_with(ca, sink, handler, &UpstreamWiring::default())
+}
+
+/// As [`deps`], wired to reach in-process upstreams.
+pub fn deps_with(
+    ca: &Arc<Ca>,
+    sink: Arc<TestSink>,
+    handler: Arc<dyn Handler>,
+    wiring: &UpstreamWiring,
+) -> ProxyDeps {
     let issuer = Arc::new(LeafIssuer::new(Arc::clone(ca), IssuerLimits::default()));
-    // The in-process upstream (and its CA and gate entry) arrive with Task 4.
-    let backend = Arc::new(RustlsBackend::with_extra_roots(Vec::new()));
-    let gate = Arc::new(DestinationGate::new(Vec::new()));
+    let backend = Arc::new(RustlsBackend::with_extra_roots(wiring.extra_roots.clone()));
+    let mut gate = DestinationGate::new(Vec::new());
+    for (host, port) in &wiring.allow {
+        gate.allow(host, *port);
+    }
+    let gate = Arc::new(gate);
+    let resolve = wiring.resolve.clone();
+    let resolve_override: Option<ResolveOverride> = (!resolve.is_empty()).then(|| {
+        Arc::new(move |host: &str| {
+            resolve
+                .iter()
+                .find(|(n, _)| n.eq_ignore_ascii_case(host))
+                .map(|(_, ip)| *ip)
+        }) as ResolveOverride
+    });
     ProxyDeps {
+        resolve_override,
         issuer,
         ca_der: ca.cert_der(),
         ca_pem: ca.cert_pem(),
@@ -90,9 +143,18 @@ pub fn loopback_config() -> ProxyConfig {
 impl ProxyHarness {
     /// Binds and runs a proxy with `cfg` and `handler`.
     pub async fn start(cfg: ProxyConfig, handler: Arc<dyn Handler>) -> ProxyHarness {
+        ProxyHarness::start_wired(cfg, handler, UpstreamWiring::default()).await
+    }
+
+    /// Binds and runs a proxy wired to reach in-process upstreams.
+    pub async fn start_wired(
+        cfg: ProxyConfig,
+        handler: Arc<dyn Handler>,
+        wiring: UpstreamWiring,
+    ) -> ProxyHarness {
         let ca = Arc::new(Ca::generate("proxy-test").unwrap());
         let sink = Arc::new(TestSink::default());
-        let proxy = Proxy::bind(cfg, deps(&ca, Arc::clone(&sink), handler))
+        let proxy = Proxy::bind(cfg, deps_with(&ca, Arc::clone(&sink), handler, &wiring))
             .await
             .unwrap();
         let addr = proxy.local_addr();
