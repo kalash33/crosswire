@@ -162,6 +162,8 @@ pub struct Parsed {
     pub end: usize,
     /// The decoded payload.
     pub payload: Vec<u8>,
+    /// Head plus body diagnostic codes, sorted and deduplicated.
+    pub codes: Vec<String>,
 }
 
 /// Parses the first message of `bytes` with `parser`, signalling end of
@@ -169,32 +171,53 @@ pub struct Parsed {
 /// when the bytes do not hold a complete, valid message.
 pub fn parse_one(mut parser: Parser, bytes: &[u8]) -> Option<Parsed> {
     let (mut off, mut head_len, mut payload) = (0, None, Vec::new());
+    let mut codes: Vec<String> = Vec::new();
     for _ in 0..(bytes.len() * 2 + 100) {
         let rest = &bytes[off..];
         let step = parser.feed(rest).ok()?;
         match &step.event {
-            Progress::Head(_) => head_len = Some(off + step.consumed),
+            Progress::Head(m) => {
+                head_len = Some(off + step.consumed);
+                codes.extend(m.diagnostics().iter().map(|d| d.code().as_str().to_owned()));
+            }
             Progress::BodyData { data, .. } => payload.extend_from_slice(&rest[data.range()]),
             Progress::Done => {
                 off += step.consumed;
-                return Some(Parsed {
-                    head_len: head_len?,
-                    end: off,
-                    payload,
-                });
+                return Some(finish(&parser, head_len?, off, payload, codes));
             }
             Progress::NeedMore => {
                 off += step.consumed;
+                let head_len = head_len?;
                 let eof = parser.feed_eof().ok()?;
-                return matches!(eof.event, Progress::Done).then_some(Parsed {
-                    head_len: head_len?,
-                    end: off,
-                    payload,
-                });
+                return matches!(eof.event, Progress::Done)
+                    .then(|| finish(&parser, head_len, off, payload, codes));
             }
             _ => {}
         }
         off += step.consumed;
     }
     None
+}
+
+fn finish(
+    parser: &Parser,
+    head_len: usize,
+    end: usize,
+    payload: Vec<u8>,
+    mut codes: Vec<String>,
+) -> Parsed {
+    codes.extend(
+        parser
+            .body_diagnostics()
+            .iter()
+            .map(|d| d.code().as_str().to_owned()),
+    );
+    codes.sort();
+    codes.dedup();
+    Parsed {
+        head_len,
+        end,
+        payload,
+        codes,
+    }
 }

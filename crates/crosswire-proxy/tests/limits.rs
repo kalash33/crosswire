@@ -63,10 +63,10 @@ struct Refusal {
     h: ProxyHarness,
     /// Everything the client read until the close.
     reply: String,
-    /// Upstream connections made.
-    upstream_conns: usize,
-    /// Bytes the upstream received.
-    upstream_got: Vec<u8>,
+    /// Upstream connections made (live).
+    upstream_conns: Arc<AtomicUsize>,
+    /// Bytes the upstream received (live).
+    upstream_got: Arc<Mutex<Vec<u8>>>,
 }
 
 /// Sends `req` through a CONNECT tunnel (plain HTTP inside, so the relay
@@ -83,13 +83,11 @@ async fn through_tunnel(limits: ProxyLimits, req: &[u8]) -> Refusal {
     assert_eq!(got, ESTABLISHED);
     let _ = s.write_all(req).await;
     let reply = String::from_utf8_lossy(&read_until_close(&mut s).await).into_owned();
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    let upstream_got = up.received.lock().unwrap().clone();
     Refusal {
         h,
         reply,
-        upstream_conns: up.connections.load(Ordering::SeqCst),
-        upstream_got,
+        upstream_conns: up.connections,
+        upstream_got: up.received,
     }
 }
 
@@ -121,7 +119,10 @@ async fn head_refused(r: &Refusal, what: &str) {
         &format!("could not be parsed: {what}"),
     )
     .await;
-    assert_eq!(r.upstream_conns, 0);
+    // The relay connects upstream only after a head parses, and records
+    // nothing for a head that does not, so neither needs a wait: both were
+    // settled before the 400 was written.
+    assert_eq!(r.upstream_conns.load(Ordering::SeqCst), 0);
     assert!(r.h.sink.exchanges.lock().unwrap().is_empty());
 }
 
@@ -129,7 +130,7 @@ async fn head_refused(r: &Refusal, what: &str) {
 /// `LimitExceeded` marker, the head (and the body bytes before the error)
 /// forwarded, and the partial exchange recorded as `Error` with a cut
 /// body.
-async fn body_refused(r: &Refusal, req: &[u8], what: &str) {
+async fn body_refused(r: &Refusal, req: &[u8], what: &str) -> Vec<u8> {
     let (head, body) = split_response(r.reply.as_bytes());
     assert!(head.starts_with("HTTP/1.1 400 Bad Request\r\n"), "{head}");
     assert_eq!(
@@ -142,9 +143,7 @@ async fn body_refused(r: &Refusal, req: &[u8], what: &str) {
         &format!("could not be parsed: {what}"),
     )
     .await;
-    assert!(req.starts_with(&r.upstream_got), "{:?}", r.upstream_got);
     let head_len = req.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
-    assert!(r.upstream_got.len() >= head_len);
     wait_for("the partial exchange", || {
         !r.h.sink.exchanges.lock().unwrap().is_empty()
     })
@@ -152,20 +151,30 @@ async fn body_refused(r: &Refusal, req: &[u8], what: &str) {
     let ex = r.h.sink.exchanges.lock().unwrap()[0].clone();
     assert_eq!(ex.state(), ExchangeState::Error);
     assert_eq!(head_bytes(ex.request())[..], req[..head_len]);
-    let forwarded_body = r.upstream_got.len() - head_len;
-    match ex.request().body() {
+    // What the relay says it forwarded of the body, then the upstream
+    // must hold exactly the head plus that much.
+    let (stored, relayed) = match ex.request().body() {
         Body::Inline { bytes, relay, .. } => {
-            assert_eq!(bytes[..], r.upstream_got[head_len..]);
-            assert_eq!(
-                relay.map(|c| c.len),
-                Some(forwarded_body as u64),
-                "a cut body carries its relay record"
-            );
+            let relay = relay.expect("a cut body carries its relay record");
+            (bytes.to_vec(), usize::try_from(relay.len).unwrap())
         }
         // Nothing of the body was relayed: no body is recorded.
-        Body::None => assert_eq!(forwarded_body, 0),
+        Body::None => (Vec::new(), 0),
         other => panic!("{other:?}"),
-    }
+    };
+    let want = head_len + relayed;
+    wait_for("the forwarded bytes upstream", || {
+        r.upstream_got.lock().unwrap().len() >= want
+    })
+    .await;
+    let got = r.upstream_got.lock().unwrap().clone();
+    assert_eq!(
+        got[..],
+        req[..want],
+        "upstream got exactly what was relayed"
+    );
+    assert_eq!(stored[..], got[head_len..]);
+    got
 }
 
 #[tokio::test]
@@ -221,10 +230,10 @@ async fn too_many_chunks() {
     }
     req.extend_from_slice(b"0\r\n\r\n");
     let r = through_tunnel(limits, &req).await;
-    body_refused(&r, &req, "too many chunks").await;
+    let got = body_refused(&r, &req, "too many chunks").await;
     // Exactly the eight allowed chunks went upstream.
     let head_len = req.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
-    assert_eq!(r.upstream_got.len(), head_len + 8 * b"1\r\nx\r\n".len());
+    assert_eq!(got.len(), head_len + 8 * b"1\r\nx\r\n".len());
 }
 
 #[tokio::test]
@@ -274,7 +283,7 @@ async fn pending_connect_cap() {
 }
 
 #[tokio::test]
-async fn per_ip_cap_applies_to_non_loopback_only() {
+async fn loopback_clients_are_exempt_from_per_ip_cap() {
     // Loopback clients are never capped: 70 concurrent connections with a
     // per-IP cap of 64 are all admitted. (The non-loopback side cannot be
     // reached from a loopback-only test.)
@@ -478,6 +487,10 @@ async fn total_timeout_closes_trickle() {
         "{}\r\nHost: u.test\r\n\r\n",
         rig.start_line("GET", "u.test", "/trickle")
     );
+    // `total` runs from the request's first byte as the relay sees it
+    // (`relay.rs`: `started = req_pump.first_byte()`, `deadline = started
+    // + total`), which is after this instant, so the lower bound holds
+    // without margin trouble; the upper bound has 5x.
     let t0 = Instant::now();
     c.write_all(req.as_bytes()).await.unwrap();
     let got = read_close(&mut c).await;
@@ -543,6 +556,9 @@ async fn rss_flat_under_large_until_close_response() {
     let limits = ProxyLimits::builder().capture_cap(MIB).build();
     let rig = plain_rig(port, limits, conns).await;
     let baseline = rss_kib();
+    if cfg!(target_os = "linux") {
+        assert!(baseline.is_some(), "VmRSS readable from /proc/self/status");
+    }
     let peak = Arc::new(AtomicU64::new(baseline.unwrap_or(0)));
     let sampler = {
         let peak = Arc::clone(&peak);

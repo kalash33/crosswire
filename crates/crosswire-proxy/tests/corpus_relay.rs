@@ -14,7 +14,7 @@
 
 mod common;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::net::IpAddr;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
@@ -24,7 +24,7 @@ use common::corpus::{load_cases, parse_one, Case, Parsed};
 use common::relay::{body_bytes, head_bytes, wait_for};
 use common::upstream::spawn_raw;
 use common::{connect_raw, read_until, ProxyHarness, UpstreamWiring};
-use crosswire_core::ChangeOp;
+use crosswire_core::{ChangeOp, DiagnosticCode};
 use crosswire_h1::Progress;
 use crosswire_model::{Exchange, ExchangeState, Head, MarkerKind, Message, TunnelReason};
 use crosswire_proxy::{NoopHandler, ProxyConfig, ProxyLimits};
@@ -47,10 +47,12 @@ enum Pattern {
 /// How one run ended when it passed.
 #[derive(Debug)]
 enum Outcome {
-    /// Relayed byte-exact and recorded with the expected diagnostics.
-    Clean,
-    /// An `error` case that took the documented failure path.
-    ErrorPath(String),
+    /// Relayed byte-exact and recorded with the expected diagnostics; the
+    /// diagnostic codes on the recorded messages.
+    Clean(BTreeSet<String>),
+    /// An `error` case that took the documented failure path; the codes on
+    /// what was recorded, plus the error when it is also a diagnostic code.
+    ErrorPath(String, BTreeSet<String>),
 }
 
 async fn write_pattern(s: &mut TcpStream, bytes: &[u8], pattern: Pattern) {
@@ -166,6 +168,26 @@ fn codes(m: &Message) -> Vec<String> {
     c
 }
 
+/// The diagnostic codes on both messages of `e`.
+fn exchange_codes(e: &Exchange) -> BTreeSet<String> {
+    let mut set: BTreeSet<String> = codes(e.request()).into_iter().collect();
+    if let Some(r) = e.response() {
+        set.extend(codes(r));
+    }
+    set
+}
+
+/// `error` itself when it names a diagnostic code (`invalid_chunk_size`
+/// is both a fatal parse error and a catalogue code).
+fn error_code(error: &str) -> BTreeSet<String> {
+    DiagnosticCode::ALL
+        .iter()
+        .map(DiagnosticCode::as_str)
+        .filter(|c| *c == error)
+        .map(str::to_owned)
+        .collect()
+}
+
 /// The recorded exchange whose `pick` message has head `head`.
 async fn exchange_with_head(
     h: &ProxyHarness,
@@ -274,11 +296,13 @@ async fn run_request(case: Case, pattern: Pattern) -> Outcome {
             case.input.starts_with(&sent),
             "{name}: upstream got {sent:?}"
         );
+        let mut seen = error_code(&code);
         let path = if case.framing.is_some() {
             // The head parsed: the partial exchange is recorded as Error.
             let wire_head = head_len_of(&case);
             let ex = exchange_with_head(&h, &case.input[..wire_head], |e| Some(e.request())).await;
             assert_eq!(ex.state(), ExchangeState::Error, "{name}");
+            seen.extend(exchange_codes(&ex));
             "request body: 400 + Error exchange"
         } else {
             tokio::time::sleep(Duration::from_millis(50)).await;
@@ -286,7 +310,7 @@ async fn run_request(case: Case, pattern: Pattern) -> Outcome {
             assert_eq!(up.connections.load(Ordering::SeqCst), 0, "{name}");
             "request head: 400, nothing recorded"
         };
-        return Outcome::ErrorPath(format!("{path}; {kind:?} marker"));
+        return Outcome::ErrorPath(format!("{path}; {kind:?} marker"), seen);
     }
 
     let want = OK.repeat(msgs);
@@ -312,37 +336,68 @@ async fn run_request(case: Case, pattern: Pattern) -> Outcome {
     let ex = exchange_with_head(&h, &sent.input[..wire.head_len], |e| Some(e.request())).await;
     assert_ne!(ex.state(), ExchangeState::Error, "{name}");
     check_message(&sent, ex.request(), &wire);
-    let deleted: Vec<Vec<u8>> = ex
-        .request()
-        .diffs()
-        .iter()
-        .map(|d| {
-            assert_eq!(d.op(), ChangeOp::Delete, "{name}: {d:?}");
-            assert!(d.after().is_empty(), "{name}: {d:?}");
-            d.before().to_vec()
-        })
-        .collect();
-    assert_eq!(deleted, removed, "{name}: recorded diffs");
+    // The diffs are exactly the deleted lines, at their offsets in the
+    // head as the client sent it, and undoing them restores that head.
+    let diffs = ex.request().diffs();
+    assert_eq!(diffs.len(), removed.len(), "{name}: {diffs:?}");
+    for (d, (at, line)) in diffs.iter().zip(&removed) {
+        assert_eq!(d.op(), ChangeOp::Delete, "{name}: {d:?}");
+        assert!(d.after().is_empty(), "{name}: {d:?}");
+        assert_eq!(d.before()[..], line[..], "{name}: {d:?}");
+        assert_eq!(d.span().range(), *at..at + line.len(), "{name}: {d:?}");
+    }
+    let mut restored = head_bytes(ex.request()).to_vec();
+    let mut ordered: Vec<_> = diffs.iter().collect();
+    ordered.sort_by_key(|d| d.span().range().start);
+    for d in ordered {
+        // Ascending: everything before `start` is already the original.
+        let start = d.span().range().start;
+        restored.splice(start..start + d.after().len(), d.before().iter().copied());
+    }
+    assert_eq!(
+        restored[..],
+        case.input[..parse_one(case.parser(), &case.input).unwrap().head_len],
+        "{name}: reversing the diffs"
+    );
     let resp = ex.response().expect("a response");
     assert_eq!(head_bytes(resp)[..], OK[..OK.len() - 2], "{name}");
-    Outcome::Clean
+    let mut seen = exchange_codes(&ex);
+
+    if case.pipelined {
+        // The second message: its head, diagnostics (as crosswire-h1
+        // reports them for those bytes; the corpus expectations cover the
+        // first message only) and body.
+        let mut second = sent.clone();
+        second.input = sent.input[wire.end..].to_vec();
+        second.body = None;
+        let wire2 = parse_one(second.parser(), &second.input).expect("the second message parses");
+        assert_eq!(wire2.end, second.input.len(), "{name}: second message");
+        second.diagnostics = wire2.codes.clone();
+        let ex2 =
+            exchange_with_head(&h, &second.input[..wire2.head_len], |e| Some(e.request())).await;
+        assert_ne!(ex2.state(), ExchangeState::Error, "{name}: second");
+        check_message(&second, ex2.request(), &wire2);
+        seen.extend(exchange_codes(&ex2));
+    }
+    Outcome::Clean(seen)
 }
 
 /// `bytes` without the head's `Proxy-Connection` and `Proxy-Authorization`
-/// lines, and those lines.
-fn strip_proxy_lines(bytes: &[u8]) -> (Vec<u8>, Vec<Vec<u8>>) {
+/// lines, and those lines with their offsets.
+fn strip_proxy_lines(bytes: &[u8]) -> (Vec<u8>, Vec<(usize, Vec<u8>)>) {
     let head_end = bytes
         .windows(4)
         .position(|w| w == b"\r\n\r\n")
         .map_or(bytes.len(), |i| i + 4);
-    let (mut kept, mut removed) = (Vec::new(), Vec::new());
+    let (mut kept, mut removed, mut at) = (Vec::new(), Vec::new(), 0);
     for line in bytes[..head_end].split_inclusive(|&b| b == b'\n') {
         let lower = line.to_ascii_lowercase();
         if lower.starts_with(b"proxy-connection:") || lower.starts_with(b"proxy-authorization:") {
-            removed.push(line.to_vec());
+            removed.push((at, line.to_vec()));
         } else {
             kept.extend_from_slice(line);
         }
+        at += line.len();
     }
     kept.extend_from_slice(&bytes[head_end..]);
     (kept, removed)
@@ -393,6 +448,8 @@ async fn run_response(case: Case, pattern: Pattern) -> Outcome {
         let wire_head = head_len_of(&case);
         let ex = exchange_with_head(&h, &case.input[..wire_head], Exchange::response).await;
         assert_eq!(ex.state(), ExchangeState::Error, "{name}");
+        let mut seen = error_code(&code);
+        seen.extend(exchange_codes(&ex));
         wait_for("the undelimitable tunnel record", || {
             h.sink.exchanges.lock().unwrap().iter().any(|e| {
                 matches!(
@@ -405,7 +462,7 @@ async fn run_response(case: Case, pattern: Pattern) -> Outcome {
             })
         })
         .await;
-        return Outcome::ErrorPath("response: undelimitable tunnel + Error marker".into());
+        return Outcome::ErrorPath("response: undelimitable tunnel + Error marker".into(), seen);
     }
 
     assert!(
@@ -432,20 +489,11 @@ async fn run_response(case: Case, pattern: Pattern) -> Outcome {
         .await;
         let ex = found.lock().unwrap().take().unwrap();
         assert_eq!(ex.state(), ExchangeState::Error, "{name}");
-        // Interim heads are stored as bytes; re-parsing them with the
-        // proxy's config gives the expected diagnostics.
-        let Progress::Head(m) = case.parser().feed(&case.input).unwrap().event else {
-            panic!("{name}: no head");
-        };
-        let mut c: Vec<String> = m
-            .diagnostics()
-            .iter()
-            .map(|d| d.code().as_str().to_owned())
-            .collect();
-        c.sort();
-        c.dedup();
-        assert_eq!(c, case.diagnostics, "{name}: diagnostics");
-        return Outcome::Clean;
+        // Interim heads are recorded as bytes only, with no diagnostic
+        // list, so the case's diagnostics are not checked here and add
+        // nothing to the code coverage (only what the generated 502
+        // exchange carries does).
+        return Outcome::Clean(exchange_codes(&ex));
     }
     assert!(
         *received.lock().unwrap() == req.as_bytes(),
@@ -457,7 +505,7 @@ async fn run_response(case: Case, pattern: Pattern) -> Outcome {
     let ex = exchange_with_head(&h, &case.input[..wire.head_len], Exchange::response).await;
     assert_ne!(ex.state(), ExchangeState::Error, "{name}");
     check_message(&case, ex.response().unwrap(), &wire);
-    Outcome::Clean
+    Outcome::Clean(exchange_codes(&ex))
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -468,6 +516,7 @@ async fn every_corpus_case_relays_byte_exact_and_records_its_diagnostics() {
     let mut paths: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut skipped: Vec<String> = Vec::new();
     let mut failures: Vec<String> = Vec::new();
+    let mut covered: BTreeSet<String> = BTreeSet::new();
     for case in &cases {
         if let Some(bug) = &case.known_bug {
             skipped.push(format!("{} (known_bug: {bug})", case.name));
@@ -483,9 +532,13 @@ async fn every_corpus_case_relays_byte_exact_and_records_its_diagnostics() {
                 }
             });
             match run.await {
-                Ok(Outcome::Clean) => clean += 1,
-                Ok(Outcome::ErrorPath(path)) => {
+                Ok(Outcome::Clean(seen)) => {
+                    clean += 1;
+                    covered.extend(seen);
+                }
+                Ok(Outcome::ErrorPath(path, seen)) => {
                     error_path += 1;
+                    covered.extend(seen);
                     paths
                         .entry(path)
                         .or_default()
@@ -521,5 +574,23 @@ async fn every_corpus_case_relays_byte_exact_and_records_its_diagnostics() {
         clean + error_path >= 200,
         "only {} runs (clean {clean}, error path {error_path})",
         clean + error_path
+    );
+    // The alpha.1 DoD: the captures cover every diagnostic code in the
+    // catalogue. No code is exempt: each is reachable through the proxy.
+    let missing: Vec<&str> = DiagnosticCode::ALL
+        .iter()
+        .map(DiagnosticCode::as_str)
+        .filter(|c| !covered.contains(*c))
+        .collect();
+    eprintln!(
+        "  codes covered ({} of {}): {}",
+        covered.len(),
+        DiagnosticCode::ALL.len(),
+        covered.iter().cloned().collect::<Vec<_>>().join(", ")
+    );
+    eprintln!("  codes missing: {missing:?}");
+    assert!(
+        missing.is_empty(),
+        "diagnostic codes not covered: {missing:?}"
     );
 }
