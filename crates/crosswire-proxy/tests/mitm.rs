@@ -162,6 +162,27 @@ async fn passthrough_host_is_tunnelled_and_recorded() {
 }
 
 #[tokio::test]
+async fn passthrough_matches_authority_when_sni_differs() {
+    let up = spawn_tls_echo().await;
+    let mut cfg = loopback_config();
+    cfg.passthrough = vec!["pass.test".to_string()];
+    let wiring = UpstreamWiring::loopback(up.ca_der(), up.port(), &["pass.test"]);
+    let h = ProxyHarness::start_wired(cfg, Arc::new(NoopHandler), wiring).await;
+
+    // The authority is on the list; the SNI is not.
+    let tcp = connect_tunnel(h.addr, &format!("pass.test:{}", up.port())).await;
+    let client = client_config(&[up.ca_der()]);
+    let mut tls = handshake(tcp, client, ServerName::try_from("other.test").unwrap())
+        .await
+        .expect("tunnelled to the upstream although the SNI is not listed");
+    tls.write_all(b"ping").await.unwrap();
+    let mut buf = [0u8; 4];
+    tls.read_exact(&mut buf).await.unwrap();
+    assert_eq!(&buf, b"ping");
+    assert_eq!(h.counters.tunnels.load(Ordering::Relaxed), 1);
+}
+
+#[tokio::test]
 async fn three_rejections_in_window_emit_error_marker() {
     let h = ProxyHarness::start_default().await;
     for _ in 0..3 {

@@ -6,7 +6,7 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
-use crosswire_client::{Target, VerifyMode};
+use crosswire_client::{Target, TlsConnectConfig, VerifyMode};
 use crosswire_model::{ConnectionInfo, Marker, MarkerKind, TunnelReason};
 use rustls::crypto::CryptoProvider;
 use rustls::server::{ClientHello, ResolvesServerCert};
@@ -73,7 +73,7 @@ fn leaf_name(host: &str) -> Result<ServerName<'static>, ProxyError> {
 
 /// The host the upstream connection dials: the requested authority, or
 /// the test-only override's address for it.
-fn dial_host(shared: &Shared, authority: &str) -> String {
+pub(crate) fn dial_host(shared: &Shared, authority: &str) -> String {
     shared
         .deps
         .resolve_override
@@ -82,9 +82,10 @@ fn dial_host(shared: &Shared, authority: &str) -> String {
         .map_or_else(|| authority.to_string(), |ip| ip.to_string())
 }
 
-/// `AcceptInvalid` only for hosts on `accept_invalid_cert`.
-fn verify_mode(shared: &Shared, authority: &str) -> VerifyMode {
-    let host = authority.trim_end_matches('.');
+/// `AcceptInvalid` only for hosts on `accept_invalid_cert`. `name` is the
+/// name the upstream certificate is verified against (the SNI sent).
+pub(crate) fn verify_mode(shared: &Shared, name: &str) -> VerifyMode {
+    let host = name.trim_end_matches('.');
     if shared
         .cfg
         .accept_invalid_cert
@@ -94,6 +95,30 @@ fn verify_mode(shared: &Shared, authority: &str) -> VerifyMode {
         VerifyMode::AcceptInvalid
     } else {
         VerifyMode::WebPki
+    }
+}
+
+/// The TLS target for `authority:port`, sending and verifying `name` (the
+/// client's SNI, or the authority): an IP literal is verified as an IP
+/// address (and sent without SNI), anything else as a DNS name. The
+/// accept-invalid override is looked up by the same `name`.
+pub(crate) fn upstream_tls_target(
+    shared: &Shared,
+    authority: &str,
+    port: u16,
+    name: &str,
+) -> Target {
+    let host = dial_host(shared, authority);
+    let verify = verify_mode(shared, name);
+    match leaf_name(name) {
+        Ok(server_name) => Target::with_tls_config(
+            &host,
+            port,
+            TlsConnectConfig::new(verify).with_sni(server_name),
+        ),
+        // An invalid name makes the connect fail instead of verifying
+        // against some other name.
+        Err(_) => Target::tls(&host, port, name, verify),
     }
 }
 
@@ -120,7 +145,11 @@ pub(crate) async fn serve_connect(
         }
     }
     let name = sni.as_deref().unwrap_or(&authority).to_string();
-    if passthrough_matches(&ctx.shared.cfg.passthrough, &name) {
+    // Either name opts the connection out: a client may send no SNI, or an
+    // SNI that differs from the CONNECT authority (domain fronting, or a
+    // client that connects by IP).
+    let list = &ctx.shared.cfg.passthrough;
+    if passthrough_matches(list, &name) || passthrough_matches(list, &authority) {
         passthrough(client, ctx, &authority, port, sni).await
     } else {
         terminate(client, ctx, &authority, port, &name).await
@@ -202,12 +231,7 @@ async fn terminate(
         Ok(Ok(tls)) => tls,
     };
     ctx.pending.release();
-    let target = Target::tls(
-        &dial_host(&shared, authority),
-        port,
-        leaf_host,
-        verify_mode(&shared, authority),
-    );
+    let target = upstream_tls_target(&shared, authority, port, leaf_host);
     relay::run_stub(Box::new(tls), target, ctx).await
 }
 
