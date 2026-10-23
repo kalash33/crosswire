@@ -1,5 +1,6 @@
 //! The [`ExchangeSink`] the proxy submits to: bounded queue, journal spill.
 
+use crate::atomic::try_update_usize;
 use crate::events::Events;
 use crate::journal::{Journal, SpillError};
 use crosswire_model::{Body, Event, Exchange, ExchangeSink, Head, Message, SinkError};
@@ -69,21 +70,13 @@ pub(crate) fn slack_ulid() -> Ulid {
 impl Shared {
     /// Reserves one queue slot and `size` bytes for `id`, or nothing.
     fn reserve(&self, id: Ulid, size: usize) -> bool {
-        if self
-            .queued
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |c| {
-                (c < self.queue_max).then_some(c + 1)
-            })
-            .is_err()
-        {
+        if try_update_usize(&self.queued, |c| (c < self.queue_max).then_some(c + 1)).is_err() {
             return false;
         }
-        if self
-            .queued_bytes
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |b| {
-                b.checked_add(size).filter(|n| *n <= self.queue_bytes_max)
-            })
-            .is_err()
+        if try_update_usize(&self.queued_bytes, |b| {
+            b.checked_add(size).filter(|n| *n <= self.queue_bytes_max)
+        })
+        .is_err()
         {
             self.queued.fetch_sub(1, Ordering::SeqCst);
             return false;

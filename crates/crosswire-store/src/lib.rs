@@ -4,6 +4,7 @@
 //! entry point for recording: it runs the writer thread, hands out the
 //! [`crosswire_model::ExchangeSink`], the event stream and the audit log.
 
+mod atomic;
 mod audit;
 mod bodies;
 mod error;

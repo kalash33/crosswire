@@ -17,6 +17,8 @@
 //! files stay where they are, one `Error` is sent per failure streak, and the
 //! writer retries with a backoff from 250 ms doubling to 30 s.
 
+#[cfg(test)]
+use crate::atomic::try_update_usize;
 use crate::bodies::{BodyLocator, BodySide, BodyStore};
 use crate::error::StoreError;
 use crate::journal::{Entry, Journal, ReadError};
@@ -681,11 +683,7 @@ impl Writer {
             }
         }
         #[cfg(test)]
-        if hooks
-            .fail_commits
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
-            .is_ok()
-        {
+        if try_update_usize(&hooks.fail_commits, |n| n.checked_sub(1)).is_ok() {
             return Err(CommitError::Db(StoreError::Sqlite(
                 rusqlite::Error::SqliteFailure(
                     rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_FULL),

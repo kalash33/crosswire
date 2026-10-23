@@ -7,12 +7,13 @@
 //! (with a gap row); files that fail with a transient I/O error stay and are
 //! retried.
 
+use crate::atomic::try_update_u64;
 use crate::error::StoreError;
 use crosswire_model::Exchange;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::AtomicU64;
 
 /// The largest journal file read back (two 64 MiB bodies in base64 fit).
 const MAX_FILE: u64 = 256 * 1024 * 1024;
@@ -87,13 +88,7 @@ impl Journal {
         let data = serde_json::to_vec(ex).map_err(|e| SpillError::Io(e.into()))?;
         let len = data.len() as u64;
         let cap = if enforce_cap { self.cap } else { u64::MAX };
-        if self
-            .bytes
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |b| {
-                b.checked_add(len).filter(|n| *n <= cap)
-            })
-            .is_err()
-        {
+        if try_update_u64(&self.bytes, |b| b.checked_add(len).filter(|n| *n <= cap)).is_err() {
             return Err(SpillError::CapExceeded);
         }
         let name = format!("{}.json", ex.id());
@@ -222,11 +217,7 @@ impl Journal {
     }
 
     fn release(&self, len: u64) {
-        let _ = self
-            .bytes
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |b| {
-                Some(b.saturating_sub(len))
-            });
+        let _ = try_update_u64(&self.bytes, |b| Some(b.saturating_sub(len)));
     }
 }
 
