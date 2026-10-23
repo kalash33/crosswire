@@ -52,8 +52,30 @@ The `json` column and journal files hold the `crosswire-model` `Exchange` schema
 
 - Bodies (`{"type":"inline",...}` and `{"type":"blob",...}`): `truncated_at` (integer or null, default null): the capture was cut off and this many bytes were kept; `capture_dropped` (bool, default false): the capture window was full, so the stored bytes are not the body and its length and hash come from `relay`; `relay` (object or null, default null): `{"len": <bytes relayed>, "sha256": "<base64 SHA-256>"}`, the length and hash of the whole body as it passed through the relay path, present when the capture is not the whole body. `inline` bodies previously had only `bytes`; `blob` bodies gain `relay`.
 - Messages: `interim` (array of base64 strings, default `[]`): interim (1xx) response heads forwarded before the final response, each the raw head bytes including the empty line, in the order sent. Redaction rebuilds each with the same header policy as the head.
+- Bodies recorded by the proxy are the raw framed wire bytes (chunk framing and trailers included). A body that was cut short (a side closed or timed out before it ended) has `relay` and neither `truncated_at` nor `capture_dropped`; one whose first byte was never relayed is `none`, so the cut shows only in the exchange's `error` state.
+- Exchanges the proxy generates itself (a 502, 504 or 400 page) carry a response with `fidelity` `generated` and the exchange state `error`; a tunnel (SNI passthrough, an undelimitable stream, a 101 upgrade) is an exchange whose request message has the head `{"type":"tunnel"}` and no response, with `bytes_in`, `bytes_out`, `duration_ms` and `reason` (`ws`, `sni-passthrough`, `undelimitable`).
 - Connection facts (`connection`): `target_addr` is the host as configured or requested (a name or an address literal, with brackets for IPv6), not the address it resolved to; `peer_addr` (string or null, default null) is the address actually connected to.
 - `upstream_chain_result` `{"type":"overridden"}` gains `reason` (string, default `""`): the chain validation error that was overridden, at most 1 KiB.
+
+#### Proxy markers
+
+`crosswire-proxy` writes `error` and `limit-exceeded` markers through the sink. They carry no ULID window (`from_ulid` and `to_ulid` are NULL) and their `detail` is one of these, with `{host}`, `{port}` and `{peer}` filled in (substituted text is capped at 1 KiB):
+
+| kind | `detail` | when |
+| --- | --- | --- |
+| `limit-exceeded` | `request from {peer} could not be parsed: {code}` | a request head or body hit a parser limit (`message head too large`, `too many headers`, `line too long`, `too many chunks`, `trailer section too large`) |
+| `error` | `request from {peer} could not be parsed: {code}` | a request head or body failed to parse for any other reason |
+| `limit-exceeded` | `pipelining: {n} requests queued on one connection from {peer} (max {m})` | more than `max_pipelined` requests were queued on one connection |
+| `error` | `timeout: {phase} {host}:{port}` | a timeout after the response began or during the request body; `phase` is `request body`, `response body` or `total` |
+| `error` | `upstream {host}:{port} closed mid-body: {error}` or `upstream {host}:{port} failed mid-body: {error}` | the upstream ended or failed in the middle of a response body |
+| `error` | `undelimitable response from {host}:{port}: {code}` | a response could not be delimited, so the connection became an opaque tunnel |
+| `error` | `extra bytes after response from {host}:{port}` | the upstream sent bytes after a complete response; the connection was dropped |
+| `error` | `rewritten request head did not re-parse` | the proxy's own request rewrite produced a head the parser rejects; the original head was recorded |
+| `error` | `passthrough upstream failed for {host}:{port}: {reason}` | a CONNECT was answered, then the passthrough connect to the upstream failed |
+| `error` | `leaf issue failed for {host}: {reason}` | a CONNECT was answered, then no certificate could be issued for the host |
+| `error` | `Browser rejected the Crosswire certificate for {host} — is the CA trusted?` | `rejections_per_window` client handshakes for one host were rejected within `rejection_window`; at most once per window per host |
+
+`{code}` is the message of the `crosswire-h1` `ParseError` (for example `message head too large`, `line too long`, `invalid chunk size at bytes 0..2`), and `{error}` is the I/O or parse error text. The same events also set a state on the exchange they belong to; the marker is the searchable record of why.
 
 `bodies` (`WITHOUT ROWID`), one row per body side:
 
@@ -71,7 +93,7 @@ Primary key `(ulid, side)`. At most one of `inline` and `blob_hash` is set (`CHE
 
 `packs`: `id INTEGER PRIMARY KEY`, `committed_len INTEGER NOT NULL DEFAULT 0` (bytes of the pack file that the database has committed and trusts; the tail beyond it is validated on open, kept while its records are intact, and truncated at the first bad record). There is no path column: the pack file is always `packs/{id:06}.pack` (for example `packs/000001.pack`), derived from the id. A project file is untrusted input, so readers must never open a path stored in the database.
 
-`markers` (`WITHOUT ROWID`), gap and error rows: `ulid TEXT PRIMARY KEY`, `kind TEXT NOT NULL`, `from_ulid TEXT`, `to_ulid TEXT`, `detail TEXT NOT NULL DEFAULT ''`. A `gap` is a time window: exchanges that were submitted and not recorded have ids (creation times) in `from_ulid..=to_ulid` (`from_ulid` NULL means from the start). An exchange created before `from_ulid` but submitted after it can also be missing. The store itself writes only `gap` rows (detail `unclean shutdown`, `exchanges were dropped: ...`, or `pack torn`); a `pack torn` marker is a point marker whose `from_ulid` is the affected exchange and `to_ulid` is NULL. Other components submit markers of any kind (`gap`, `limit_exceeded`, `error`) through the sink (`ExchangeSink::submit_marker`); they are written as given, and a submitted marker whose id is already stored is skipped.
+`markers` (`WITHOUT ROWID`), gap and error rows: `ulid TEXT PRIMARY KEY`, `kind TEXT NOT NULL`, `from_ulid TEXT`, `to_ulid TEXT`, `detail TEXT NOT NULL DEFAULT ''`. A `gap` is a time window: exchanges that were submitted and not recorded have ids (creation times) in `from_ulid..=to_ulid` (`from_ulid` NULL means from the start). An exchange created before `from_ulid` but submitted after it can also be missing. The store itself writes only `gap` rows (detail `unclean shutdown`, `exchanges were dropped: ...`, or `pack torn`); a `pack torn` marker is a point marker whose `from_ulid` is the affected exchange and `to_ulid` is NULL. Other components submit markers of any kind (`kind` is stored as `gap`, `limit-exceeded` or `error`, the kebab-case wire names) through the sink (`ExchangeSink::submit_marker`); they are written as given, and a submitted marker whose id is already stored is skipped. A submitted marker is **memory-only until the writer commits it**: it takes a queue slot, is never spilled to the journal, and is refused (`full`) when the queue is full, so a marker raised just before a crash, or while the queue is full, is lost. Markers the proxy writes are listed under [Proxy markers](#proxy-markers).
 
 `meta` (`WITHOUT ROWID`): `key TEXT PRIMARY KEY`, `value TEXT NOT NULL`. Keys:
 
