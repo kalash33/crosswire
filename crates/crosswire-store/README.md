@@ -94,7 +94,8 @@ writer process with SIGKILL under load.
   applied by readers and exporters (`crosswire-model`).
 - `req_host` is the request's `Host` header, lowercased, so it is the message's
   claim, not proof of where the connection went. When there is no `Host` it falls
-  back to the connection's target address.
+  back to the connection's target address, plus `:port` unless the port is the
+  scheme default (443 with TLS, 80 plain).
 
 ## Example
 

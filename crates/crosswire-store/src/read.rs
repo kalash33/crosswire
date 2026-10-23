@@ -229,6 +229,14 @@ impl Store {
     /// `after` is the previous page's `next_cursor`. `limit` is clamped to
     /// `1..=1000`. Rows come from the indexed columns; the stored JSON is
     /// not parsed.
+    ///
+    /// The keyset is creation time, not commit time: a journal replay (after
+    /// a crash or a database failure) can commit ids older than rows a reader
+    /// has already paged past, and a poller asking only for newer ids misses
+    /// them. A consumer that must see every exchange tails
+    /// [`Event::Committed`](crosswire_model::Event::Committed) and uses `list`
+    /// for display. A replayed id that was already stored is announced in
+    /// `Committed` again, so deduplicate by id.
     pub fn list(
         &self,
         filter: &ExchangeFilter,

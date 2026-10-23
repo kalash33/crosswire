@@ -161,7 +161,8 @@ Known limitations:
   audit log and the database file after a checkpoint are therefore flushed
   hard. Linux is not affected.
 - **The spill fsyncs on the submitting thread.** `submit` can block for a file
-  create, two fsyncs, a rename and a directory fsync when the queue is full.
+  create, one file fsync, a rename and one directory fsync when the queue is
+  full.
   Callers must run it where blocking is acceptable (`spawn_blocking`); the
   `record_exchange` recipe in `crates/crosswire-recorder-tests/src/lib.rs` does.
 - **The keyset list can miss late exchanges.** `list` pages newest first by ULID,
