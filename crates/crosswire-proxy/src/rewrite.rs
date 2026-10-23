@@ -52,10 +52,16 @@ pub(crate) fn rewrite_request_head(head: &RawMessage, mode: &Mode) -> (Bytes, Ve
             }
         }
         if view.header(buf, "host").is_none() {
-            let at = buf
+            // After the start line: the first LF at or after the target
+            // (the head bytes may begin with stray empty lines).
+            let from = match view.start() {
+                StartLine::Request { target, .. } => target.range().end,
+                _ => 0,
+            };
+            let at = buf[from..]
                 .iter()
                 .position(|&b| b == b'\n')
-                .map_or(buf.len(), |i| i + 1);
+                .map_or(buf.len(), |i| from + i + 1);
             edits.push(Edit {
                 op: ChangeOp::Insert,
                 span: at..at,
@@ -114,8 +120,8 @@ fn trim_end(b: &[u8]) -> &[u8] {
 }
 
 /// The origin form of an `http://` or `https://` target (any case): the
-/// path and query after the authority, `/` when empty. `None` for any
-/// other target.
+/// path and query after the authority, `/` when empty, without any
+/// `#fragment`. `None` for any other target.
 pub(crate) fn origin_form(target: &[u8]) -> Option<Vec<u8>> {
     let rest = strip_scheme(target)?;
     let start = rest
@@ -123,6 +129,8 @@ pub(crate) fn origin_form(target: &[u8]) -> Option<Vec<u8>> {
         .position(|&b| matches!(b, b'/' | b'?' | b'#'))
         .unwrap_or(rest.len());
     let tail = &rest[start..];
+    // A fragment is never sent on the wire.
+    let tail = &tail[..tail.iter().position(|&b| b == b'#').unwrap_or(tail.len())];
     let mut out = Vec::with_capacity(tail.len() + 1);
     if !tail.starts_with(b"/") {
         out.push(b'/');
@@ -159,6 +167,52 @@ mod tests {
         assert_eq!(origin_form(b"HTTPS://a.test:8443").unwrap(), b"/");
         assert_eq!(origin_form(b"http://a.test?x=1").unwrap(), b"/?x=1");
         assert_eq!(origin_form(b"/p"), None);
+    }
+
+    #[test]
+    fn origin_form_drops_fragment() {
+        assert_eq!(origin_form(b"http://a.test/p?q=1#frag").unwrap(), b"/p?q=1");
+        assert_eq!(origin_form(b"http://a.test#top").unwrap(), b"/");
+        assert_eq!(origin_form(b"http://a.test/x#a#b").unwrap(), b"/x");
+    }
+
+    #[test]
+    fn folded_proxy_authorization_is_removed_whole() {
+        // The h1 parser extends a header's line span over obs-fold
+        // continuation lines, so deleting the line deletes them too.
+        let orig = b"GET /x HTTP/1.1\r\nHost: a\r\nProxy-Authorization: Basic\r\n c2VjcmV0\r\n\tdG9rZW4=\r\nAccept: */*\r\n\r\n";
+        let (out, diffs) = rewrite_request_head(&parse(orig), &Mode::Tunnel);
+        assert_eq!(
+            &out[..],
+            b"GET /x HTTP/1.1\r\nHost: a\r\nAccept: */*\r\n\r\n"
+        );
+        for secret in [&b"c2VjcmV0"[..], b"dG9rZW4=", b"Basic"] {
+            assert!(!out.windows(secret.len()).any(|w| w == secret));
+        }
+        assert_eq!(diffs.len(), 1);
+        assert_eq!(
+            &diffs[0].before()[..],
+            b"Proxy-Authorization: Basic\r\n c2VjcmV0\r\n\tdG9rZW4=\r\n"
+        );
+    }
+
+    #[test]
+    fn host_goes_after_the_start_line_even_after_leading_empty_lines() {
+        let orig = b"\r\nGET http://a.test/x HTTP/1.1\r\nAccept: */*\r\n\r\n";
+        let msg = parse(orig);
+        let (out, diffs) = rewrite_request_head(
+            &msg,
+            &Mode::Plain {
+                host: "a.test".into(),
+            },
+        );
+        let head = msg.bytes();
+        let start = head.windows(3).position(|w| w == b"GET").unwrap();
+        assert!(start > 0, "the head keeps the leading empty line");
+        let mut want = head[..start].to_vec();
+        want.extend_from_slice(b"GET /x HTTP/1.1\r\nHost: a.test\r\nAccept: */*\r\n\r\n");
+        assert_eq!(&out[..], &want[..]);
+        assert_eq!(diffs.len(), 2);
     }
 
     #[test]

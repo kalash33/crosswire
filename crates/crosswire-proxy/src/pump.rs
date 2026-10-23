@@ -1,12 +1,14 @@
 //! Moves one message from one connection to another through an h1 parser,
 //! forwarding exactly the bytes the parser consumed.
 
+use std::pin::Pin;
+use std::task::Poll;
 use std::time::Instant;
 
 use bytes::{Buf, Bytes, BytesMut};
 use crosswire_client::Conn;
 use crosswire_h1::{Parser, Progress, RawMessage};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncWriteExt, ReadBuf};
 
 use crate::capture::Capture;
 use crate::{Decision, ProxyError};
@@ -23,6 +25,17 @@ pub(crate) enum PumpEnd {
     Eof,
     /// The handler dropped the message.
     Dropped,
+}
+
+/// What an idle connection holds before the next message is sent on it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Probe {
+    /// Nothing to read: the connection can carry the next exchange.
+    Idle,
+    /// The peer closed it (or it failed).
+    Closed,
+    /// Bytes nobody asked for: they belong to no exchange.
+    Stray,
 }
 
 /// One direction of a connection: unconsumed bytes waiting to be
@@ -62,6 +75,25 @@ impl Pump {
     /// When the first byte since [`arm`](Pump::arm) arrived.
     pub(crate) fn first_byte(&self) -> Option<Instant> {
         self.first_byte
+    }
+
+    /// Checks, without waiting, whether `from` has bytes or a close
+    /// pending between messages. Bytes it reads are discarded: they must
+    /// not be parsed as the next message.
+    pub(crate) async fn probe(&mut self, from: &mut dyn Conn) -> Probe {
+        if !self.pending.is_empty() {
+            return Probe::Stray;
+        }
+        let mut rb = ReadBuf::new(&mut self.scratch);
+        std::future::poll_fn(|cx| {
+            Poll::Ready(match Pin::new(&mut *from).poll_read(cx, &mut rb) {
+                Poll::Pending => Probe::Idle,
+                Poll::Ready(Ok(())) if rb.filled().is_empty() => Probe::Closed,
+                Poll::Ready(Ok(())) => Probe::Stray,
+                Poll::Ready(Err(_)) => Probe::Closed,
+            })
+        })
+        .await
     }
 
     /// Reads once; returns the byte count (0 at EOF).

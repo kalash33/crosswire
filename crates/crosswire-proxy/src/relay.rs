@@ -17,7 +17,7 @@ use tokio::io::AsyncWriteExt;
 
 use crate::capture::{Capture, CaptureResult};
 use crate::listener::{ConnCtx, Shared};
-use crate::pump::{Pump, PumpEnd};
+use crate::pump::{Probe, Pump, PumpEnd};
 use crate::rewrite::{rewrite_request_head, Mode};
 use crate::{front, mitm, record, Decision, ProxyError};
 
@@ -190,7 +190,18 @@ impl Relay {
         }
         let (rewritten, diffs) = rewrite_request_head(&head, &mode);
 
-        // Upstream.
+        // Upstream. A kept-alive connection that has since closed, or that
+        // sent bytes nobody asked for, is replaced.
+        if let Some(up) = self.upstream.as_mut() {
+            match self.resp_pump.probe(&mut *up.io).await {
+                Probe::Idle => {}
+                Probe::Closed => self.drop_upstream(),
+                Probe::Stray => {
+                    self.extra_bytes_marker();
+                    self.drop_upstream();
+                }
+            }
+        }
         if self.upstream.is_none() {
             self.upstream = Some(connect(&shared, &self.dest, &self.peer).await?);
         }
@@ -222,23 +233,9 @@ impl Relay {
             return Ok(Next::Close);
         }
         let req_body_diags = self.req_parser.body_diagnostics().to_vec();
-        let queued = queued_heads(&limits.parse, self.req_pump.pending());
-        if 1 + queued > limits.max_pipelined {
-            record::submit_marker(
-                &shared.deps.sink,
-                &shared.counters,
-                Marker::new(
-                    MarkerKind::LimitExceeded,
-                    format!(
-                        "pipelining: {} requests queued on one connection from {} (max {})",
-                        1 + queued,
-                        self.peer,
-                        limits.max_pipelined
-                    ),
-                ),
-            );
-            return Err(ProxyError::Limit("pipelining"));
-        }
+        // Requests read ahead of this one's response. Over the limit, this
+        // exchange still completes; the connection closes after it.
+        let depth = 1 + queued_heads(&limits.parse, self.req_pump.pending());
         let req_written = Instant::now();
 
         // Response: interim heads, the final head, the body.
@@ -298,6 +295,9 @@ impl Relay {
         let resp_body_diags = self.resp_parser.body_diagnostics().to_vec();
 
         let close = closes_connection(&head, &resp_head) || end == PumpEnd::Eof;
+        // Bytes after a complete response belong to no exchange; the
+        // connection cannot be trusted to frame the next one.
+        let stray = !self.resp_pump.pending().is_empty();
         let draft = ExchangeDraft {
             req_head: head,
             req_rewritten: rewritten,
@@ -319,7 +319,46 @@ impl Relay {
         };
         shared.counters.exchanges.fetch_add(1, Ordering::Relaxed);
         record::record_draft(&shared.deps.sink, &shared.counters, &limits.parse, draft);
+        if stray {
+            self.extra_bytes_marker();
+            self.drop_upstream();
+        }
+        if depth > limits.max_pipelined {
+            record::submit_marker(
+                &shared.deps.sink,
+                &shared.counters,
+                Marker::new(
+                    MarkerKind::LimitExceeded,
+                    format!(
+                        "pipelining: {depth} requests queued on one connection from {} (max {})",
+                        self.peer, limits.max_pipelined
+                    ),
+                ),
+            );
+            return Err(ProxyError::Limit("pipelining"));
+        }
         Ok(if close { Next::Close } else { Next::Continue })
+    }
+
+    /// Closes the upstream connection (by dropping it) and forgets any
+    /// bytes read from it.
+    fn drop_upstream(&mut self) {
+        self.upstream = None;
+        self.resp_pump = Pump::new(Bytes::new());
+    }
+
+    fn extra_bytes_marker(&self) {
+        record::submit_marker(
+            &self.shared.deps.sink,
+            &self.shared.counters,
+            Marker::new(
+                MarkerKind::Error,
+                format!(
+                    "extra bytes after response from {}:{}",
+                    self.dest.host, self.dest.port
+                ),
+            ),
+        );
     }
 
     /// How to rewrite a request with `target`, switching the destination
@@ -335,7 +374,7 @@ impl Relay {
         if !self.dest.same(&abs.host, abs.port, abs.tls) {
             // A keep-alive client may send the next request to another
             // origin: the old upstream connection cannot carry it.
-            self.upstream = None;
+            self.drop_upstream();
             self.dest = Dest::absolute(&self.shared, &abs.host, abs.port, abs.tls);
         }
         Ok(Mode::Plain {

@@ -594,10 +594,19 @@ pub async fn pipelining_depth_over_limit_closes(via: Via) {
             rig.start_line("GET", "u.test", path)
         ));
     }
+    // One write of about 150 bytes: the relay reads up to 64 KiB at a
+    // time, so it sees all three heads (one TCP segment, or one TLS record)
+    // in the read that brings the first. The marker wait below is bounded.
     c.write_all(req.as_bytes()).await.unwrap();
     let got = read_close(&mut c).await;
-    let answered = got.windows(15).filter(|w| w == b"HTTP/1.1 200 OK").count();
-    assert!(answered < 3, "all three were answered");
+    // The first exchange completes; the connection closes after it.
+    assert_eq!(got, ok("1"));
+    let ex = rig.exchanges(1).await;
+    assert!(head_bytes(ex[0].request()).starts_with(b"GET /1 "));
+    assert_eq!(body_bytes(ex[0].response().unwrap()), &b"1"[..]);
+    let expected = b"GET /1 HTTP/1.1\r\nHost: u.test\r\n\r\n";
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(rig.received.lock().unwrap().as_slice(), expected);
     wait_for("the pipelining marker", || {
         rig.h
             .sink

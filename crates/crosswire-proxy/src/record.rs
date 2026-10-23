@@ -5,7 +5,9 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use crosswire_h1::{Parser, ParserConfig, Progress, RawMessage};
-use crosswire_model::{Body, ConnectionInfo, Exchange, ExchangeSink, Marker, Message, SinkError};
+use crosswire_model::{
+    Body, ConnectionInfo, Exchange, ExchangeSink, Marker, MarkerKind, Message, SinkError,
+};
 
 use crate::capture::CaptureResult;
 use crate::relay::ExchangeDraft;
@@ -76,7 +78,19 @@ pub(crate) fn record_draft(
     parse: &ParserConfig,
     draft: ExchangeDraft,
 ) {
-    let req_head = reparse(parse, &draft.req_rewritten).unwrap_or(draft.req_head);
+    let req_head = match reparse(parse, &draft.req_rewritten) {
+        Some(head) => head,
+        None => {
+            // Recorded as the client sent it; the marker makes the
+            // mismatch with what went upstream visible.
+            submit_marker(
+                sink,
+                counters,
+                Marker::new(MarkerKind::Error, "rewritten request head did not re-parse"),
+            );
+            draft.req_head
+        }
+    };
     let (req_body_diags, resp_body_diags) = draft.body_diagnostics;
     let mut req_diags = req_head.diagnostics().to_vec();
     req_diags.extend(req_body_diags);
