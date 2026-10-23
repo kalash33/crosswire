@@ -1,0 +1,35 @@
+[package]
+name = "crosswire-proxy"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "HTTP/1.1 MITM proxy engine for Crosswire"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+crosswire-core = { path = "../crosswire-core", version = "0.0.0" }
+crosswire-h1 = { path = "../crosswire-h1", version = "0.0.0" }
+crosswire-model = { path = "../crosswire-model", version = "0.0.0" }
+crosswire-client = { path = "../crosswire-client", version = "0.0.0" }
+crosswire-ca = { path = "../crosswire-ca", version = "0.0.0" }
+tokio = { workspace = true }
+rustls = { workspace = true }
+tokio-rustls = { workspace = true }
+rustls-pki-types = { workspace = true }
+bytes = { version = "1", default-features = false, features = ["std"] }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+base64 = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+crosswire-store = { path = "../crosswire-store", version = "0.0.0" }
+webpki-roots = { workspace = true }
+serde_json = { workspace = true }
+ulid = { workspace = true }

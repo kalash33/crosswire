@@ -14,7 +14,7 @@ unsafe_code = "forbid"
 missing_docs = "deny"
 
 [workspace.dependencies]
-tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "net", "io-util", "time", "sync", "macros"] }
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "net", "io-util", "time", "sync", "macros", "signal"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 webpki-roots = "0.26"
@@ -33,3 +33,7 @@ rustix = { version = "1", features = ["fs"] }
 lru = "0.19"
 tempfile = "3"
 x509-parser = "0.18"
+clap = { version = "4", features = ["derive"] }
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter"] }
+dirs = "6"
+base64 = "0.22"
