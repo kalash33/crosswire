@@ -168,6 +168,7 @@ async fn plain_origin_switch_uses_a_fresh_upstream() {
             ("127.0.0.1".to_string(), b.port()),
         ],
         resolve: vec![("a.test".to_string(), lo), ("b.test".to_string(), lo)],
+        ..UpstreamWiring::default()
     };
     let h = ProxyHarness::start_wired(loopback_config(), Arc::new(NoopHandler), wiring).await;
     let mut c = connect_raw(h.addr).await;

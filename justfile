@@ -4,7 +4,11 @@ test:
 # Needs a Chromium-based browser: set CROSSWIRE_BROWSER or have google-chrome
 # or chromium on PATH.
 browser-test:
-    CROSSWIRE_BROWSER=${CROSSWIRE_BROWSER:-$(command -v google-chrome || command -v chromium || command -v chromium-browser)} cargo test --locked -p crosswire-proxy --test browser -- --ignored
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export CROSSWIRE_BROWSER="${CROSSWIRE_BROWSER:-$(command -v google-chrome || command -v chromium || command -v chromium-browser || true)}"
+    : "${CROSSWIRE_BROWSER:?no Chromium-based browser found; set CROSSWIRE_BROWSER}"
+    cargo test --locked -p crosswire-proxy --test browser -- --ignored --nocapture
 
 serve *ARGS:
     cargo run --locked -p crosswire-server -- serve {{ARGS}}

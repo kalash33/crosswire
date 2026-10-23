@@ -119,6 +119,7 @@ fn wiring(port: u16) -> UpstreamWiring {
         extra_roots: Vec::new(),
         allow: vec![("127.0.0.1".to_string(), port)],
         resolve: vec![("u.test".to_string(), IpAddr::from([127, 0, 0, 1]))],
+        ..UpstreamWiring::default()
     }
 }
 

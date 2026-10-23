@@ -80,6 +80,10 @@ pub struct UpstreamWiring {
     pub allow: Vec<(String, u16)>,
     /// Names the proxy resolves to a fixed address instead of DNS.
     pub resolve: Vec<(String, IpAddr)>,
+    /// Resolve every name not in `resolve` to 127.0.0.1, where the gate
+    /// refuses it (only exact allowed `host:port`s pass), so no stray
+    /// host ever reaches the network.
+    pub deny_unknown: bool,
 }
 
 impl UpstreamWiring {
@@ -93,7 +97,14 @@ impl UpstreamWiring {
                 .iter()
                 .map(|n| ((*n).to_string(), IpAddr::from([127, 0, 0, 1])))
                 .collect(),
+            deny_unknown: false,
         }
+    }
+
+    /// Refuse every host that is not explicitly resolved.
+    pub fn denying_unknown(mut self) -> UpstreamWiring {
+        self.deny_unknown = true;
+        self
     }
 }
 
@@ -117,14 +128,17 @@ pub fn deps_with(
     }
     let gate = Arc::new(gate);
     let resolve = wiring.resolve.clone();
-    let resolve_override: Option<ResolveOverride> = (!resolve.is_empty()).then(|| {
-        Arc::new(move |host: &str| {
-            resolve
-                .iter()
-                .find(|(n, _)| n.eq_ignore_ascii_case(host))
-                .map(|(_, ip)| *ip)
-        }) as ResolveOverride
-    });
+    let deny_unknown = wiring.deny_unknown;
+    let resolve_override: Option<ResolveOverride> =
+        (!resolve.is_empty() || deny_unknown).then(|| {
+            Arc::new(move |host: &str| {
+                resolve
+                    .iter()
+                    .find(|(n, _)| n.eq_ignore_ascii_case(host))
+                    .map(|(_, ip)| *ip)
+                    .or_else(|| deny_unknown.then(|| IpAddr::from([127, 0, 0, 1])))
+            }) as ResolveOverride
+        });
     ProxyDeps {
         resolve_override,
         issuer,

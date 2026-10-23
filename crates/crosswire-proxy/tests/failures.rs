@@ -44,6 +44,7 @@ fn plain_wiring(port: u16, names: &[&str]) -> UpstreamWiring {
             .iter()
             .map(|n| ((*n).to_string(), IpAddr::from([127, 0, 0, 1])))
             .collect(),
+        ..UpstreamWiring::default()
     }
 }
 

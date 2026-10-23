@@ -135,6 +135,7 @@ async fn proxy_for(case: &Case, port: u16) -> ProxyHarness {
         extra_roots: Vec::new(),
         allow: vec![("127.0.0.1".to_string(), port)],
         resolve: vec![("u.test".to_string(), IpAddr::from([127, 0, 0, 1]))],
+        ..UpstreamWiring::default()
     };
     ProxyHarness::start_wired(cfg, Arc::new(NoopHandler), wiring).await
 }

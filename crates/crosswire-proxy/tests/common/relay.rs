@@ -64,6 +64,7 @@ pub async fn rig_with(
                     .iter()
                     .map(|n| ((*n).to_string(), IpAddr::from([127, 0, 0, 1])))
                     .collect(),
+                ..UpstreamWiring::default()
             };
             (up.port(), up.received, up.connections, wiring)
         }

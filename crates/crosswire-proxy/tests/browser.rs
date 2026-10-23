@@ -5,15 +5,16 @@
 
 mod common;
 
+use std::collections::BTreeSet;
 use std::io::Read;
 use std::process::{Command, Stdio};
-use std::sync::Arc;
+use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 
 use common::relay::wait_for;
 use common::upstream::spawn_tls_html;
 use common::{loopback_config, ProxyHarness, UpstreamWiring};
-use crosswire_model::Fidelity;
+use crosswire_model::{ExchangeState, Fidelity, Head};
 use crosswire_proxy::NoopHandler;
 
 #[tokio::test]
@@ -25,7 +26,8 @@ async fn chromium_session_is_recorded() {
     };
 
     let up = spawn_tls_html("<html>hi</html>").await;
-    let wiring = UpstreamWiring::loopback(up.ca_der(), up.port(), &["browser.test"]);
+    let wiring =
+        UpstreamWiring::loopback(up.ca_der(), up.port(), &["browser.test"]).denying_unknown();
     let h = ProxyHarness::start_wired(loopback_config(), Arc::new(NoopHandler), wiring).await;
 
     let profile = tempfile::tempdir().unwrap();
@@ -39,6 +41,11 @@ async fn chromium_session_is_recorded() {
             "--disable-gpu",
             "--no-first-run",
             "--disable-background-networking",
+            "--disable-component-update",
+            "--disable-sync",
+            "--no-default-browser-check",
+            "--disable-default-apps",
+            "--disable-features=OptimizationHints,MediaRouter,Translate",
         ])
         .arg(format!("--proxy-server=127.0.0.1:{}", h.addr.port()))
         .arg("--proxy-bypass-list=<-loopback>")
@@ -55,18 +62,12 @@ async fn chromium_session_is_recorded() {
         .spawn()
         .expect("the browser starts");
 
-    let mut stdout = child.stdout.take().unwrap();
-    let mut stderr = child.stderr.take().unwrap();
-    let out_task = std::thread::spawn(move || {
-        let mut v = Vec::new();
-        let _ = stdout.read_to_end(&mut v);
-        v
-    });
-    let err_task = std::thread::spawn(move || {
-        let mut v = Vec::new();
-        let _ = stderr.read_to_end(&mut v);
-        v
-    });
+    // Helper processes can inherit the pipes and outlive a killed parent, so
+    // the readers report over channels and every wait on them is bounded.
+    let (out_rx, err_rx) = (
+        read_pipe(child.stdout.take().unwrap()),
+        read_pipe(child.stderr.take().unwrap()),
+    );
 
     let deadline = Instant::now() + Duration::from_secs(30);
     let status = loop {
@@ -76,16 +77,28 @@ async fn chromium_session_is_recorded() {
         if Instant::now() > deadline {
             let _ = child.kill();
             let _ = child.wait();
-            let err = err_task.join().unwrap();
+            let err = err_rx
+                .recv_timeout(Duration::from_secs(2))
+                .unwrap_or_default();
             panic!(
-                "the browser did not exit within 30 s; stderr:\n{}",
+                "the browser did not exit within 30 s; stderr so far:\n{}",
                 String::from_utf8_lossy(&err)
             );
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     };
-    let dom = String::from_utf8_lossy(&out_task.join().unwrap()).into_owned();
-    let err = String::from_utf8_lossy(&err_task.join().unwrap()).into_owned();
+    let dom = String::from_utf8_lossy(
+        &out_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("stdout closed within 5 s of the browser exiting"),
+    )
+    .into_owned();
+    let err = String::from_utf8_lossy(
+        &err_rx
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap_or_default(),
+    )
+    .into_owned();
     assert!(
         dom.contains("hi"),
         "DOM dump lacks the page ({status}):\n{dom}\nstderr:\n{err}"
@@ -101,15 +114,41 @@ async fn chromium_session_is_recorded() {
     };
     wait_for("a recorded browser.test exchange", || recorded(&h)).await;
 
+    let mut hosts = BTreeSet::new();
     for ex in h.sink.exchanges.lock().unwrap().iter() {
         let c = ex.request().connection();
+        let host = c.sni().unwrap_or_else(|| c.target_addr()).to_string();
+        let resp = ex.response();
+        let generated_502 = resp.is_some_and(|r| {
+            r.fidelity() == Fidelity::Generated
+                && matches!(r.head(), Head::Http1Raw { bytes, .. }
+                    if bytes.starts_with(b"HTTP/1.1 502 "))
+        });
         eprintln!(
-            "exchange: target={} sni={:?} tls={:?} fidelity={:?}",
-            c.target_addr(),
-            c.sni(),
+            "exchange: host={host} port={} state={:?} tls={:?} generated_502={generated_502}",
+            c.port(),
+            ex.state(),
             c.tls_version(),
-            ex.request().fidelity()
         );
+        if host != "browser.test" {
+            assert!(
+                ex.state() == ExchangeState::Error && generated_502,
+                "stray host {host} was not refused with a generated 502"
+            );
+        }
+        hosts.insert(host);
     }
+    eprintln!("hosts seen: {hosts:?}");
     h.shutdown.shutdown().await;
+}
+
+/// Reads `pipe` to the end on a thread and sends the bytes once.
+fn read_pipe(mut pipe: impl Read + Send + 'static) -> mpsc::Receiver<Vec<u8>> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut v = Vec::new();
+        let _ = pipe.read_to_end(&mut v);
+        let _ = tx.send(v);
+    });
+    rx
 }

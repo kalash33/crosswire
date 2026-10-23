@@ -197,9 +197,10 @@ pub async fn spawn_tls_scripted(script: Vec<Vec<u8>>, fragment: Option<usize>) -
     }
 }
 
-/// A TLS upstream answering every request, on any number of connections,
-/// with `200 OK` and `body` as `text/html` (keep-alive). Browsers fetch
-/// more than the page, so a finite script would run dry.
+/// A TLS upstream answering requests with `200 OK` and `body` as `text/html`
+/// (keep-alive). The responses come from one script shared by all
+/// connections, so the first 256 requests across them are answered and the
+/// connection then closes: ample for a browser fetching a page or two.
 pub async fn spawn_tls_html(body: &str) -> TlsUpstream {
     let resp = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\n\r\n{body}",
