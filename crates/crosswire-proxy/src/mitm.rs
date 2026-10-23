@@ -228,6 +228,7 @@ async fn passthrough(
         TunnelReason::SniPassthrough,
         shared.cfg.limits.tunnel_idle,
         rec,
+        (0, 0),
     )
     .await;
     tracing::debug!(%authority, port, ?stats, "passthrough tunnel closed");

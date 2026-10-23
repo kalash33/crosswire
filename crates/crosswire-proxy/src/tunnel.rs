@@ -72,16 +72,23 @@ async fn idle_watch(idle: Duration, last: &AtomicU64, start: Instant) {
 /// Relays bytes between `a` (the client) and `b` (the upstream) until both
 /// directions end, either errors, or nothing moves for `idle`. Then records
 /// one [`Head::Tunnel`] exchange through `ctx` (never awaited) and returns
-/// the counts.
+/// the counts. `flushed` is what the caller already relayed into the
+/// tunnel (to `b`, to `a`) before handing it over; it counts as tunnel
+/// traffic.
 pub(crate) async fn run(
     a: Box<dyn Conn>,
     b: Box<dyn Conn>,
     reason: TunnelReason,
     idle: Option<Duration>,
     ctx: RecordCtx,
+    flushed: (u64, u64),
 ) -> TunnelStats {
     let start = Instant::now();
-    let (bytes_in, bytes_out, last) = (AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0));
+    let (bytes_in, bytes_out, last) = (
+        AtomicU64::new(flushed.0),
+        AtomicU64::new(flushed.1),
+        AtomicU64::new(0),
+    );
     {
         let (mut ar, mut aw) = tokio::io::split(a);
         let (mut br, mut bw) = tokio::io::split(b);

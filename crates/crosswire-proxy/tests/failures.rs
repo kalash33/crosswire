@@ -332,7 +332,9 @@ async fn request_head_over_limit_gives_400_and_limit_marker() {
     assert_eq!(rig.connections(), 0);
 }
 
-async fn undelimitable_case(via: Via, resp: Vec<u8>) {
+/// `tunnel_out` is how many response bytes cross after the framing broke:
+/// read-ahead flushed into the tunnel counts as tunnel traffic.
+async fn undelimitable_case(via: Via, resp: Vec<u8>, tunnel_out: usize) {
     let rig = rig(via, vec![resp.clone()], None, &["u.test"]).await;
     let mut c = rig.open("u.test").await;
     let req = get(&rig, "/u");
@@ -358,13 +360,24 @@ async fn undelimitable_case(via: Via, resp: Vec<u8>) {
         .find(|e| matches!(e.request().head(), Head::Tunnel { .. }))
         .expect("a tunnel exchange");
     let Head::Tunnel {
-        reason, bytes_in, ..
+        reason,
+        bytes_in,
+        bytes_out,
+        ..
     } = tunnel.request().head()
     else {
         unreachable!()
     };
     assert_eq!(*reason, TunnelReason::Undelimitable);
     assert_eq!(*bytes_in, 5);
+    assert_eq!(*bytes_out, tunnel_out as u64);
+    // The response head is recorded once, as the head; the body holds
+    // only bytes after it.
+    let r = http.response().expect("the response so far");
+    let head = head_bytes(r);
+    assert!(resp.starts_with(&head), "{head:?}");
+    let body = body_bytes(r);
+    assert!(resp[head.len()..].starts_with(&body), "{body:?}");
     wait_marker(
         &rig.h,
         MarkerKind::Error,
@@ -376,15 +389,17 @@ async fn undelimitable_case(via: Via, resp: Vec<u8>) {
 #[tokio::test]
 async fn undelimitable_response_falls_to_tunnel() {
     let garbage = b"BOGUS garbage status line\r\nX: y\r\n\r\nraw bytes follow".to_vec();
-    undelimitable_case(Via::Plain, garbage.clone()).await;
-    undelimitable_case(Via::Tls, garbage).await;
+    let n = garbage.len();
+    undelimitable_case(Via::Plain, garbage.clone(), n).await;
+    undelimitable_case(Via::Tls, garbage, n).await;
 }
 
 #[tokio::test]
 async fn invalid_chunk_in_response_body_falls_to_tunnel() {
     let resp =
         b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\nZZ\r\nrest".to_vec();
-    undelimitable_case(Via::Plain, resp).await;
+    let n = b"ZZ\r\nrest".len();
+    undelimitable_case(Via::Plain, resp, n).await;
 }
 
 const SWITCH: &[u8] =
@@ -656,9 +671,10 @@ async fn early_413_during_upload_is_forwarded_and_closes() {
     writer.abort();
 }
 
-#[tokio::test]
-async fn idle_closed_upstream_is_retried_once_for_get() {
-    let (port, conns) = spawn_custom(|i, mut s| async move {
+/// The reused upstream drops request /2 unanswered (a FIN, or a reset
+/// with `reset`); `extra` is added to the head of /2.
+async fn retry_case(reset: bool, extra: &'static str) {
+    let (port, conns) = spawn_custom(move |i, mut s| async move {
         if i == 0 {
             let (h, _) = read_head(&mut s).await;
             assert!(h.starts_with(b"GET /1 "));
@@ -666,6 +682,10 @@ async fn idle_closed_upstream_is_retried_once_for_get() {
             // The next request arrives just as this side gives up.
             let (h, _) = read_head(&mut s).await;
             assert!(h.starts_with(b"GET /2 "));
+            if reset {
+                #[allow(deprecated, reason = "zero linger is how a test sends a reset")]
+                s.set_linger(Some(Duration::ZERO)).unwrap();
+            }
             drop(s);
         } else {
             let (h, _) = read_head(&mut s).await;
@@ -679,11 +699,106 @@ async fn idle_closed_upstream_is_retried_once_for_get() {
     let mut c = rig.open("u.test").await;
     c.write_all(get(&rig, "/1").as_bytes()).await.unwrap();
     assert_eq!(read_n(&mut c, ok("one").len()).await, ok("one"));
-    c.write_all(get(&rig, "/2").as_bytes()).await.unwrap();
+    let second = format!(
+        "{}\r\nHost: u.test\r\n{extra}\r\n",
+        rig.start_line("GET", "u.test", "/2")
+    );
+    c.write_all(second.as_bytes()).await.unwrap();
     assert_eq!(read_n(&mut c, ok("two").len()).await, ok("two"));
     let ex = rig.exchanges(2).await;
     assert!(ex.iter().all(|e| e.state() == ExchangeState::Received));
     assert_eq!(rig.connections(), 2);
+}
+
+#[tokio::test]
+async fn idle_closed_upstream_is_retried_once_for_get() {
+    retry_case(false, "").await;
+}
+
+#[tokio::test]
+async fn reset_reused_upstream_is_retried_once_for_get() {
+    retry_case(true, "").await;
+}
+
+#[tokio::test]
+async fn content_length_zero_counts_as_bodiless_for_retry() {
+    retry_case(false, "Content-Length: 0\r\n").await;
+}
+
+/// A request body of big-endian u32 counters: any duplicated or lost run
+/// breaks the sequence.
+fn counters(len: usize) -> Vec<u8> {
+    (0..u32::try_from(len / 4).unwrap())
+        .flat_map(u32::to_be_bytes)
+        .collect()
+}
+
+#[tokio::test]
+async fn early_garbage_head_during_upload_does_not_duplicate_body_bytes() {
+    const LEN: usize = 1024 * 1024;
+    let body_seen = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::clone(&body_seen);
+    let (port, conns) = spawn_custom(move |_, mut s| {
+        let seen = Arc::clone(&seen);
+        async move {
+            let (_head, mut body) = read_head(&mut s).await;
+            let mut buf = vec![0u8; 64 * 1024];
+            while body.len() < 100 * 1024 {
+                let n = s.read(&mut buf).await.unwrap();
+                assert!(n > 0);
+                body.extend_from_slice(&buf[..n]);
+            }
+            s.write_all(b"BOGUS garbage\r\n\r\n").await.unwrap();
+            // Stop reading so the proxy's body write stalls mid-way, then
+            // take everything else the tunnel brings.
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            loop {
+                match s.read(&mut buf).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => body.extend_from_slice(&buf[..n]),
+                }
+            }
+            *seen.lock().unwrap() = body;
+        }
+    })
+    .await;
+    let rig = plain_rig(port, loopback_config(), conns).await;
+    let c = connect_raw(rig.h.addr).await;
+    let (mut rd, mut wr) = c.into_split();
+    let head = format!(
+        "{}\r\nHost: u.test\r\nContent-Length: {LEN}\r\n\r\n",
+        rig.start_line("POST", "u.test", "/up")
+    );
+    let writer = tokio::spawn(async move {
+        wr.write_all(head.as_bytes()).await.unwrap();
+        wr.write_all(&counters(LEN)).await.unwrap();
+        wr.shutdown().await.unwrap();
+        wr
+    });
+    let want_head = b"BOGUS garbage\r\n\r\n";
+    let mut got = vec![0u8; want_head.len()];
+    tokio::time::timeout(Duration::from_secs(5), rd.read_exact(&mut got))
+        .await
+        .expect("the garbage head in time")
+        .unwrap();
+    assert_eq!(got, want_head);
+    let _wr = tokio::time::timeout(Duration::from_secs(5), writer)
+        .await
+        .expect("upload finished")
+        .unwrap();
+    wait_for("the upstream saw the whole upload", || {
+        !body_seen.lock().unwrap().is_empty()
+    })
+    .await;
+    let body = body_seen.lock().unwrap().clone();
+    let want = counters(LEN);
+    if body != want {
+        let first_bad = body.chunks(4).zip(want.chunks(4)).position(|(a, b)| a != b);
+        panic!(
+            "upstream got {} bytes (want {LEN}); first mismatching counter at {first_bad:?}",
+            body.len()
+        );
+    }
 }
 
 #[tokio::test]

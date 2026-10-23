@@ -126,6 +126,9 @@ enum Next {
     Tunnel {
         reason: TunnelReason,
         info: Box<ConnectionInfo>,
+        /// Read-ahead bytes flushed before the tunnel started (to the
+        /// upstream, to the client): counted as tunnel traffic.
+        flushed: (u64, u64),
     },
 }
 
@@ -201,15 +204,26 @@ pub(crate) async fn run(
         }
     };
     let linger = match result {
-        Ok(Next::Tunnel { reason, info }) => {
+        Ok(Next::Tunnel {
+            reason,
+            info,
+            flushed,
+        }) => {
             if let Some(up) = relay.upstream.take() {
                 shared.counters.tunnels.fetch_add(1, Ordering::Relaxed);
                 let rec = RecordCtx {
                     recorder: shared.recorder.clone(),
                     info: *info,
                 };
-                let stats =
-                    tunnel::run(client, up.io, reason, shared.cfg.limits.tunnel_idle, rec).await;
+                let stats = tunnel::run(
+                    client,
+                    up.io,
+                    reason,
+                    shared.cfg.limits.tunnel_idle,
+                    rec,
+                    flushed,
+                )
+                .await;
                 tracing::debug!(?reason, ?stats, "relay tunnel closed");
             }
             drop(ctx);
@@ -300,7 +314,10 @@ impl Relay {
             return Ok(Next::Close { linger: false });
         }
         let (rewritten, diffs) = rewrite_request_head(&head, &mode);
-        let bodiless = matches!(resolved(head.head().framing()), BodyFraming::None);
+        let bodiless = matches!(
+            resolved(head.head().framing()),
+            BodyFraming::None | BodyFraming::ContentLength(0)
+        );
         let req = Req {
             head,
             rewritten,
@@ -417,13 +434,16 @@ impl Relay {
             let mut raw = BytesMut::from(resp_head.bytes().as_ref());
             raw.extend_from_slice(&self.resp_pump.take_pending());
             let resp_cap = CaptureBuf::new(limits.capture_cap, &shared.budget);
+            // Recorded once: the head as the response head, only what
+            // follows it as the (cut) body.
+            let head_len = resp_head.bytes().len();
             let mut draft = self.draft(req, req_cap, info.clone(), timing);
             draft.resp_head = Some(resp_head);
             draft.interim = interim;
             return Ok(self
                 .undelimitable(
                     client,
-                    raw.freeze(),
+                    (raw.freeze(), head_len),
                     draft,
                     resp_cap,
                     "invalid status line",
@@ -475,7 +495,7 @@ impl Relay {
             Err(PumpFail::Parse(e)) => {
                 let raw = self.resp_pump.take_pending();
                 return Ok(self
-                    .undelimitable(client, raw, draft, resp_cap, &e.to_string(), info)
+                    .undelimitable(client, (raw, 0), draft, resp_cap, &e.to_string(), info)
                     .await);
             }
             Err(fail) => {
@@ -671,7 +691,11 @@ impl Relay {
                 raw.extend_from_slice(&self.resp_pump.take_pending());
                 let resp_cap =
                     CaptureBuf::new(self.shared.cfg.limits.capture_cap, &self.shared.budget);
-                self.undelimitable(client, raw.freeze(), draft, resp_cap, &e.to_string(), info)
+                // No head parsed, so there is no response to record; the
+                // bytes are counted by the tunnel.
+                let raw = raw.freeze();
+                let n = raw.len();
+                self.undelimitable(client, (raw, n), draft, resp_cap, &e.to_string(), info)
                     .await
             }
             HeadOutcome::HeadFailed(PumpFail::Eof(_)) => {
@@ -739,18 +763,19 @@ impl Relay {
 
     /// The response cannot be framed: `raw` (bytes read but not yet
     /// forwarded) goes to the client, the exchange is recorded as `Error`
-    /// with what was forwarded, and the rest of the connection pair is an
-    /// `Undelimitable` tunnel.
+    /// with `raw` after its first `recorded_elsewhere` bytes (the head,
+    /// recorded as the head) as the cut response body, and the rest of the
+    /// connection pair is an `Undelimitable` tunnel.
     async fn undelimitable(
         &mut self,
         client: &mut dyn Conn,
-        raw: Bytes,
+        (raw, recorded_elsewhere): (Bytes, usize),
         mut draft: ExchangeDraft,
         mut resp_cap: CaptureBuf,
         code: &str,
         info: ConnectionInfo,
     ) -> Next {
-        resp_cap.push(&raw);
+        resp_cap.push(&raw[recorded_elsewhere.min(raw.len())..]);
         resp_cap.cut();
         draft.resp_body = resp_cap.finish();
         draft.state = ExchangeState::Error;
@@ -791,9 +816,11 @@ impl Relay {
         if !to_upstream.is_empty() && self.req_pump.send(&mut *up.io, &to_upstream).await.is_err() {
             return Next::Close { linger: false };
         }
+        let flushed_out: usize = to_client.iter().map(Bytes::len).sum();
         Next::Tunnel {
             reason,
             info: Box::new(info),
+            flushed: (to_upstream.len() as u64, flushed_out as u64),
         }
     }
 
@@ -847,6 +874,15 @@ fn phase(what: &'static str, clock: Clock) -> &'static str {
         Clock::Idle => what,
         Clock::Total => "total",
     }
+}
+
+/// Errors that mean the peer dropped the connection.
+fn is_reset(e: &std::io::Error) -> bool {
+    use std::io::ErrorKind::{BrokenPipe, ConnectionAborted, ConnectionReset, UnexpectedEof};
+    matches!(
+        e.kind(),
+        ConnectionReset | ConnectionAborted | BrokenPipe | UnexpectedEof
+    )
 }
 
 /// Methods safe to send again after the upstream dropped them unanswered.
@@ -990,6 +1026,11 @@ where
         let head = match pump.head(from, parser).await {
             Ok(Some(head)) => head,
             Ok(None) => return HeadOutcome::Closed,
+            // A reset before any response byte is a close by another name
+            // (a kept-alive peer giving up), so it may be retried too.
+            Err(PumpFail::Read(e)) if pump.first_byte().is_none() && is_reset(&e) => {
+                return HeadOutcome::Closed;
+            }
             Err(e) => return HeadOutcome::HeadFailed(e),
         };
         let status = head.head().status_code(head.bytes());

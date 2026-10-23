@@ -277,9 +277,18 @@ impl Pump {
                 }
             }
             if off > 0 {
-                write_limited(to, &self.pending[..off], self.limit()).await?;
-                capture.push(&self.pending[..off]);
-                self.pending.advance(off);
+                // Cancel-safe: each partial write is consumed (and
+                // captured) before the next await, so a future dropped
+                // mid-write never leaves bytes that are already on the
+                // wire in `pending`.
+                let limit = self.limit();
+                while off > 0 {
+                    let n = write_some(to, &self.pending[..off], limit).await?;
+                    capture.push(&self.pending[..n]);
+                    self.pending.advance(n);
+                    off -= n;
+                }
+                flush_limited(to, limit).await?;
             }
             if let Some(e) = failed {
                 return Err(PumpFail::Parse(e));
@@ -316,6 +325,37 @@ where
     .map_err(PumpFail::Write)
 }
 
+/// One `write` (whatever part of `bytes` the writer takes) under `limit`.
+async fn write_some<W>(to: &mut W, bytes: &[u8], limit: Limit) -> Result<usize, PumpFail>
+where
+    W: AsyncWrite + Unpin + ?Sized,
+{
+    let n = match limit {
+        None => to.write(bytes).await,
+        Some((until, clock)) => tokio::time::timeout_at(until.into(), to.write(bytes))
+            .await
+            .map_err(|_| PumpFail::Timeout(clock))?,
+    }
+    .map_err(PumpFail::Write)?;
+    if n == 0 {
+        return Err(PumpFail::Write(std::io::ErrorKind::WriteZero.into()));
+    }
+    Ok(n)
+}
+
+async fn flush_limited<W>(to: &mut W, limit: Limit) -> Result<(), PumpFail>
+where
+    W: AsyncWrite + Unpin + ?Sized,
+{
+    match limit {
+        None => to.flush().await,
+        Some((until, clock)) => tokio::time::timeout_at(until.into(), to.flush())
+            .await
+            .map_err(|_| PumpFail::Timeout(clock))?,
+    }
+    .map_err(PumpFail::Write)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -327,6 +367,70 @@ mod tests {
         assert_eq!(READ_BUF, 64 * 1024);
         let pump = Pump::new(Bytes::new());
         assert_eq!(pump.scratch.len(), 64 * 1024);
+    }
+
+    /// Takes `room` bytes, then never accepts more (`Pending`).
+    struct Stall {
+        room: usize,
+        taken: Vec<u8>,
+    }
+
+    impl AsyncWrite for Stall {
+        fn poll_write(
+            mut self: Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+            buf: &[u8],
+        ) -> Poll<std::io::Result<usize>> {
+            if self.room == 0 {
+                return Poll::Pending;
+            }
+            let n = buf.len().min(self.room);
+            self.room -= n;
+            self.taken.extend_from_slice(&buf[..n]);
+            Poll::Ready(Ok(n))
+        }
+        fn poll_flush(
+            self: Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+        fn poll_shutdown(
+            self: Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    /// A body future dropped mid-write leaves pending exactly the bytes
+    /// not yet written, and the capture holds exactly the ones that were.
+    #[tokio::test]
+    async fn dropped_body_write_leaves_only_the_unwritten_bytes_pending() {
+        let cfg = crosswire_h1::ParserConfig::default();
+        let mut parser = Parser::request(&cfg);
+        let mut pump = Pump::new(Bytes::from_static(
+            b"POST / HTTP/1.1\r\nContent-Length: 10\r\n\r\n0123456789",
+        ));
+        let mut src = tokio::io::empty();
+        assert!(pump.head(&mut src, &mut parser).await.unwrap().is_some());
+        let budget = std::sync::Arc::new(crate::capture::Budget::new(1 << 20));
+        let mut cap = CaptureBuf::new(1 << 20, &budget);
+        let mut to = Stall {
+            room: 4,
+            taken: Vec::new(),
+        };
+        let body = pump.body(&mut src, &mut parser, &mut to, &mut cap, |_| {
+            Decision::Forward
+        });
+        assert!(tokio::time::timeout(Duration::from_millis(50), body)
+            .await
+            .is_err());
+        assert_eq!(to.taken, b"0123");
+        assert_eq!(pump.pending(), b"456789");
+        let r = cap.finish();
+        assert_eq!(&r.bytes[..], b"0123");
+        assert_eq!(r.relay.len, 4);
     }
 
     #[test]
