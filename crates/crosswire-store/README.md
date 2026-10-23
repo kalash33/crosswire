@@ -87,7 +87,9 @@ writer process with SIGKILL under load.
 
 - A project file is untrusted input. Pack paths are derived from the pack id and
   never read from the database; the database is opened defensive with
-  `trusted_schema=OFF`; journal and pack files are opened with `O_NOFOLLOW`;
+  `trusted_schema=OFF`; journal, pack, audit and lock files are opened with
+  `O_NOFOLLOW`; a symlinked `journal/`, `packs/`, `project.db`, `-wal`, `-shm`
+  or `audit.jsonl` is refused, and a non-regular journal file is never opened;
   decompression is bounded.
 - Directories are created 0700 and files 0600 (unix). The audit log is 0600.
 - Bodies are stored as received. Nothing is redacted on the way in; redaction is

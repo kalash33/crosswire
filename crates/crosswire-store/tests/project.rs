@@ -326,3 +326,27 @@ fn symlinked_journal_directory_is_refused() {
     let _ = Store::open(Project::open(&dir).unwrap(), StoreConfig::default());
     assert_eq!(std::fs::read_dir(&outside_bad).unwrap().count(), 0);
 }
+
+#[cfg(unix)]
+#[test]
+fn create_refuses_symlinked_wal_and_audit_log() {
+    for name in ["project.db-wal", "audit.jsonl"] {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("p");
+        std::fs::create_dir(&dir).unwrap();
+        // A dangling symlink: following it would create a file outside.
+        let outside = tmp.path().join("outside");
+        std::os::unix::fs::symlink(&outside, dir.join(name)).unwrap();
+        let err = Project::create(&dir).unwrap_err();
+        assert!(
+            matches!(&err, StoreError::Corrupt(m) if m.contains("symlink")),
+            "{name}: {err:?}"
+        );
+        assert!(!outside.exists(), "{name}: nothing created outside");
+        // An existing target is left byte-identical.
+        std::fs::write(&outside, b"keep").unwrap();
+        assert!(Project::create(&dir).is_err());
+        assert!(Project::open_or_create(&dir).is_err());
+        assert_eq!(std::fs::read(&outside).unwrap(), b"keep");
+    }
+}

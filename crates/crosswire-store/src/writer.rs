@@ -365,8 +365,11 @@ impl Writer {
                         reserved: None,
                     });
                 }
-                Err(ReadError::Gone) => {}
+                Err(ReadError::Gone) => {
+                    self.transient.remove(&entry.path);
+                }
                 Err(ReadError::Unusable(why)) => {
+                    self.transient.remove(&entry.path);
                     if self.lose_file(&entry, &why) {
                         removed += 1;
                     }

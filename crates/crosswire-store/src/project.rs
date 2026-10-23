@@ -32,11 +32,14 @@ impl Project {
     ///
     /// Fails with [`StoreError::AlreadyExists`] if `project.db` exists, before
     /// taking the lock, and with [`StoreError::Locked`] if the directory is
-    /// held. An existing directory's permissions are never changed.
+    /// held. A symlinked `project.db-wal`, `-shm` or `audit.jsonl` in an
+    /// existing directory is refused ([`StoreError::Corrupt`]). An existing
+    /// directory's permissions are never changed.
     pub fn create(dir: &Path) -> Result<Project, StoreError> {
         if dir.join(DB_FILE).exists() {
             return Err(StoreError::AlreadyExists);
         }
+        refuse_symlinked_files(dir)?;
         make_dir(dir)?;
         let lock = ProjectLock::acquire(&dir.join("project.lock"))?;
         Project::create_locked(dir, lock)
@@ -58,8 +61,14 @@ impl Project {
         make_real_dir(&dir.join("journal"), "journal/")?;
         let mut audit = OpenOptions::new();
         audit.append(true).create(true);
-        restrict(&mut audit);
-        audit.open(dir.join("audit.jsonl"))?;
+        crate::packs::harden_open(&mut audit);
+        audit.open(dir.join("audit.jsonl")).map_err(|e| {
+            if e.raw_os_error() == Some(rustix::io::Errno::LOOP.raw_os_error()) {
+                StoreError::Corrupt("audit.jsonl is a symlink".into())
+            } else {
+                StoreError::Io(e)
+            }
+        })?;
 
         let mut db = open_writer(&db_path)?;
         schema::init(&mut db)?;
@@ -76,10 +85,10 @@ impl Project {
     /// Refuses a database whose `application_id` is not Crosswire's, or whose
     /// `user_version` is 0 ([`StoreError::NotAProject`]) or above 1
     /// ([`StoreError::NewerFormat`]), and (before taking the lock) a project
-    /// whose `project.db`, `-wal` or `-shm` is a symlink ([`StoreError::Corrupt`]). Runs `PRAGMA integrity_check` only when
+    /// whose `project.db`, `-wal`, `-shm` or `audit.jsonl` is a symlink ([`StoreError::Corrupt`]). Runs `PRAGMA integrity_check` only when
     /// the previous run did not shut down cleanly.
     pub fn open(dir: &Path) -> Result<Project, StoreError> {
-        refuse_symlinked_db(dir)?;
+        refuse_symlinked_files(dir)?;
         if !dir.join(DB_FILE).is_file() {
             return Err(StoreError::NotAProject);
         }
@@ -128,7 +137,7 @@ impl Project {
     /// the schema) is deleted and recreated.
     pub fn open_or_create(dir: &Path) -> Result<Project, StoreError> {
         make_dir(dir)?;
-        refuse_symlinked_db(dir)?;
+        refuse_symlinked_files(dir)?;
         let lock = ProjectLock::acquire(&dir.join("project.lock"))?;
         let db_path = dir.join(DB_FILE);
         match fs::metadata(&db_path) {
@@ -291,11 +300,11 @@ pub(crate) fn make_real_dir(path: &Path, label: &str) -> Result<(), StoreError> 
     }
 }
 
-/// Refuses a project whose database files are symlinks. `SQLite` writes and
-/// truncates the `-wal` and `-shm` files, so it must never follow one out of
-/// the project.
-fn refuse_symlinked_db(dir: &Path) -> Result<(), StoreError> {
-    for name in [DB_FILE, "project.db-wal", "project.db-shm"] {
+/// Refuses a project whose database files or audit log are symlinks.
+/// `SQLite` writes and truncates the `-wal` and `-shm` files, so it must
+/// never follow one out of the project (even a dangling one, at create).
+fn refuse_symlinked_files(dir: &Path) -> Result<(), StoreError> {
+    for name in [DB_FILE, "project.db-wal", "project.db-shm", "audit.jsonl"] {
         match fs::symlink_metadata(dir.join(name)) {
             Ok(m) if m.file_type().is_symlink() => {
                 return Err(StoreError::Corrupt(format!("{name} is a symlink")));

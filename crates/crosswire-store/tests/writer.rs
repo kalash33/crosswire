@@ -545,6 +545,42 @@ fn bad_journal_file_is_quarantined() {
 
 #[cfg(unix)]
 #[test]
+fn fifo_in_journal_is_quarantined_without_blocking_open() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (dir, store) = new_store(&tmp, cfg());
+    store.close().unwrap();
+    let lost = Ulid::new();
+    let path = dir.join("journal").join(format!("{lost}.json"));
+    let ok = std::process::Command::new("mkfifo")
+        .arg(&path)
+        .status()
+        .unwrap()
+        .success();
+    assert!(ok, "mkfifo");
+    // Open on another thread so a regression fails instead of hanging.
+    let (tx, rx) = std::sync::mpsc::channel();
+    let d = dir.clone();
+    std::thread::spawn(move || {
+        let r = Store::open(Project::open(&d).unwrap(), cfg()).map(Store::close);
+        let _ = tx.send(r.is_ok());
+    });
+    let opened = rx
+        .recv_timeout(Duration::from_secs(20))
+        .expect("Store::open must not block on a FIFO");
+    assert!(opened);
+    assert!(!path.exists());
+    assert!(dir
+        .join("journal/bad")
+        .join(format!("{lost}.json"))
+        .exists());
+    let gaps = gap_markers(&dir);
+    assert_eq!(gaps.len(), 1);
+    let from = gaps[0].from.expect("a gap window start");
+    assert!(from <= lost && lost <= gaps[0].to);
+}
+
+#[cfg(unix)]
+#[test]
 fn unreadable_journal_file_is_kept_and_replayed_once_readable() {
     use std::os::unix::fs::PermissionsExt;
     let tmp = tempfile::tempdir().unwrap();

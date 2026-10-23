@@ -146,9 +146,26 @@ impl Journal {
     /// [`ReadError::Unusable`]. Any other I/O error (`EMFILE`, `EIO`,
     /// `EACCES`, ...) may pass and is [`ReadError::Transient`].
     pub(crate) fn read(entry: &Entry) -> Result<Exchange, ReadError> {
+        // Refuse a FIFO, socket or device before opening: opening a FIFO
+        // would block the writer (and `Store::open`) forever.
+        match fs::symlink_metadata(&entry.path) {
+            Ok(m) if m.file_type().is_file() => {}
+            Ok(_) => return Err(ReadError::Unusable("not a regular file".into())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(ReadError::Gone),
+            Err(e) => return Err(ReadError::Transient(e)),
+        }
         let mut o = OpenOptions::new();
         o.read(true);
         crate::packs::harden_open(&mut o);
+        // O_NONBLOCK as well, in case the file is swapped for a FIFO after the
+        // check above; it has no effect on a regular file.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            o.custom_flags(
+                (rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::NONBLOCK).bits() as i32,
+            );
+        }
         let mut f = o.open(&entry.path).map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
                 ReadError::Gone
