@@ -232,7 +232,11 @@ impl Proxy {
             tracing::debug!(%peer, "refused: max connections");
             return;
         }
-        let ip = (!peer.ip().is_loopback()).then(|| peer.ip());
+        // An IPv4-mapped IPv6 peer (::ffff:127.0.0.1 on a dual-stack
+        // listener) must get the IPv4 rules: loopback exemption and one
+        // per-IP bucket per address, whatever its spelling.
+        let peer_ip = peer.ip().to_canonical();
+        let ip = (!peer_ip.is_loopback()).then_some(peer_ip);
         if let Some(ip) = ip {
             let map = shared.per_ip.lock().unwrap_or_else(PoisonError::into_inner);
             if map.get(&ip).copied().unwrap_or(0) >= limits.max_per_client_ip {

@@ -199,6 +199,17 @@ async fn bad_authority_is_refused() {
         String::from_utf8_lossy(&resp)
     );
 
+    // An underscore is not a hostname character: the body says why.
+    let resp =
+        send_and_read_until_close(h.addr, b"CONNECT a_b.test:443 HTTP/1.1\r\nHost: x\r\n\r\n")
+            .await;
+    let (head, body) = split_response(&resp);
+    assert!(head.starts_with("HTTP/1.1 400 "), "{head}");
+    assert_eq!(
+        String::from_utf8_lossy(&body),
+        "Crosswire refused the request: the target is not a valid host and port."
+    );
+
     // Valid labels, but one byte over the 253-byte name limit.
     let long = format!("{0}.{0}.{0}.{1}", "a".repeat(63), "a".repeat(62));
     assert_eq!(long.len(), 254);
