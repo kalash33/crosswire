@@ -27,6 +27,9 @@ jobs:
       - uses: extractions/setup-just@dd310ad5a97d8e7b41793f8ef055398d51ad4de6 # v2
       - run: just lint
       - run: just test
+      # Real headless Chrome through the proxy (the ubuntu image ships it).
+      - run: just browser-test
+        if: matrix.os == 'ubuntu-latest'
       - run: just features
       - run: just bench
       # Runs rustdoc with RUSTDOCFLAGS=-D warnings.

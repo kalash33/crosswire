@@ -1,6 +1,11 @@
 test:
     cargo test --locked --workspace --all-features
 
+# Needs a Chromium-based browser: set CROSSWIRE_BROWSER or have google-chrome
+# or chromium on PATH.
+browser-test:
+    CROSSWIRE_BROWSER=${CROSSWIRE_BROWSER:-$(command -v google-chrome || command -v chromium || command -v chromium-browser)} cargo test --locked -p crosswire-proxy --test browser -- --ignored
+
 serve *ARGS:
     cargo run --locked -p crosswire-server -- serve {{ARGS}}
 
