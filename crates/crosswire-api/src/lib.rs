@@ -27,6 +27,7 @@ mod app;
 mod auth;
 mod error;
 mod events;
+mod extract;
 mod openapi;
 mod routes;
 mod session;

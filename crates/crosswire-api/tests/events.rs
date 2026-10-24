@@ -166,3 +166,39 @@ async fn slow_consumer_gets_lagged() {
 fn clone_message(m: &Message) -> Message {
     m.clone()
 }
+
+#[tokio::test]
+async fn first_frame_bad_token_is_rate_limited() {
+    let app = TestApp::new().await;
+
+    // Ten first-frame bad-token attempts from the same peer are each closed.
+    for _ in 0..10 {
+        let mut ws = Ws::connect(app.addr, app.port, "/api/v1/events", &[])
+            .await
+            .expect("the upgrade succeeds");
+        ws.send_text("{\"bearer\":\"cwt_not-a-real-token\"}").await;
+        assert!(
+            ws.recv_text(DEADLINE).await.is_none(),
+            "a bad first-frame token closes the socket"
+        );
+    }
+
+    // The 11th attempt is refused by the rate limit before the upgrade.
+    let refused = Ws::connect(app.addr, app.port, "/api/v1/events", &[]).await;
+    assert_eq!(
+        refused.err(),
+        Some(429),
+        "the first-frame path enforces the auth-failure rate limit"
+    );
+
+    // The failures were audited.
+    let log = std::fs::read_to_string(app.store.dir().join("audit.jsonl")).unwrap();
+    let fails = log
+        .lines()
+        .filter(|l| l.contains("\"auth.fail\"") && l.contains("/api/v1/events"))
+        .count();
+    assert!(
+        fails >= 10,
+        "first-frame auth failures are audited (got {fails})"
+    );
+}

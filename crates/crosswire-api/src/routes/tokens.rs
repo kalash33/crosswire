@@ -2,8 +2,9 @@
 
 use std::sync::PoisonError;
 
-use axum::extract::{Path, State};
-use axum::{Extension, Json};
+use crate::extract::{Json, Path};
+use axum::extract::State;
+use axum::Extension;
 use crosswire_store::{TokenRecord, TokenScope};
 use http::StatusCode;
 use serde::{Deserialize, Serialize};

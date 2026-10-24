@@ -2,9 +2,10 @@
 
 use std::sync::PoisonError;
 
-use axum::extract::{Path, Query, State};
+use crate::extract::{Json, Path, Query};
+use axum::extract::State;
 use axum::response::IntoResponse;
-use axum::{Extension, Json};
+use axum::Extension;
 use crosswire_model::{Body, ExchangeState, Marker, NamespaceKind, ScopeState};
 use crosswire_store::{BodySide, Counts, ExchangeFilter, ExchangeRow, Page};
 use http::header::CONTENT_TYPE;

@@ -8,8 +8,9 @@
 use std::net::SocketAddr;
 use std::time::Duration;
 
+use crate::extract::Query;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{ConnectInfo, Query, State};
+use axum::extract::{ConnectInfo, State};
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use utoipa::IntoParams;
@@ -80,6 +81,13 @@ pub async fn events_ws(
             }
         }
     } else {
+        // No header credential: the first frame must carry a bearer token.
+        // The auth-failure rate limit applies to this path too, so a peer
+        // cannot brute-force first-frame tokens past the cap.
+        if state.auth_limiter.over_limit(ip) {
+            return crate::error::ApiError::rate_limited("too many authentication failures")
+                .into_response();
+        }
         None
     };
 

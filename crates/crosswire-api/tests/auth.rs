@@ -273,3 +273,63 @@ async fn no_cors_headers_ever() {
         }
     }
 }
+
+#[tokio::test]
+async fn session_idle_expiry_and_refresh() {
+    // A short idle window so the test is fast.
+    let app = TestApp::with(Opts {
+        idle_timeout: Duration::from_millis(200),
+        ..Opts::default()
+    })
+    .await;
+    let cookie = app.session_cookie().await;
+    let h = [
+        ("Cookie", cookie.as_str()),
+        ("Sec-Fetch-Site", "same-origin"),
+    ];
+
+    // Two requests, each inside the window measured from the previous one.
+    // Without refresh the second (240ms after creation) would exceed 200ms;
+    // it succeeds, which proves each request refreshes last-seen.
+    tokio::time::sleep(Duration::from_millis(120)).await;
+    let r1 = app.get("/api/v1/counts", &h).await;
+    assert_eq!(r1.status, 200, "within the window");
+    tokio::time::sleep(Duration::from_millis(120)).await;
+    let r2 = app.get("/api/v1/counts", &h).await;
+    assert_eq!(r2.status, 200, "refreshed, so still within the window");
+
+    // Now idle past the window: the session expires.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let r3 = app.get("/api/v1/counts", &h).await;
+    assert_eq!(r3.status, 401, "an idle session expires");
+    assert_eq!(r3.json()["error"]["code"], "session_invalid");
+}
+
+#[tokio::test]
+async fn malformed_body_returns_envelope() {
+    let app = TestApp::new().await;
+    // A malformed JSON body is rejected by the extractor, but still as the
+    // stable error envelope with a 4xx status.
+    let resp = app
+        .send(
+            "POST",
+            "/api/v1/session",
+            &[("Content-Type", "application/json")],
+            Some(b"this is not json"),
+        )
+        .await;
+    assert!(
+        (400..500).contains(&resp.status),
+        "a malformed body is a 4xx (got {})",
+        resp.status
+    );
+    assert_eq!(
+        resp.json()["error"]["code"],
+        "invalid_body",
+        "the error envelope carries invalid_body"
+    );
+    assert!(
+        resp.json()["error"]["message"].is_string(),
+        "the envelope has a message"
+    );
+}

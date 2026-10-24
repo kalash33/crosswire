@@ -4,8 +4,9 @@
 use std::sync::atomic::Ordering;
 use std::sync::PoisonError;
 
+use crate::extract::Json;
 use axum::extract::State;
-use axum::{Extension, Json};
+use axum::Extension;
 use crosswire_scope::{parse_program_list, Scope};
 use http::StatusCode;
 use serde::Deserialize;

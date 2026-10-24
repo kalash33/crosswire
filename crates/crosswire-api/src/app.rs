@@ -12,8 +12,7 @@ use crosswire_proxy::Intercept;
 use crosswire_scope::{Compiled, Scope};
 use crosswire_store::{Control, Store, StoreError};
 use crosswire_tools::Repeater;
-use tower_http::trace::{DefaultMakeSpan, TraceLayer};
-use tracing::Level;
+use tower_http::trace::TraceLayer;
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 
@@ -186,8 +185,16 @@ pub fn router(state: AppState) -> Router {
     let (router, _api) = api_routes().split_for_parts();
     router
         .layer(from_fn_with_state(state.clone(), gate))
+        // Record method and path only (never the query string, which can
+        // carry filters, and never bodies, tokens or cookies).
         .layer(
-            TraceLayer::new_for_http().make_span_with(DefaultMakeSpan::new().level(Level::DEBUG)),
+            TraceLayer::new_for_http().make_span_with(|req: &axum::extract::Request| {
+                tracing::debug_span!(
+                    "request",
+                    method = %req.method(),
+                    path = %req.uri().path(),
+                )
+            }),
         )
         .with_state(state)
 }
