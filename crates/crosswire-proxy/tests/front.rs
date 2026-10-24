@@ -131,6 +131,10 @@ async fn proxy_auth_required_then_accepted() {
         head.contains("Proxy-Authenticate: Basic realm=\"crosswire\"\r\n"),
         "{head}"
     );
+    assert!(
+        head.contains("\r\nX-Content-Type-Options: nosniff\r\n"),
+        "{head}"
+    );
     assert_eq!(h.counters.auth_failures.load(Ordering::Relaxed), 1);
 
     // Wrong password: still refused.

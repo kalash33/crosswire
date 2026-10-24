@@ -83,7 +83,7 @@ pub(crate) fn generated(
         "reason phrase must be a single line"
     );
     let head = format!(
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\nX-Crosswire-Generated: 1\r\n\r\n",
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\nX-Content-Type-Options: nosniff\r\nX-Crosswire-Generated: 1\r\n\r\n",
         body.len()
     );
     let mut buf = BytesMut::with_capacity(head.len() + body.len());
@@ -179,7 +179,7 @@ mod tests {
         let body = "Crosswire could not connect to a.test:80: refused";
         let (bytes, msg) = generated(502, "Bad Gateway", body, conn());
         let expected = format!(
-            "HTTP/1.1 502 Bad Gateway\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\nX-Crosswire-Generated: 1\r\n\r\n{body}",
+            "HTTP/1.1 502 Bad Gateway\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\nX-Content-Type-Options: nosniff\r\nX-Crosswire-Generated: 1\r\n\r\n{body}",
             body.len()
         );
         assert_eq!(bytes.as_ref(), expected.as_bytes());

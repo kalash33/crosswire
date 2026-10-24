@@ -163,6 +163,10 @@ async fn upstream_connect_refused_gives_502_and_error_exchange() {
     let (head, body) = split_response(&got);
     assert!(head.starts_with("HTTP/1.1 502 Bad Gateway\r\n"), "{head}");
     assert!(head.contains("\r\nX-Crosswire-Generated: 1\r\n"), "{head}");
+    assert!(
+        head.contains("\r\nX-Content-Type-Options: nosniff\r\n"),
+        "{head}"
+    );
     let body = String::from_utf8(body).unwrap();
     assert!(
         body.starts_with(&format!("Crosswire could not connect to u.test:{port}: ")),

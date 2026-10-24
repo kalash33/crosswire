@@ -367,7 +367,7 @@ pub(crate) fn proxy_auth_ok(head: &RawMessage, expected: &[u8]) -> bool {
 /// The 407 response asking for proxy credentials.
 pub(crate) fn proxy_auth_required() -> Bytes {
     Bytes::from(format!(
-        "HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm=\"crosswire\"\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\nX-Crosswire-Generated: 1\r\n\r\n{AUTH_REQUIRED}",
+        "HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm=\"crosswire\"\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\nX-Content-Type-Options: nosniff\r\nX-Crosswire-Generated: 1\r\n\r\n{AUTH_REQUIRED}",
         AUTH_REQUIRED.len()
     ))
 }
