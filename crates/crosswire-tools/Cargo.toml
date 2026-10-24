@@ -22,3 +22,9 @@ bytes = { version = "1", default-features = false, features = ["std"] }
 thiserror = { workspace = true }
 ulid = { workspace = true }
 sha2 = { workspace = true }
+
+[dev-dependencies]
+crosswire-ca = { path = "../crosswire-ca", version = "0.0.0" }
+rustls = { workspace = true }
+tokio-rustls = { workspace = true }
+rustls-pki-types = { workspace = true }

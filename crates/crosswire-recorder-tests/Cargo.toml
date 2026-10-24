@@ -15,6 +15,7 @@ workspace = true
 crosswire-client = { path = "../crosswire-client", version = "0.0.0" }
 crosswire-model = { path = "../crosswire-model", version = "0.0.0" }
 crosswire-h1 = { path = "../crosswire-h1", version = "0.0.0" }
+crosswire-tools = { path = "../crosswire-tools", version = "0.0.0" }
 bytes = { version = "1", default-features = false, features = ["std"] }
 thiserror = { workspace = true }
 tokio = { workspace = true }

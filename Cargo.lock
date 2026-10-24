@@ -592,6 +592,7 @@ dependencies = [
  "crosswire-h1",
  "crosswire-model",
  "crosswire-store",
+ "crosswire-tools",
  "rustls",
  "rustls-pki-types",
  "tempfile",
@@ -664,14 +665,18 @@ name = "crosswire-tools"
 version = "0.0.0"
 dependencies = [
  "bytes",
+ "crosswire-ca",
  "crosswire-client",
  "crosswire-core",
  "crosswire-h1",
  "crosswire-model",
  "crosswire-scope",
+ "rustls",
+ "rustls-pki-types",
  "sha2",
  "thiserror",
  "tokio",
+ "tokio-rustls",
  "ulid",
 ]
 
