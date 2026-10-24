@@ -52,7 +52,9 @@ pub struct ServeArgs {
     #[arg(long, value_name = "HOST")]
     pub passthrough: Vec<String>,
 
-    /// Let the proxy reach this loopback or private destination. Repeatable.
+    /// Let the proxy reach this destination although the gate refuses it
+    /// (loopback, link-local, cloud metadata). Repeatable; each entry is
+    /// audited.
     #[arg(long, value_name = "HOST:PORT", value_parser = parse_host_port)]
     pub allow: Vec<(String, u16)>,
 

@@ -1,7 +1,7 @@
 //! `crosswire serve`: compose the CA, gate, transport, store and proxy.
 
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
@@ -29,6 +29,7 @@ const ACTOR: &str = "cli";
 pub fn run(args: ServeArgs) -> Result<(), CliError> {
     let cfg = proxy_config(&args)?;
     let ca_dir = resolve_ca_dir(args.ca_dir.clone())?;
+    refuse_ca_dir_in_project(&ca_dir, &args.project)?;
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -136,6 +137,9 @@ async fn serve_with_store(
     let addr = proxy.local_addr();
     audit("listener.bind", &addr.to_string())?;
 
+    // Handlers first: a caller that reads the banner and then signals must
+    // get a clean shutdown, not the default "terminate now".
+    let signalled = shutdown_signal();
     {
         let mut out = std::io::stdout().lock();
         writeln!(out, "proxy listening on {addr}")
@@ -153,7 +157,7 @@ async fn serve_with_store(
     let counters = proxy.counters();
     let (tx, rx) = watch::channel(false);
     tokio::spawn(async move {
-        shutdown_signal().await;
+        signalled.await;
         tracing::info!("shutting down");
         let _ = tx.send(true);
     });
@@ -172,6 +176,62 @@ async fn serve_with_store(
     ran
 }
 
+/// The CA private key must never live under a project directory (spec
+/// 11.3): a project is shared and exported, the key is not. Both paths are
+/// resolved (symlinks and `..` included, even when they do not exist yet)
+/// before comparing.
+fn refuse_ca_dir_in_project(ca_dir: &Path, project: &Path) -> Result<(), CliError> {
+    let (ca, proj) = (resolved(ca_dir)?, resolved(project)?);
+    if ca.starts_with(&proj) {
+        return Err(CliError::Config(format!(
+            "--ca-dir {} is inside the project {}; keep the CA key outside any project",
+            ca_dir.display(),
+            project.display()
+        )));
+    }
+    Ok(())
+}
+
+/// `path` made absolute, with its longest existing prefix canonicalised
+/// and the rest appended (`.` dropped, `..` applied).
+fn resolved(path: &Path) -> Result<PathBuf, CliError> {
+    use std::path::Component;
+    let abs = std::path::absolute(path)
+        .map_err(|e| CliError::Config(format!("cannot resolve {}: {e}", path.display())))?;
+    let mut base = abs.clone();
+    let mut rest = Vec::new();
+    let canon = loop {
+        if let Ok(c) = base.canonicalize() {
+            break c;
+        }
+        match (base.file_name().map(ToOwned::to_owned), base.parent()) {
+            (Some(name), Some(parent)) => {
+                rest.push(name);
+                base = parent.to_path_buf();
+            }
+            // `..` as the last component, or the root: resolve lexically.
+            _ => match base.parent() {
+                Some(parent) if base.ends_with("..") => {
+                    rest.push("..".into());
+                    base = parent.to_path_buf();
+                }
+                _ => break base,
+            },
+        }
+    };
+    let mut out = canon;
+    for part in rest.iter().rev() {
+        match Path::new(part).components().next() {
+            Some(Component::ParentDir) => {
+                out.pop();
+            }
+            Some(Component::CurDir) | None => {}
+            _ => out.push(part),
+        }
+    }
+    Ok(out)
+}
+
 /// `host:port`, bracketing an IPv6 host.
 fn host_port(host: &str, port: u16) -> String {
     if host.contains(':') {
@@ -181,32 +241,45 @@ fn host_port(host: &str, port: u16) -> String {
     }
 }
 
-/// Resolves on Ctrl-C (SIGINT) or, on Unix, SIGTERM. If no handler can be
-/// installed it never resolves, so the proxy keeps running.
-async fn shutdown_signal() {
-    let ctrl_c = async {
+/// Installs the SIGINT (Ctrl-C) and, on Unix, SIGTERM handlers now, and
+/// returns a future that resolves on either. A handler that cannot be
+/// installed is logged and never fires, so the proxy keeps running.
+#[cfg(unix)]
+fn shutdown_signal() -> impl std::future::Future<Output = ()> {
+    use tokio::signal::unix::{signal, SignalKind};
+    let install = |kind: SignalKind, name: &'static str| match signal(kind) {
+        Ok(s) => Some(s),
+        Err(e) => {
+            tracing::warn!(error = %e, "cannot listen for {name}");
+            None
+        }
+    };
+    let int = install(SignalKind::interrupt(), "SIGINT");
+    let term = install(SignalKind::terminate(), "SIGTERM");
+    async move {
+        let wait = |s: Option<tokio::signal::unix::Signal>| async move {
+            match s {
+                Some(mut s) => {
+                    s.recv().await;
+                }
+                None => std::future::pending::<()>().await,
+            }
+        };
+        tokio::select! {
+            () = wait(int) => {}
+            () = wait(term) => {}
+        }
+    }
+}
+
+/// Resolves on Ctrl-C. On non-Unix platforms the handler is registered
+/// when the future is first polled.
+#[cfg(not(unix))]
+fn shutdown_signal() -> impl std::future::Future<Output = ()> {
+    async {
         if let Err(e) = tokio::signal::ctrl_c().await {
             tracing::warn!(error = %e, "cannot listen for Ctrl-C");
             std::future::pending::<()>().await;
         }
-    };
-    #[cfg(unix)]
-    let term = async {
-        use tokio::signal::unix::{signal, SignalKind};
-        match signal(SignalKind::terminate()) {
-            Ok(mut s) => {
-                s.recv().await;
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "cannot listen for SIGTERM");
-                std::future::pending::<()>().await;
-            }
-        }
-    };
-    #[cfg(not(unix))]
-    let term = std::future::pending::<()>();
-    tokio::select! {
-        () = ctrl_c => {}
-        () = term => {}
     }
 }

@@ -92,7 +92,7 @@ actions are `ca.generate` (only when the CA was created), `allow.add`,
 | code | meaning |
 | --- | --- |
 | 0 | a clean stop on Ctrl-C or SIGTERM, or a command that succeeded |
-| 2 | bad usage or configuration: a clap error, a non-loopback bind without `--allow-non-loopback` or without `--proxy-auth`, a bad `--passthrough`, `--accept-invalid-cert`, `--allow`, `--proxy-auth` or `--log`, or no config directory |
+| 2 | bad usage or configuration: a clap error, a `--ca-dir` inside `--project`, a non-loopback bind without `--allow-non-loopback` or without `--proxy-auth`, a bad `--passthrough`, `--accept-invalid-cert`, `--allow`, `--proxy-auth` or `--log`, or no config directory |
 | 1 | a runtime failure: opening the project or store, CA I/O, binding, writing an audit row or stdout, closing the store |
 
 Errors are printed to stderr as `crosswire: error: ...`.
@@ -141,6 +141,8 @@ The project then holds `project.db`, `packs/`, `journal/`, `project.lock` and
   process arguments, so use this on a host you control.
 - `--allow` and `--accept-invalid-cert` loosen the destination gate and upstream
   certificate checks for named hosts only, and each is written to the audit log.
+- `serve` refuses a `--ca-dir` inside `--project` (both resolved, symlinks
+  and `..` included), so the key never ends up in a project that is shared.
 - The CA private key (`ca.key`, 0600) is the most sensitive file Crosswire
   creates: anyone holding it can mint certificates your browser trusts. Keep it
   out of project directories and backups you share, and remove the CA from any

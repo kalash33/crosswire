@@ -107,6 +107,31 @@ fn serve_refuses_non_loopback_without_flag() {
     assert!(!tmp.path().join("proj").exists());
 }
 
+#[test]
+fn serve_refuses_a_ca_dir_inside_the_project() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::create_dir(tmp.path().join("proj")).unwrap();
+    let proj = tmp.path().join("proj");
+    // Spelled differently, and not yet existing: still inside the project.
+    let sneaky = tmp.path().join("other").join("..").join("proj").join("ca");
+    for ca in [proj.clone(), proj.join("keys").join("ca"), sneaky] {
+        let out = run(&[
+            "serve",
+            "--project",
+            proj.to_str().unwrap(),
+            "--ca-dir",
+            ca.to_str().unwrap(),
+            "--proxy-bind",
+            "127.0.0.1:0",
+        ]);
+        assert_eq!(out.status.code(), Some(2), "{ca:?}");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(stderr.contains("--ca-dir"), "stderr: {stderr}");
+    }
+    // Refused before anything was created.
+    assert_eq!(std::fs::read_dir(&proj).unwrap().count(), 0);
+}
+
 /// Always serves a leaf for 127.0.0.1 (an IP SAN; no SNI is sent for IPs).
 #[derive(Debug)]
 struct LoopbackLeaf(Arc<CertifiedKey>);
