@@ -626,12 +626,20 @@ async fn blocked_sink_never_stalls_relays_or_connects() {
     assert_eq!(read_exact_n(&mut c, resp.len()).await, resp);
     drop(c);
 
+    // Release the sink and shut down before reading any count. Shutdown joins
+    // the recorder, so sink_full, the gap markers and the delivered exchanges
+    // are all final and mutually consistent afterwards. Snapshotting sink_full
+    // before shutdown raced a late overflow that bumped the counter (and wrote
+    // its marker) after the snapshot, leaving the final accounting one short.
+    sink.release();
+    h.shutdown.shutdown().await;
     let full = h.counters.sink_full.load(Ordering::SeqCst) as usize;
     assert!(full > 0, "the queue overflowed");
-    wait_for("a gap marker per dropped exchange", || {
-        sink.markers.lock().unwrap().len() == full
-    })
-    .await;
+    assert_eq!(
+        sink.markers.lock().unwrap().len(),
+        full,
+        "a gap marker per dropped exchange"
+    );
     assert!(sink
         .markers
         .lock()
@@ -640,9 +648,6 @@ async fn blocked_sink_never_stalls_relays_or_connects() {
         .all(|m| m.kind() == MarkerKind::Gap
             && m.from_ulid().is_some()
             && m.from_ulid() == m.to_ulid()));
-    sink.release();
-    h.shutdown.shutdown().await;
-    // Shutdown waited for the recorder: every queued exchange reached the
-    // sink, and every other one is accounted for by a gap marker.
+    // Every queued exchange reached the sink; every dropped one has a gap marker.
     assert_eq!(sink.exchanges.load(Ordering::SeqCst) + full, TOTAL + 1);
 }
