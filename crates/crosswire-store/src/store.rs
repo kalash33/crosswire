@@ -555,4 +555,115 @@ mod tests {
         let lock = std::fs::read_to_string(dir.join("project.lock")).unwrap();
         assert!(lock.contains("clean=0"));
     }
+
+    fn marker(detail: &str) -> crosswire_model::Marker {
+        crosswire_model::Marker::new(crosswire_model::MarkerKind::Error, detail)
+    }
+
+    fn reserved(shared: &Shared) -> (usize, usize) {
+        (
+            shared.queued.load(Ordering::SeqCst),
+            shared.queued_bytes.load(Ordering::SeqCst),
+        )
+    }
+
+    /// Polls until `cond` holds or five seconds pass.
+    fn eventually(what: &str, mut cond: impl FnMut() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !cond() {
+            assert!(Instant::now() < deadline, "timed out waiting for {what}");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    #[test]
+    fn marker_on_a_full_queue_is_refused_and_reserves_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pause = Arc::new(Mutex::new(()));
+        let cfg = StoreConfig {
+            batch_interval: Duration::from_millis(20),
+            queue_max: 1,
+            test_pause: Some(Arc::clone(&pause)),
+            ..StoreConfig::default()
+        };
+        let store = Store::open(Project::create(&tmp.path().join("p")).unwrap(), cfg).unwrap();
+        let sink = store.sink();
+        let guard = pause.lock().unwrap();
+        sink.submit(exchange(b"one")).unwrap();
+        let before = reserved(&store.shared);
+        assert_eq!(before.0, 1, "the exchange holds the only slot");
+        assert_eq!(sink.submit_marker(marker("m")), Err(SinkError::Full));
+        assert_eq!(
+            reserved(&store.shared),
+            before,
+            "a refused marker reserves nothing"
+        );
+        drop(guard);
+        eventually("the slot to be released", || {
+            reserved(&store.shared) == (0, 0)
+        });
+        sink.submit_marker(marker("after")).unwrap();
+        store.close().unwrap();
+    }
+
+    #[test]
+    fn marker_slot_is_freed_after_commit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = StoreConfig {
+            batch_interval: Duration::from_millis(20),
+            queue_max: 1,
+            ..StoreConfig::default()
+        };
+        let store = Store::open(Project::create(&tmp.path().join("p")).unwrap(), cfg).unwrap();
+        let mut ev = store.subscribe();
+        let sink = store.sink();
+        for i in 0..3 {
+            sink.submit_marker(marker(&format!("m{i}"))).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                match ev.try_recv() {
+                    Some(Event::Marker { .. }) => break,
+                    Some(_) => {}
+                    None => {
+                        assert!(Instant::now() < deadline, "no Marker event");
+                        std::thread::sleep(Duration::from_millis(2));
+                    }
+                }
+            }
+            eventually("the marker slot to be released", || {
+                reserved(&store.shared) == (0, 0)
+            });
+        }
+        assert_eq!(store.markers(None, 10).unwrap().items.len(), 3);
+        store.close().unwrap();
+    }
+
+    #[test]
+    fn queued_marker_is_committed_and_released_at_shutdown() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("p");
+        let pause = Arc::new(Mutex::new(()));
+        let cfg = StoreConfig {
+            batch_interval: Duration::from_secs(60),
+            test_pause: Some(Arc::clone(&pause)),
+            ..StoreConfig::default()
+        };
+        let store = Store::open(Project::create(&dir).unwrap(), cfg).unwrap();
+        let shared = Arc::clone(&store.shared);
+        let guard = pause.lock().unwrap();
+        store.sink().submit_marker(marker("queued")).unwrap();
+        assert_eq!(reserved(&shared).0, 1);
+        drop(guard);
+        store.close().unwrap();
+        assert_eq!(reserved(&shared), (0, 0), "shutdown released the slot");
+        let conn = crate::project::open_reader(&dir).unwrap();
+        let n: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM markers WHERE detail = 'queued'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1, "the queued marker was committed at shutdown");
+    }
 }

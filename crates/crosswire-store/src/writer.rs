@@ -838,11 +838,15 @@ fn insert_exchange(
 ) -> Result<(), StoreError> {
     let id = ex.id();
     let mut json = serde_json::to_value(ex)?;
-    set_field(
-        &mut json,
-        "/state",
-        serde_json::to_value(ExchangeState::Committed)?,
-    )?;
+    // A stored exchange is `committed`, unless its producer marked it
+    // `error` (a relay that failed part way): that state is kept, so the
+    // `state` filter and `Counts.error` find it.
+    let state = if ex.state() == ExchangeState::Error {
+        ExchangeState::Error
+    } else {
+        ExchangeState::Committed
+    };
+    set_field(&mut json, "/state", serde_json::to_value(state)?)?;
     let sides = [
         (BodySide::Req, Some(ex.request()), "/request/body"),
         (BodySide::Resp, ex.response(), "/response/body"),
@@ -892,7 +896,7 @@ fn insert_exchange(
     tx.execute(
         "INSERT INTO exchanges (ulid, namespace, state, scope_state, created_at, json, \
          req_method, req_host, req_path, resp_status, resp_len, tags, notes) \
-         VALUES (?1, ?2, 'committed', ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+         VALUES (?1, ?2, ?13, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         rusqlite::params![
             id.to_string(),
             wire_name(&ex.namespace().kind()),
@@ -906,6 +910,7 @@ fn insert_exchange(
             resp_len,
             tags,
             ex.notes(),
+            wire_name(&state),
         ],
     )?;
     Ok(())
@@ -963,7 +968,9 @@ fn request_line(m: &Message) -> (Option<String>, Option<String>) {
 /// the exact filter can use the index. Only when the head has no usable
 /// `Host` does it fall back to what a browser would have sent: the target
 /// address, plus `:port` unless the port is the scheme default (443 with TLS,
-/// 80 without). With several `Host` headers the first one wins.
+/// 80 without; a connection with an SNI counts as TLS, so a passthrough
+/// tunnel's row matches the intercepted rows for the same host). With several
+/// `Host` headers the first one wins.
 fn request_host(m: &Message) -> Option<String> {
     let from_head = match m.head() {
         // `find` takes the first Host header; later duplicates are ignored.
@@ -989,7 +996,8 @@ fn request_host(m: &Message) -> Option<String> {
         if addr.is_empty() {
             return None;
         }
-        let default = if c.tls_version().is_some() { 443 } else { 80 };
+        let tls = c.tls_version().is_some() || c.sni().is_some();
+        let default = if tls { 443 } else { 80 };
         Some(if c.port() == default {
             addr
         } else {

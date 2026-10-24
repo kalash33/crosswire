@@ -3,11 +3,13 @@
 use bytes::Bytes;
 use crosswire_core::Span;
 use crosswire_model::{
-    Body, ConnectionInfo, Event, Exchange, Fidelity, FramingRecord, Head, HeadSpans,
+    Body, ConnectionInfo, Event, Exchange, ExchangeState, Fidelity, FramingRecord, Head, HeadSpans,
     HeaderSpanRecord, Marker, MarkerKind, Message, MessageKind, SinkError, StartLineSpans,
     HTTP1_PARSER_VERSION,
 };
-use crosswire_store::{BodySide, BodyStore, EventStream, Project, Store, StoreConfig};
+use crosswire_store::{
+    BodySide, BodyStore, EventStream, ExchangeFilter, Project, Store, StoreConfig,
+};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -827,6 +829,92 @@ fn http1_heads_fill_search_columns() {
     assert_eq!((row.5.as_str(), row.6.as_str()), ("history", "empty"));
     assert_eq!(row.7, "[\"login\"]");
     assert_eq!(row.8, "note");
+    store.close().unwrap();
+}
+
+/// `(state column, JSON state, req_host)` of a stored exchange.
+fn stored_state_and_host(store: &Store, id: Ulid) -> (String, String, Option<String>) {
+    let conn = store.reader().unwrap();
+    let (col, json, host): (String, String, Option<String>) = conn
+        .query_row(
+            "SELECT state, json, req_host FROM exchanges WHERE ulid = ?1",
+            [id.to_string()],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_str(&json).unwrap();
+    (col, json["state"].as_str().unwrap().to_owned(), host)
+}
+
+#[test]
+fn error_state_is_kept_and_others_become_committed() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (_dir, store) = new_store(&tmp, cfg());
+    let mut ev = store.subscribe();
+    let mut failed = exchange(b"a", b"b");
+    failed.set_state(ExchangeState::Error);
+    let ok = exchange(b"c", b"d");
+    let ids = [failed.id(), ok.id()];
+    store.sink().submit(failed).unwrap();
+    store.sink().submit(ok).unwrap();
+    assert_eq!(
+        wait_committed(&mut ev, &ids, Duration::from_secs(5)).len(),
+        2
+    );
+    let (col, json, _) = stored_state_and_host(&store, ids[0]);
+    assert_eq!((col.as_str(), json.as_str()), ("error", "error"));
+    let (col, json, _) = stored_state_and_host(&store, ids[1]);
+    assert_eq!((col.as_str(), json.as_str()), ("committed", "committed"));
+    assert_eq!(
+        store.get(ids[0]).unwrap().unwrap().state(),
+        ExchangeState::Error
+    );
+    let errors = ExchangeFilter {
+        state: Some(ExchangeState::Error),
+        ..ExchangeFilter::default()
+    };
+    let rows = store.list(&errors, None, 10).unwrap().items;
+    assert_eq!(rows.iter().map(|r| r.id).collect::<Vec<_>>(), vec![ids[0]]);
+    let counts = store.counts().unwrap();
+    assert_eq!((counts.error, counts.committed), (1, 1));
+    store.close().unwrap();
+}
+
+#[test]
+fn sni_connection_without_host_uses_the_tls_default_port() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (_dir, store) = new_store(&tmp, cfg());
+    let mut ev = store.subscribe();
+    // A passthrough tunnel: no Host header, no TLS version, but an SNI.
+    let tunnel = |conn: ConnectionInfo| {
+        Exchange::new(Message::new(
+            MessageKind::Normalized,
+            Fidelity::Normalized,
+            Head::Normalized { map: Vec::new() },
+            FramingRecord::None,
+            Body::None,
+            conn,
+        ))
+    };
+    let sni = tunnel(ConnectionInfo::new("Example.TEST", 443).with_sni("example.test"));
+    let plain = tunnel(ConnectionInfo::new("example.test", 443));
+    let ids = [sni.id(), plain.id()];
+    store.sink().submit(sni).unwrap();
+    store.sink().submit(plain).unwrap();
+    assert_eq!(
+        wait_committed(&mut ev, &ids, Duration::from_secs(5)).len(),
+        2
+    );
+    assert_eq!(
+        stored_state_and_host(&store, ids[0]).2.as_deref(),
+        Some("example.test"),
+        "SNI means TLS: port 443 is the default"
+    );
+    assert_eq!(
+        stored_state_and_host(&store, ids[1]).2.as_deref(),
+        Some("example.test:443"),
+        "without TLS or SNI, 443 is not the default"
+    );
     store.close().unwrap();
 }
 

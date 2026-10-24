@@ -12,7 +12,7 @@ use common::relay::wait_for;
 use common::upstream::spawn_raw;
 use common::{connect_raw, loopback_config, read_until, ProxyHarness, UpstreamWiring};
 use crosswire_core::DiagnosticCode;
-use crosswire_model::{Body, Capture, Exchange, ExchangeSink, Marker, SinkError};
+use crosswire_model::{Body, Capture, Exchange, ExchangeSink, ExchangeState, Marker, SinkError};
 use crosswire_proxy::ProxyLimits;
 use crosswire_store::{BodySide, EventStream, ExchangeFilter, Project, Store, StoreConfig};
 use sha2::{Digest, Sha256};
@@ -93,6 +93,38 @@ impl Rec {
     fn close(self) {
         self.store.close().unwrap();
     }
+}
+
+#[tokio::test]
+async fn refused_upstream_502_is_stored_as_error() {
+    // A port with nothing listening: the connect is refused.
+    let dead = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = dead.local_addr().unwrap().port();
+    drop(dead);
+    let mut rec = open_store();
+    let h = proxy(rec.store.sink(), ProxyLimits::default(), port).await;
+
+    let mut c = connect_raw(h.addr).await;
+    let req = format!("GET http://u.test:{port}/x HTTP/1.1\r\nHost: u.test:{port}\r\n\r\n");
+    c.write_all(req.as_bytes()).await.unwrap();
+    let head = read_until(&mut c, b"\r\n\r\n").await;
+    assert!(head.starts_with(b"HTTP/1.1 502 "), "{head:?}");
+
+    let ids = rec.committed(1).await;
+    assert_eq!(rec.get(ids[0]).state(), ExchangeState::Error);
+    assert_eq!(rec.stored_json(ids[0])["state"], "error");
+    let errors = ExchangeFilter {
+        state: Some(ExchangeState::Error),
+        ..ExchangeFilter::default()
+    };
+    let rows = rec.store.list(&errors, None, 10).unwrap().items;
+    assert_eq!(rows.iter().map(|r| r.id).collect::<Vec<_>>(), ids);
+    assert_eq!(rows[0].state, ExchangeState::Error);
+    let counts = rec.store.counts().unwrap();
+    assert_eq!((counts.error, counts.committed), (1, 0));
+    drop(c);
+    h.shutdown.shutdown().await;
+    rec.close();
 }
 
 /// `(truncated_at, capture_dropped, relay)` of a body, inline or blob.
