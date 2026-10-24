@@ -57,6 +57,14 @@ async fn chromium_session_is_recorded() {
             "--no-default-browser-check",
             "--disable-default-apps",
             "--disable-features=OptimizationHints,MediaRouter,Translate",
+            // CI runners: /dev/shm is tiny, and the stray background
+            // requests the proxy refuses must not keep the dump waiting.
+            // `--timeout` is Chrome's own headless budget: after it the
+            // page is stopped and the DOM dumped, so the test's 30 s
+            // deadline is never reached on a slow runner.
+            "--disable-dev-shm-usage",
+            "--disable-extensions",
+            "--timeout=15000",
         ])
         .arg(format!("--proxy-server=127.0.0.1:{}", h.addr.port()))
         .arg("--proxy-bypass-list=<-loopback>")
