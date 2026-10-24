@@ -7,7 +7,7 @@ pub mod relay;
 pub mod upstream;
 
 use std::net::{IpAddr, SocketAddr};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use crosswire_ca::{Ca, IssuerLimits, LeafIssuer};
@@ -16,6 +16,7 @@ use crosswire_model::{Exchange, ExchangeSink, Marker, SinkError};
 use crosswire_proxy::{
     Counters, Handler, NoopHandler, Proxy, ProxyConfig, ProxyDeps, ProxyLimits, ResolveOverride,
 };
+use crosswire_scope::{Compiled, Scope};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::watch;
@@ -108,17 +109,33 @@ impl UpstreamWiring {
     }
 }
 
+/// An empty compiled scope (everything `Empty`).
+pub fn empty_scope() -> Arc<RwLock<Compiled>> {
+    Arc::new(RwLock::new(Scope::default().compile().unwrap()))
+}
+
 /// Dependencies for a proxy with `ca`, recording into `sink`.
 pub fn deps(ca: &Arc<Ca>, sink: Arc<dyn ExchangeSink>, handler: Arc<dyn Handler>) -> ProxyDeps {
     deps_with(ca, sink, handler, &UpstreamWiring::default())
 }
 
-/// As [`deps`], wired to reach in-process upstreams.
+/// As [`deps`], wired to reach in-process upstreams, with an empty scope.
 pub fn deps_with(
     ca: &Arc<Ca>,
     sink: Arc<dyn ExchangeSink>,
     handler: Arc<dyn Handler>,
     wiring: &UpstreamWiring,
+) -> ProxyDeps {
+    deps_scoped(ca, sink, handler, wiring, empty_scope())
+}
+
+/// As [`deps_with`], with an explicit shared scope.
+pub fn deps_scoped(
+    ca: &Arc<Ca>,
+    sink: Arc<dyn ExchangeSink>,
+    handler: Arc<dyn Handler>,
+    wiring: &UpstreamWiring,
+    scope: Arc<RwLock<Compiled>>,
 ) -> ProxyDeps {
     let issuer = Arc::new(LeafIssuer::new(Arc::clone(ca), IssuerLimits::default()));
     let backend = Arc::new(RustlsBackend::with_extra_roots(wiring.extra_roots.clone()));
@@ -148,6 +165,7 @@ pub fn deps_with(
         transport: Arc::new(Transport::new(backend, gate)),
         sink,
         handler,
+        scope,
     }
 }
 
@@ -170,7 +188,20 @@ impl ProxyHarness {
     ) -> ProxyHarness {
         let sink = Arc::new(TestSink::default());
         let external: Arc<dyn ExchangeSink> = Arc::clone(&sink) as Arc<dyn ExchangeSink>;
-        ProxyHarness::start_inner(cfg, handler, wiring, sink, external).await
+        ProxyHarness::start_inner(cfg, handler, wiring, sink, external, empty_scope()).await
+    }
+
+    /// As [`start_wired`](Self::start_wired), with an explicit shared scope
+    /// (the same `Arc` the test hands to its [`Intercept`]).
+    pub async fn start_scoped(
+        cfg: ProxyConfig,
+        handler: Arc<dyn Handler>,
+        wiring: UpstreamWiring,
+        scope: Arc<RwLock<Compiled>>,
+    ) -> ProxyHarness {
+        let sink = Arc::new(TestSink::default());
+        let external: Arc<dyn ExchangeSink> = Arc::clone(&sink) as Arc<dyn ExchangeSink>;
+        ProxyHarness::start_inner(cfg, handler, wiring, sink, external, scope).await
     }
 
     /// Binds and runs a proxy that records into `sink` (a real store, or a
@@ -181,7 +212,15 @@ impl ProxyHarness {
         wiring: UpstreamWiring,
     ) -> ProxyHarness {
         let unused = Arc::new(TestSink::default());
-        ProxyHarness::start_inner(cfg, Arc::new(NoopHandler), wiring, unused, sink).await
+        ProxyHarness::start_inner(
+            cfg,
+            Arc::new(NoopHandler),
+            wiring,
+            unused,
+            sink,
+            empty_scope(),
+        )
+        .await
     }
 
     async fn start_inner(
@@ -190,9 +229,10 @@ impl ProxyHarness {
         wiring: UpstreamWiring,
         sink: Arc<TestSink>,
         external: Arc<dyn ExchangeSink>,
+        scope: Arc<RwLock<Compiled>>,
     ) -> ProxyHarness {
         let ca = Arc::new(Ca::generate("proxy-test").unwrap());
-        let proxy = Proxy::bind(cfg, deps_with(&ca, external, handler, &wiring))
+        let proxy = Proxy::bind(cfg, deps_scoped(&ca, external, handler, &wiring, scope))
             .await
             .unwrap();
         let addr = proxy.local_addr();

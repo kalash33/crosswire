@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use std::time::Duration;
 
 use base64::Engine as _;
@@ -12,6 +12,7 @@ use crosswire_ca::LeafIssuer;
 use crosswire_client::Transport;
 use crosswire_h1::RawMessage;
 use crosswire_model::{ConnectionInfo, ExchangeSink};
+use crosswire_scope::Compiled;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::watch;
@@ -54,6 +55,10 @@ pub struct ProxyDeps {
     pub sink: Arc<dyn ExchangeSink>,
     /// Observes and steers traffic.
     pub handler: Arc<dyn Handler>,
+    /// The project scope, evaluated for every exchange so history records a
+    /// scope verdict (and so history can be filtered by scope). Default an
+    /// empty compiled scope (everything `Empty`).
+    pub scope: Arc<RwLock<Compiled>>,
     /// Test-only wiring: maps a requested host to a fixed address before
     /// the upstream connection, so tests can reach in-process servers under
     /// made-up names. The host is replaced by the address; the SNI and

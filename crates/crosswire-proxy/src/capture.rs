@@ -16,15 +16,20 @@ pub(crate) const FIRST_STEP: u64 = 4 * 1024;
 /// The in-flight body budget: the most captured body bytes held across
 /// every connection of one listener at once (`body_budget`). Request and
 /// response captures draw from the same budget.
+///
+/// Public so the server can build the shared budget it hands to both the
+/// proxy and the [`Intercept`](crate::Intercept) service; its reservation
+/// methods stay crate-private.
 #[derive(Debug)]
-pub(crate) struct Budget {
+pub struct Budget {
     limit: u64,
     used: AtomicU64,
 }
 
 impl Budget {
     /// A budget of `limit` bytes, none in use.
-    pub(crate) fn new(limit: u64) -> Budget {
+    #[must_use]
+    pub fn new(limit: u64) -> Budget {
         Budget {
             limit,
             used: AtomicU64::new(0),

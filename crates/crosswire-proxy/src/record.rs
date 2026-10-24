@@ -180,6 +180,7 @@ impl Recorder {
             state,
             generated,
             body_diagnostics: (req_body_diags, resp_body_diags),
+            scope_state,
         } = draft;
         let req_head = match reparse(&self.parse, &req_rewritten) {
             Some(head) => head,
@@ -219,6 +220,7 @@ impl Recorder {
         }
         exchange.set_timing(timing);
         exchange.set_state(state);
+        exchange.set_scope_state(scope_state);
         let held = [req_body.reservation.take(), resp_body.reservation.take()];
         self.submit_holding(exchange, held);
     }

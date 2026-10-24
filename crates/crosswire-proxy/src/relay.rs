@@ -21,20 +21,26 @@ use crosswire_h1::{
     ResponseContext, StartLine,
 };
 use crosswire_model::{
-    ConnectionInfo, Diff, ExchangeState, Marker, MarkerKind, Message, Timing, TunnelReason,
+    ConnectionInfo, Diff, ExchangeState, Marker, MarkerKind, Message, ScopeState, Timing,
+    TunnelReason,
 };
+use crosswire_scope::{Input, PairVerdict, Scheme};
+use std::pin::Pin;
+use std::sync::PoisonError;
+use std::task::{Context, Poll};
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 
-use crate::capture::{CaptureBuf, CaptureResult};
+use crate::capture::{CaptureBuf, CaptureResult, Reservation};
 use crate::generated::{
     fill, generated, BAD_GATEWAY_CONNECT, BAD_GATEWAY_TLS, BAD_REQUEST_PARSE, GATEWAY_TIMEOUT,
     REFUSED_DESTINATION,
 };
+use crate::handler::HeldRequest;
 use crate::listener::{self, ConnCtx, Shared};
 use crate::pump::{Clock, Probe, Pump, PumpEnd, PumpFail};
 use crate::record::RecordCtx;
 use crate::rewrite::{rewrite_request_head, Mode};
-use crate::{front, mitm, tunnel, Decision, Handler, ProxyError};
+use crate::{front, mitm, tunnel, Decision, ProxyError};
 
 /// Most interim (1xx) responses forwarded before the final one.
 const MAX_INTERIM: usize = 16;
@@ -91,6 +97,9 @@ pub(crate) struct ExchangeDraft {
     pub(crate) generated: Option<Message>,
     /// Body diagnostics of the request and the response.
     pub(crate) body_diagnostics: (Vec<Diagnostic>, Vec<Diagnostic>),
+    /// The scope verdict for this exchange, recorded whether or not
+    /// intercept is on.
+    pub(crate) scope_state: ScopeState,
 }
 
 /// The request of the exchange in progress, as it will be recorded.
@@ -100,6 +109,8 @@ struct Req {
     diffs: Vec<Diff>,
     /// When its first byte arrived.
     started: Instant,
+    /// The scope verdict for this exchange.
+    scope_state: ScopeState,
 }
 
 /// The open upstream connection.
@@ -318,14 +329,19 @@ impl Relay {
         let method = head.bytes().slice(method.range());
         let mode = self.mode(&head.bytes()[target.range()])?;
 
-        if handler.on_request_head(&head, &self.client_info()) == Decision::Drop {
-            return Ok(Next::Close { linger: false });
-        }
-        let (rewritten, diffs) = rewrite_request_head(&head, &mode);
-        let bodiless = matches!(
-            resolved(head.head().framing()),
-            BodyFraming::None | BodyFraming::ContentLength(0)
-        );
+        // The scope verdict for this exchange, recorded whether or not
+        // intercept is on (and so history can be filtered by scope).
+        let scope_state = self.scope_state(&head);
+
+        // Content-Length of the body: `Some(0)` for a bodiless request,
+        // `Some(n)` for an explicit length, `None` for chunked, until-close,
+        // an upgrade, or an ambiguous (invalid) length.
+        let cl: Option<u64> = match resolved(head.head().framing()) {
+            BodyFraming::None => Some(0),
+            BodyFraming::ContentLength(n) => Some(*n),
+            _ => None,
+        };
+        let bodiless = cl == Some(0);
         // An invalid Content-Length leaves the body length unknown: what
         // follows the head cannot be framed (RFC 9112 section 6.3 rule 5).
         let undelimitable_req = matches!(
@@ -335,11 +351,136 @@ impl Relay {
                 ..
             }
         );
+
+        // The handler (intercept) decides from the head alone whether to
+        // hold this request. Only a held request is buffered; everything
+        // else streams exactly as before, so the forwarding path is
+        // unchanged.
+        let conn_info = self.client_info();
+        let hold = handler.holds(&head, &conn_info, scope_state);
+
+        // Buffer the body when it fits under the hold limit so it can be
+        // edited while intercepting, unless the client is waiting for a
+        // 100-continue (buffering before forwarding the head would deadlock
+        // such a client). A larger or streamed body is forwarded unedited.
+        let hold_limit = limits.intercept_hold.min(limits.capture_cap);
+        let expects_continue = request_expects_continue(&head);
+        let mut req_cap = CaptureBuf::new(limits.capture_cap, &shared.budget);
+        let mut prebuffered: Option<Bytes> = None;
+        let mut hold_res: Option<Reservation> = None;
+        let mut body_done = false;
+        let mut editable = hold
+            && match cl {
+                Some(0) => true,
+                Some(n) => !expects_continue && n <= hold_limit,
+                None => false,
+            };
+        if editable && !bodiless {
+            let n = cl.expect("an editable non-bodiless request has a content length");
+            hold_res = shared.budget.try_reserve(n);
+            if hold_res.is_some() {
+                self.req_pump.set_limits(Some(limits.idle), Some(deadline));
+                let mut collect = Collect::default();
+                match self
+                    .req_pump
+                    .body(
+                        client,
+                        &mut self.req_parser,
+                        &mut collect,
+                        &mut req_cap,
+                        |_| Decision::Forward,
+                    )
+                    .await
+                {
+                    Ok(_) => {
+                        prebuffered = Some(Bytes::from(collect.bytes));
+                        body_done = true;
+                    }
+                    Err(PumpFail::Parse(e)) => {
+                        req_cap.cut();
+                        self.parse_marker(&e);
+                        let body = fill(BAD_REQUEST_PARSE, &[("code", &e.to_string())]);
+                        let req = Req {
+                            rewritten: head.bytes().clone(),
+                            head,
+                            diffs: Vec::new(),
+                            started,
+                            scope_state,
+                        };
+                        let draft = self.draft(req, req_cap, self.client_info(), Timing::default());
+                        return Ok(self.respond(client, draft, 400, "Bad Request", &body).await);
+                    }
+                    Err(fail) => {
+                        tracing::debug!(peer = %self.peer, error = ?fail, "client left mid-request-body while holding");
+                        return Ok(Next::Close { linger: false });
+                    }
+                }
+            } else {
+                // The budget refused the hold copy: forward it as a stream.
+                editable = false;
+            }
+        }
+
+        // Ask the handler (intercept) what to do with the request.
+        let decision = handler
+            .on_request(HeldRequest {
+                head: &head,
+                body: prebuffered.as_ref(),
+                conn: &conn_info,
+                scope_state,
+                editable,
+            })
+            .await;
+
+        let (rewritten, diffs) = match decision {
+            Decision::Drop => return Ok(Next::Close { linger: false }),
+            Decision::Respond504 => {
+                let body = fill(
+                    GATEWAY_TIMEOUT,
+                    &[
+                        ("host", &self.dest.host),
+                        ("port", &self.dest.port.to_string()),
+                        ("phase", "intercept hold"),
+                    ],
+                );
+                let req = Req {
+                    rewritten: head.bytes().clone(),
+                    head,
+                    diffs: Vec::new(),
+                    started,
+                    scope_state,
+                };
+                let draft = self.draft(req, req_cap, self.client_info(), Timing::default());
+                return Ok(self
+                    .respond(client, draft, 504, "Gateway Timeout", &body)
+                    .await);
+            }
+            Decision::Forward => rewrite_request_head(&head, &mode),
+            Decision::Modify {
+                head: new_head,
+                body: new_body,
+                changes,
+            } => {
+                // The operator's bytes go upstream as given and are recorded
+                // as the canonical request; the automatic rewrite is dropped.
+                let diffs = changes.iter().map(Diff::from).collect();
+                req_cap = CaptureBuf::new(limits.capture_cap, &shared.budget);
+                if let Some(b) = &new_body {
+                    req_cap.push(b);
+                }
+                let _ = hold_res.take();
+                prebuffered = new_body;
+                body_done = true;
+                (new_head, diffs)
+            }
+        };
+
         let req = Req {
             head,
             rewritten,
             diffs,
             started,
+            scope_state,
         };
 
         // Upstream. A kept-alive connection that has since closed, or that
@@ -358,9 +499,7 @@ impl Relay {
         // Request out, final response head in; retried once on a fresh
         // connection when a reused one closed before answering.
         let resp_ctx = ResponseContext::for_method(&method);
-        let mut req_cap = CaptureBuf::new(limits.capture_cap, &shared.budget);
         let mut interim = Vec::new();
-        let mut body_done = false;
         let mut retried = false;
         let (resp_head, info, timing) = loop {
             if self.upstream.is_none() {
@@ -398,6 +537,7 @@ impl Relay {
                 client,
                 &mut *up.io,
                 &req.rewritten,
+                prebuffered.as_ref(),
                 body_done,
                 (&mut self.req_pump, &mut self.req_parser, &mut req_cap),
                 (
@@ -406,7 +546,6 @@ impl Relay {
                     &mut interim,
                     resp_ctx,
                 ),
-                handler,
                 (limits.idle, deadline),
             )
             .await;
@@ -516,7 +655,7 @@ impl Relay {
                 &mut self.resp_parser,
                 client,
                 &mut resp_cap,
-                |d| handler.on_response_body_chunk(d),
+                |_| Decision::Forward,
             )
             .await;
         let resp_body_diags = self.resp_parser.body_diagnostics().to_vec();
@@ -598,6 +737,60 @@ impl Relay {
             state: ExchangeState::Received,
             generated: None,
             body_diagnostics: (self.req_parser.body_diagnostics().to_vec(), Vec::new()),
+            scope_state: req.scope_state,
+        }
+    }
+
+    /// The scope verdict for the exchange carried by `head`: the connection
+    /// identity (the destination host, or SNI, and scheme) and the message
+    /// identity (the `Host` header) evaluated together.
+    fn scope_state(&self, head: &RawMessage) -> ScopeState {
+        let compiled = self
+            .shared
+            .deps
+            .scope
+            .read()
+            .unwrap_or_else(PoisonError::into_inner);
+        let scheme = if self.dest.tls {
+            Scheme::Https
+        } else {
+            Scheme::Http
+        };
+        let conn_input = Input {
+            host: &self.dest.host,
+            port: self.dest.port,
+            scheme,
+            path: "/",
+        };
+        let buf = head.bytes();
+        let host_val = head
+            .head()
+            .header(buf, "Host")
+            .and_then(|s| buf.get(s.range()))
+            .and_then(|b| std::str::from_utf8(b).ok())
+            .map(str::trim)
+            .filter(|h| !h.is_empty());
+        let (mhost, mport) = match host_val {
+            Some(h) => split_host_port(h, self.dest.port),
+            None => (self.dest.host.as_str(), self.dest.port),
+        };
+        let path = head
+            .head()
+            .start_target_range()
+            .and_then(|r| buf.get(r))
+            .and_then(|b| std::str::from_utf8(b).ok())
+            .map_or("/", target_path);
+        let msg_input = Input {
+            host: mhost,
+            port: mport,
+            scheme,
+            path,
+        };
+        match compiled.evaluate_pair(&conn_input, &msg_input) {
+            PairVerdict::In => ScopeState::In,
+            PairVerdict::Out => ScopeState::Out,
+            PairVerdict::Empty => ScopeState::Empty,
+            PairVerdict::HostMismatch => ScopeState::HostMismatch,
         }
     }
 
@@ -1003,11 +1196,16 @@ fn connect_failure(dest: &Dest, e: &ClientError) -> (u16, &'static str, String) 
 /// they arrive, and a final head ends the wait (and the upload, if it is
 /// still running). Once the body is done, the head must arrive within
 /// `idle`. `body_done` skips the body (a retry of a bodiless request).
+///
+/// `prebuffered` is a body already read from the client (intercept held and
+/// forwarded it, possibly edited): it is written straight after the head and
+/// the body stream is skipped, since it was captured when it was buffered.
 #[allow(clippy::too_many_arguments, reason = "both directions of one exchange")]
 async fn send_request(
     client: &mut dyn Conn,
     up: &mut dyn Conn,
     rewritten: &[u8],
+    prebuffered: Option<&Bytes>,
     body_done: bool,
     (req_pump, req_parser, req_cap): (&mut Pump, &mut Parser, &mut CaptureBuf),
     (resp_pump, resp_parser, interim, resp_ctx): (
@@ -1016,7 +1214,6 @@ async fn send_request(
         &mut Vec<Bytes>,
         ResponseContext,
     ),
-    handler: &dyn Handler,
     (idle, deadline): (Duration, Instant),
 ) -> Sent {
     let (mut cr, mut cw) = tokio::io::split(client);
@@ -1037,15 +1234,31 @@ async fn send_request(
             written,
         };
     }
+    // A held body goes upstream right after the head; it was captured when
+    // it was buffered, so the body stream below is skipped.
+    let body_done = if let Some(body) = prebuffered {
+        if let Err(e) = req_pump.send(&mut uw, body).await {
+            let outcome = match e {
+                PumpFail::Timeout(_) => HeadOutcome::HeadFailed(e),
+                _ => HeadOutcome::Closed,
+            };
+            return Sent {
+                outcome,
+                body_done: false,
+                written,
+            };
+        }
+        true
+    } else {
+        body_done
+    };
     written = Instant::now();
     let body = async {
         if body_done {
             return Ok(PumpEnd::Done);
         }
         req_pump
-            .body(&mut cr, req_parser, &mut uw, req_cap, |d| {
-                handler.on_request_body_chunk(d)
-            })
+            .body(&mut cr, req_parser, &mut uw, req_cap, |_| Decision::Forward)
             .await
     };
     let heads = final_head(resp_pump, &mut ur, resp_parser, &mut cw, interim, resp_ctx);
@@ -1222,6 +1435,75 @@ fn resolved(f: &BodyFraming) -> &BodyFraming {
     match f {
         BodyFraming::Ambiguous { resolved, .. } => resolved,
         other => other,
+    }
+}
+
+/// Whether the request asks the upstream for a `100 Continue` before the
+/// body: buffering such a body before forwarding the head would deadlock.
+fn request_expects_continue(head: &RawMessage) -> bool {
+    let buf = head.bytes();
+    head.head()
+        .header(buf, "Expect")
+        .and_then(|s| buf.get(s.range()))
+        .is_some_and(|v| {
+            v.split(|&b| b == b',')
+                .any(|t| trim(t).eq_ignore_ascii_case(b"100-continue"))
+        })
+}
+
+/// Splits an authority into host and port, honouring a bracketed IPv6
+/// literal; `default` when no port is present or it does not parse.
+fn split_host_port(authority: &str, default: u16) -> (&str, u16) {
+    if let Some(rest) = authority.strip_prefix('[') {
+        if let Some(end) = rest.find(']') {
+            let host = &rest[..end];
+            let port = rest[end + 1..]
+                .strip_prefix(':')
+                .and_then(|p| p.parse().ok())
+                .unwrap_or(default);
+            return (host, port);
+        }
+    }
+    match authority.rsplit_once(':') {
+        Some((h, p)) => (h, p.parse().unwrap_or(default)),
+        None => (authority, default),
+    }
+}
+
+/// The path of a request target: origin-form is already a path; absolute-form
+/// is reduced to the part from its first `/`; anything else is `/`.
+fn target_path(target: &str) -> &str {
+    if target.starts_with('/') {
+        return target;
+    }
+    if let Some(pos) = target.find("://") {
+        let after = &target[pos + 3..];
+        return after.find('/').map_or("/", |i| &after[i..]);
+    }
+    "/"
+}
+
+/// An in-memory [`AsyncWrite`] that appends everything written, used to
+/// buffer a held request body before it is forwarded.
+#[derive(Default)]
+struct Collect {
+    bytes: Vec<u8>,
+}
+
+impl AsyncWrite for Collect {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        self.bytes.extend_from_slice(buf);
+        Poll::Ready(Ok(buf.len()))
+    }
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+    fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Poll::Ready(Ok(()))
     }
 }
 

@@ -3,11 +3,12 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use crosswire_ca::{IssuerLimits, LeafIssuer};
 use crosswire_client::{DestinationGate, RustlsBackend, Transport};
 use crosswire_proxy::{NoopHandler, Proxy, ProxyAuth, ProxyConfig, ProxyDeps, ProxyLimits};
+use crosswire_scope::Scope;
 use crosswire_store::{Project, Store, StoreConfig};
 use tokio::net::TcpListener;
 use tokio::sync::watch;
@@ -130,6 +131,11 @@ async fn serve_with_store(
         )),
         sink: store.sink(),
         handler: Arc::new(NoopHandler),
+        scope: Arc::new(RwLock::new(
+            Scope::default()
+                .compile()
+                .expect("the empty scope compiles"),
+        )),
         resolve_override: None,
     };
     let proxy = Proxy::from_listener(cfg, listener, deps)

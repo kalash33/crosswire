@@ -17,6 +17,7 @@ path = "src/main.rs"
 
 [dependencies]
 crosswire-proxy = { path = "../crosswire-proxy", version = "0.0.0" }
+crosswire-scope = { path = "../crosswire-scope", version = "0.0.0" }
 crosswire-store = { path = "../crosswire-store", version = "0.0.0" }
 crosswire-ca = { path = "../crosswire-ca", version = "0.0.0" }
 crosswire-client = { path = "../crosswire-client", version = "0.0.0" }

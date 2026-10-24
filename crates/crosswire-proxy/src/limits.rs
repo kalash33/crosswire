@@ -39,6 +39,14 @@ pub struct ProxyLimits {
     pub rejections_per_window: u32,
     /// The rejection-counting window.
     pub rejection_window: Duration,
+    /// Most bytes of a held request body buffered in memory so it can be
+    /// edited while intercepting; a larger body streams through unedited.
+    pub intercept_hold: u64,
+    /// How long a held request waits for an operator before the configured
+    /// timeout action applies.
+    pub intercept_hold_timeout: Duration,
+    /// Most requests held at once before the overflow policy applies.
+    pub intercept_queue: usize,
     /// HTTP/1 parser configuration and limits.
     pub parse: ParserConfig,
 }
@@ -60,6 +68,9 @@ impl Default for ProxyLimits {
             max_pipelined: 16,
             rejections_per_window: 3,
             rejection_window: Duration::from_secs(30),
+            intercept_hold: 4 * MIB,
+            intercept_hold_timeout: Duration::from_secs(120),
+            intercept_queue: 64,
             parse: ParserConfig::default(),
         }
     }
@@ -121,6 +132,12 @@ impl ProxyLimitsBuilder {
         rejections_per_window: u32);
     setter!(/// Sets `rejection_window`.
         rejection_window: Duration);
+    setter!(/// Sets `intercept_hold`.
+        intercept_hold: u64);
+    setter!(/// Sets `intercept_hold_timeout`.
+        intercept_hold_timeout: Duration);
+    setter!(/// Sets `intercept_queue`.
+        intercept_queue: usize);
     setter!(/// Sets `parse`.
         parse: ParserConfig);
 
@@ -153,6 +170,9 @@ mod tests {
         assert_eq!(l.max_pipelined, 16);
         assert_eq!(l.rejections_per_window, 3);
         assert_eq!(l.rejection_window, Duration::from_secs(30));
+        assert_eq!(l.intercept_hold, 4 * 1024 * 1024);
+        assert_eq!(l.intercept_hold_timeout, Duration::from_secs(120));
+        assert_eq!(l.intercept_queue, 64);
         let spec = ParseLimits::builder()
             .head_size(64 * 1024)
             .max_headers(256)

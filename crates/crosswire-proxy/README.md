@@ -47,8 +47,16 @@ The `crosswire` binary that wires this crate to the store is
   inside a tunnel as the end of HTTP: the connection becomes an opaque tunnel
   and a `Tunnel` exchange records the byte counts (reason `Undelimitable` or
   `Ws`).
-- Calls a `Handler` at the four message points. `Decision` has `Forward` and
-  `Drop` only; `Hold` and `Modify` arrive with intercept in alpha.2.
+- Calls a `Handler` on the request path (`on_request`, asynchronous) and at
+  the response head (`on_response_head`, synchronous). `Decision` is
+  `Forward`, `Drop`, `Modify { head, body, changes }` or `Respond504`. The
+  built-in `Intercept` handler holds a request (and its body up to
+  `intercept_hold`) for an operator to forward unchanged, edit-and-forward,
+  or drop; see **Request intercept** below.
+- Evaluates the project `scope` for every exchange — the connection identity
+  (destination host or SNI) and the message identity (`Host` header) together
+  — and records the verdict (`In`, `Out`, `Empty`, `HostMismatch`) on the
+  exchange, whether or not intercept is on.
 - Does **not** use `crosswire_client::Session` on the proxy path (it buffers
   whole requests); it takes the gate, DNS, TCP and TLS from `Transport` only.
 - Does **not** do HTTP/2 (the leaf's ALPN offers only `http/1.1`, so browsers
@@ -70,9 +78,11 @@ The `crosswire` binary that wires this crate to the store is
 | --- | --- |
 | `Proxy` | `bind(cfg, deps)`, `from_listener(cfg, TcpListener, deps)`, `local_addr`, `counters`, `run(watch::Receiver<bool>)` |
 | `ProxyConfig`, `ProxyAuth` | the bind address, `allow_non_loopback`, optional Basic credentials, `passthrough` and `accept_invalid_cert` host lists, and the limits; `validate()` |
-| `ProxyDeps` | the leaf issuer, the CA as DER, PEM and SPKI pin (served by the info page), the `Transport`, the `ExchangeSink`, the `Handler` |
+| `ProxyDeps` | the leaf issuer, the CA as DER, PEM and SPKI pin (served by the info page), the `Transport`, the `ExchangeSink`, the `Handler`, the `scope` (`Arc<RwLock<Compiled>>`) |
 | `ProxyLimits`, `ProxyLimitsBuilder` | every limit below, built from the spec defaults |
-| `Handler`, `Decision`, `NoopHandler` | `on_request_head`, `on_request_body_chunk`, `on_response_head`, `on_response_body_chunk`; `Forward` or `Drop`; `#[non_exhaustive]` |
+| `Handler`, `Decision`, `HeldRequest`, `NoopHandler` | `holds`, `on_request` (async, body-aware), `on_response_head`; `Forward`, `Drop`, `Modify { head, body, changes }`, `Respond504`; `#[non_exhaustive]` |
+| `Intercept`, `InterceptRules`, `Overflow`, `OnTimeout`, `HeldSummary`, `EditedBytes`, `InterceptError` | the request-intercept service (a `Handler`) and its types |
+| `Budget` | the shared in-flight body budget (the server builds one and hands it to both the proxy and the `Intercept`) |
 | `Counters` | atomic counts: `accepted`, `refused_max_connections`, `refused_per_ip`, `refused_pending_connect`, `auth_failures`, `handshake_rejections`, `tunnels`, `exchanges`, `sink_full` |
 | `ProxyError` | `Config`, `NonLoopbackBind`, `AuthRequired`, `Bind`, `Io`, `Client`, `Tls`, `Protocol`, `Timeout`, `Limit`; `#[non_exhaustive]` |
 | `parse_sni`, `SniError` | read the `server_name` from the first TLS record without consuming it |
@@ -105,6 +115,34 @@ The `crosswire` binary that wires this crate to the store is
 - **Passthrough** rules are an exact host or a `.suffix` (which does not match
   the apex), case-insensitive. A CONNECT is tunnelled when the SNI **or** the
   CONNECT authority matches.
+
+## Request intercept
+
+The `Intercept` service implements `Handler`. The server builds one, shares it
+behind an `Arc` with both the proxy (as `ProxyDeps.handler`) and the API, and
+the API drives it.
+
+- `holds` decides from the head alone whether to hold a request: only when
+  intercept is **enabled** and no skip rule matches. When it returns `false`
+  (the default for any other `Handler`, including `NoopHandler`) the body
+  streams through untouched — so the forwarding path is unchanged.
+- A held request (and its body, when the body fits under `intercept_hold` and
+  there is no `Expect: 100-continue`) waits on a queue. `held()` lists the
+  held requests; the API resolves each with `forward(id, None)` (unchanged),
+  `forward(id, Some(EditedBytes { head, body }))` (edit-and-forward, recorded
+  as `InterceptEdit` diffs), `drop(id)` (close the client), or `forward_all()`.
+  `subscribe()` is a `watch::Receiver<u64>` that changes whenever the held set
+  does.
+- A body larger than `intercept_hold` (or a chunked/until-close body, or one
+  with `Expect: 100-continue`) is still held, but it is **not** buffered:
+  `editable` is `false`, editing it is refused with `InterceptError::NotEditable`,
+  and on forward it streams through.
+- `InterceptRules`: `skip_extensions` (never hold these path extensions),
+  `skip_out_of_scope` (never hold an out-of-scope request), `overflow`
+  (`ForwardNewest` or `ForwardOldest` when the queue is full), and `on_timeout`
+  (`Forward` or `Respond504` when a hold exceeds `intercept_hold_timeout`). A
+  timed-out `Respond504` answers a generated 504 (phase `intercept hold`),
+  recorded as an `Error` exchange.
 
 ## Failure behaviour
 
@@ -184,6 +222,9 @@ builder setter of the same name.
 | Pipelined requests queued | 16 | `max_pipelined` |
 | Interim responses per exchange | 16 | `MAX_INTERIM` (`relay.rs`) |
 | Handshake rejections that raise a marker | 3 per 30 s | `rejections_per_window`, `rejection_window` |
+| Held request body buffered for editing | 4 MiB; larger streams through unedited | `intercept_hold` |
+| Hold timeout before the `on_timeout` action | 120 s | `intercept_hold_timeout` |
+| Requests held at once before the overflow policy | 64 | `intercept_queue` |
 | Hosts tracked for rejections | 1,024, least recently rejected forgotten first | `MAX_HOSTS` (`rejections.rs`) |
 | SNI and target host | at most 253 bytes, valid hostname | `MAX_NAME` (`sni.rs`), `valid_authority` (`front.rs`) |
 | Parser limits | head 64 KiB, 256 headers, line 16 KiB, chunk-size line 4 KiB, trailers 16 KiB, 1,000,000 chunks, 64 body diagnostics | `parse` (`crosswire_h1::ParserConfig`) |
@@ -264,6 +305,11 @@ let deps = ProxyDeps {
     transport: Arc::new(Transport::new(Arc::new(RustlsBackend::webpki_roots()), Arc::new(gate))),
     sink: store.sink(), // Arc<dyn ExchangeSink>, from crosswire-store
     handler: Arc::new(NoopHandler),
+    // An empty compiled scope records every exchange as `Empty`; the server
+    // shares the live scope here and with the Intercept handler instead.
+    scope: Arc::new(std::sync::RwLock::new(
+        crosswire_scope::Scope::default().compile().unwrap(),
+    )),
     resolve_override: None,
 };
 let cfg = ProxyConfig::new("127.0.0.1:8080".parse()?);

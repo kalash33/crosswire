@@ -11,7 +11,9 @@ use bytes::Bytes;
 use crosswire_core::{ChangeOp, ChangeReason, DiagnosticCode};
 use crosswire_h1::{Parser, ParserConfig, Progress, RawMessage, ResponseContext};
 use crosswire_model::{Body, ConnectionInfo, Exchange, Head, MarkerKind, Message};
-use crosswire_proxy::{Decision, Handler, NoopHandler, ProxyConfig, ProxyLimits};
+use crosswire_proxy::{
+    BoxFuture, Decision, Handler, HeldRequest, NoopHandler, ProxyConfig, ProxyLimits,
+};
 use rustls::{ClientConfig, RootCertStore};
 use rustls_pki_types::{CertificateDer, ServerName};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -545,16 +547,10 @@ pub async fn host_header_differs_from_authority_is_forwarded_unchanged(via: Via)
 struct DropAll;
 
 impl Handler for DropAll {
-    fn on_request_head(&self, _req: &RawMessage, _conn: &ConnectionInfo) -> Decision {
-        Decision::Drop
-    }
-    fn on_request_body_chunk(&self, _data: &[u8]) -> Decision {
-        Decision::Forward
+    fn on_request<'a>(&'a self, _req: HeldRequest<'a>) -> BoxFuture<'a, Decision> {
+        Box::pin(async { Decision::Drop })
     }
     fn on_response_head(&self, _resp: &RawMessage, _req: &RawMessage) -> Decision {
-        Decision::Forward
-    }
-    fn on_response_body_chunk(&self, _data: &[u8]) -> Decision {
         Decision::Forward
     }
 }

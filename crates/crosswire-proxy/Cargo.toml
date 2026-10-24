@@ -17,6 +17,7 @@ crosswire-h1 = { path = "../crosswire-h1", version = "0.0.0" }
 crosswire-model = { path = "../crosswire-model", version = "0.0.0" }
 crosswire-client = { path = "../crosswire-client", version = "0.0.0" }
 crosswire-ca = { path = "../crosswire-ca", version = "0.0.0" }
+crosswire-scope = { path = "../crosswire-scope", version = "0.0.0" }
 tokio = { workspace = true }
 rustls = { workspace = true }
 tokio-rustls = { workspace = true }
@@ -27,11 +28,12 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 base64 = { workspace = true }
 lru = { workspace = true }
+ulid = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
 crosswire-store = { path = "../crosswire-store", version = "0.0.0" }
+crosswire-scope = { path = "../crosswire-scope", version = "0.0.0" }
 webpki-roots = { workspace = true }
 serde_json = { workspace = true }
-ulid = { workspace = true }
 x509-parser = { workspace = true }
