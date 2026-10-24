@@ -16,7 +16,8 @@ use common::{
     connect_raw, loopback_config, read_until_close, ProxyHarness, TestSink, UpstreamWiring,
 };
 use crosswire_core::ChangeReason;
-use crosswire_model::{ExchangeSink, ExchangeState, ScopeState};
+use crosswire_h1::{Parser, ParserConfig, Progress};
+use crosswire_model::{ConnectionInfo, ExchangeSink, ExchangeState, ScopeState};
 use crosswire_proxy::{
     Budget, EditedBytes, Handler, Intercept, InterceptError, InterceptRules, OnTimeout, Overflow,
     ProxyLimits,
@@ -448,6 +449,58 @@ async fn skip_rules_apply_extension_and_out_of_scope() {
     let _c = r.open(&get(r.upstream.port(), "/q")).await;
     r.wait_held(1).await;
     assert!(r.intercept.held()[0].path.contains("/q"));
+}
+
+#[tokio::test]
+async fn default_rules_skip_out_of_scope() {
+    // Spec §4.6: the default rules skip out-of-scope traffic. Under a scope
+    // that includes u.test, an out-of-scope request is forwarded while an
+    // in-scope one is held.
+    let r = rig(
+        ProxyLimits::default(),
+        InterceptRules::default(),
+        scope_including("u.test"),
+        vec![resp("a"), resp("b")],
+        true,
+    )
+    .await;
+    assert!(
+        InterceptRules::default().skip_out_of_scope,
+        "the default skips out-of-scope traffic"
+    );
+
+    // holds() is the gate the relay consults; it skips Out, holds In, and is
+    // a no-op under an empty scope (Empty, not Out).
+    let mut p = Parser::request(&ParserConfig::default());
+    let Progress::Head(head) = p
+        .feed(b"GET /p HTTP/1.1\r\nHost: u.test\r\n\r\n")
+        .unwrap()
+        .event
+    else {
+        panic!("a head");
+    };
+    let conn = ConnectionInfo::new("u.test", 80);
+    assert!(!r.intercept.holds(&head, &conn, ScopeState::Out));
+    assert!(r.intercept.holds(&head, &conn, ScopeState::In));
+    assert!(r.intercept.holds(&head, &conn, ScopeState::Empty));
+
+    // End to end: an in-scope request is held.
+    let _in = r.open(&get(r.upstream.port(), "/in")).await;
+    r.wait_held(1).await;
+    assert!(r.intercept.held()[0].path.contains("/in"));
+
+    // An out-of-scope request (scope now excludes the host) is forwarded,
+    // never held.
+    *r.scope.write().unwrap() = including("other.test");
+    let mut out = r.open(&get(r.upstream.port(), "/out")).await;
+    let got = read_until_close(&mut out).await;
+    assert!(String::from_utf8_lossy(&got).contains("200 OK"));
+    assert_eq!(
+        r.intercept.held().len(),
+        1,
+        "the out-of-scope request was forwarded, not held"
+    );
+    r.wait_upstream_contains(b"GET /out HTTP/1.1").await;
 }
 
 #[tokio::test]

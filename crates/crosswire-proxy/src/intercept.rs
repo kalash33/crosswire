@@ -68,7 +68,9 @@ impl Default for InterceptRules {
             .iter()
             .map(|s| (*s).to_string())
             .collect(),
-            skip_out_of_scope: false,
+            // Spec §4.6: out-of-scope traffic is never intercepted. A no-op
+            // under an empty scope, where every exchange is `Empty`, not `Out`.
+            skip_out_of_scope: true,
             overflow: Overflow::ForwardNewest,
             on_timeout: OnTimeout::Forward,
         }
@@ -358,7 +360,7 @@ impl Intercept {
         if edited.head != held.head {
             changes.push(Change::new(
                 ChangeOp::Replace,
-                head_span(edited.head.len()),
+                whole_span(edited.head.len()),
                 held.head.clone(),
                 edited.head.clone(),
                 ChangeReason::InterceptEdit,
@@ -369,7 +371,7 @@ impl Intercept {
         if new_body != old_body {
             changes.push(Change::new(
                 ChangeOp::Replace,
-                head_span(new_body.len()),
+                whole_span(new_body.len()),
                 old_body,
                 new_body,
                 ChangeReason::InterceptEdit,
@@ -396,20 +398,18 @@ impl Handler for Intercept {
         if !self.enabled() {
             return false;
         }
-        let (skip_exts, skip_oos) = {
-            let r = self.rules.read().unwrap_or_else(PoisonError::into_inner);
-            (r.skip_extensions.clone(), r.skip_out_of_scope)
-        };
-        if skip_oos && scope_state == ScopeState::Out {
-            return false;
-        }
         let _ = conn;
         let path = head
             .head()
             .start_target_range()
             .map(|r| String::from_utf8_lossy(&head.bytes()[r]).into_owned())
             .unwrap_or_default();
-        !skipped_by_extension(&path, &skip_exts)
+        // Decide under the read guard so the extension list is never cloned.
+        let r = self.rules.read().unwrap_or_else(PoisonError::into_inner);
+        if r.skip_out_of_scope && scope_state == ScopeState::Out {
+            return false;
+        }
+        !skipped_by_extension(&path, &r.skip_extensions)
     }
 
     fn on_request<'a>(&'a self, req: HeldRequest<'a>) -> BoxFuture<'a, Decision> {
@@ -417,22 +417,18 @@ impl Handler for Intercept {
             if !self.enabled() {
                 return Decision::Forward;
             }
-            let (skip_exts, skip_oos, overflow, on_timeout) = {
-                let r = self.rules.read().unwrap_or_else(PoisonError::into_inner);
-                (
-                    r.skip_extensions.clone(),
-                    r.skip_out_of_scope,
-                    r.overflow,
-                    r.on_timeout,
-                )
-            };
-            if skip_oos && req.scope_state == ScopeState::Out {
-                return Decision::Forward;
-            }
             let (method, host, path) = summarize(&req);
-            if skipped_by_extension(&path, &skip_exts) {
-                return Decision::Forward;
-            }
+            // Decide skips under the read guard (no clone of the extension
+            // list); keep only the two Copy settings needed after the await.
+            let (overflow, on_timeout) = {
+                let r = self.rules.read().unwrap_or_else(PoisonError::into_inner);
+                if (r.skip_out_of_scope && req.scope_state == ScopeState::Out)
+                    || skipped_by_extension(&path, &r.skip_extensions)
+                {
+                    return Decision::Forward;
+                }
+                (r.overflow, r.on_timeout)
+            };
             let id = Ulid::new();
             let (tx, rx) = oneshot::channel();
             let held = Held {
@@ -524,8 +520,9 @@ fn skipped_by_extension(path: &str, exts: &[String]) -> bool {
     !ext.is_empty() && exts.iter().any(|e| e.eq_ignore_ascii_case(ext))
 }
 
-/// A head-coordinate span `[0, len)` for a whole-head/body replacement.
-fn head_span(len: usize) -> Span {
+/// An after-coordinate span `[0, len)` for a whole-head or whole-body
+/// replacement (a precise byte diff is not available from `EditedBytes`).
+fn whole_span(len: usize) -> Span {
     Span::new(0, u32::try_from(len).unwrap_or(u32::MAX))
 }
 

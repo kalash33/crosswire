@@ -363,6 +363,9 @@ impl Relay {
         // edited while intercepting, unless the client is waiting for a
         // 100-continue (buffering before forwarding the head would deadlock
         // such a client). A larger or streamed body is forwarded unedited.
+        // A held body is kept in two copies, each bounded by `intercept_hold`
+        // and charged to the budget: the capture (recorded) and `collect`
+        // (written upstream on forward, its bytes reserved via `hold_res`).
         let hold_limit = limits.intercept_hold.min(limits.capture_cap);
         let expects_continue = request_expects_continue(&head);
         let mut req_cap = CaptureBuf::new(limits.capture_cap, &shared.budget);
