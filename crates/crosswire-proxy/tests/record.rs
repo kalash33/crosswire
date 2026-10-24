@@ -20,12 +20,14 @@ use crosswire_store::{BodySide, EventStream, ExchangeFilter, Project, Store, Sto
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::{TcpListener, TcpSocket, TcpStream};
 use ulid::Ulid;
 
 const KIB: usize = 1024;
 const MIB: usize = 1024 * 1024;
 const WAIT: Duration = Duration::from_secs(20);
+/// Socket buffer size for the test's own ends of the slow-client test.
+const SOCK_BUF: u32 = 256 * 1024;
 
 /// A store in a fresh temporary project.
 struct Rec {
@@ -374,7 +376,12 @@ async fn interim_heads_round_trip_through_store() {
 /// 64 KiB pieces as fast as the proxy reads them, counting what was
 /// written.
 async fn spawn_firehose(len: usize) -> (u16, Arc<AtomicU64>) {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    // A small send buffer, inherited by the accepted socket, so the
+    // upstream's own kernel buffer does not dominate the bound below.
+    let sock = TcpSocket::new_v4().unwrap();
+    sock.set_send_buffer_size(SOCK_BUF).unwrap();
+    sock.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+    let listener = sock.listen(16).unwrap();
     let port = listener.local_addr().unwrap().port();
     let written = Arc::new(AtomicU64::new(0));
     let w = Arc::clone(&written);
@@ -410,7 +417,9 @@ async fn slow_client_does_not_buffer_upstream() {
     let limits = ProxyLimits::builder().capture_cap(CAP).build();
     let h = proxy(rec.store.sink(), limits, port).await;
 
-    let mut c = connect_raw(h.addr).await;
+    let sock = TcpSocket::new_v4().unwrap();
+    sock.set_recv_buffer_size(SOCK_BUF).unwrap();
+    let mut c = sock.connect(h.addr).await.unwrap();
     let req = format!("GET http://u.test:{port}/stream HTTP/1.1\r\n\r\n");
     c.write_all(req.as_bytes()).await.unwrap();
     // 1 KiB every 20 ms for 2 s.
@@ -423,13 +432,17 @@ async fn slow_client_does_not_buffer_upstream() {
         got += n;
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    // What the upstream got rid of is bounded by kernel socket buffers on
-    // both sides plus the relay's one 64 KiB read buffer (asserted by the
-    // pump's unit test), not by the 50 MiB on offer.
+    // What the upstream got rid of is bounded by kernel socket buffers plus
+    // the relay's one 64 KiB read buffer (asserted by the pump's unit
+    // test), not by the 50 MiB on offer. The test's own ends are pinned to
+    // SOCK_BUF; the proxy's two sockets autotune, up to Linux's default
+    // maxima of 4 MiB (tcp_wmem, towards the client) and 6 MiB (tcp_rmem,
+    // from the upstream). 16 MiB covers that sum with room, and is still
+    // far below what an unbounded relay would buffer.
     let w = written.load(Ordering::SeqCst);
     eprintln!("slow phase: client read {got} bytes, upstream wrote {w}");
     assert!(
-        w < 8 * MIB as u64,
+        w < 16 * MIB as u64,
         "upstream wrote {w} bytes to a slow client"
     );
 
