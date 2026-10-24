@@ -145,6 +145,12 @@ pub struct Transport {
     gate: Arc<DestinationGate>,
     dns_timeout: Duration,
     dns_semaphore: Arc<Semaphore>,
+    /// Count of [`Transport::connect`] calls, for the egress gate (§13): while
+    /// the sidecar is idle this must not advance, proving nothing phones home.
+    connect_count: Arc<AtomicU64>,
+    /// Count of DNS resolutions attempted, for the same egress gate: an idle
+    /// sidecar performs zero name lookups.
+    dns_count: Arc<AtomicU64>,
 }
 
 impl std::fmt::Debug for Transport {
@@ -162,10 +168,28 @@ impl Transport {
             gate,
             dns_timeout: DNS_TIMEOUT,
             dns_semaphore: Arc::new(Semaphore::new(DNS_CONCURRENCY)),
+            connect_count: Arc::new(AtomicU64::new(0)),
+            dns_count: Arc::new(AtomicU64::new(0)),
         }
     }
 
+    /// How many times [`Transport::connect`] has been called. Used by the
+    /// zero-egress security gate (§13): it stays at its start value while the
+    /// sidecar is idle.
+    #[must_use]
+    pub fn connect_count(&self) -> u64 {
+        self.connect_count.load(Ordering::Relaxed)
+    }
+
+    /// How many DNS resolutions this transport has attempted. The zero-egress
+    /// security gate (§13) asserts this does not advance while idle.
+    #[must_use]
+    pub fn dns_count(&self) -> u64 {
+        self.dns_count.load(Ordering::Relaxed)
+    }
+
     async fn resolve(&self, host: &str, port: u16) -> Result<Vec<IpAddr>, ClientError> {
+        self.dns_count.fetch_add(1, Ordering::Relaxed);
         if host.is_empty() {
             return Err(ClientError::Dns("empty host".into()));
         }
@@ -200,6 +224,7 @@ impl Transport {
     /// [`ClientError::Refused`] when the gate refuses any resolved address;
     /// otherwise DNS, I/O, TLS or timeout errors.
     pub async fn connect(&self, target: &Target) -> Result<Connection, ClientError> {
+        self.connect_count.fetch_add(1, Ordering::Relaxed);
         let host = target.host.trim_start_matches('[').trim_end_matches(']');
         let ips = self.resolve(host, target.port).await?;
         self.gate

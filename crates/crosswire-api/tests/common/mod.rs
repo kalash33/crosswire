@@ -64,6 +64,9 @@ pub struct TestApp {
     pub intercept: Arc<Intercept>,
     pub ca: Arc<Ca>,
     pub strict: Arc<AtomicBool>,
+    /// The repeater's upstream transport, so gates can read its connect and
+    /// DNS counters.
+    pub transport: Arc<Transport>,
     _tmp: TempDir,
 }
 
@@ -100,7 +103,7 @@ impl TestApp {
         ));
         let audit_store = Arc::clone(&store);
         let repeater = Arc::new(Repeater::new(
-            transport,
+            Arc::clone(&transport),
             store.sink(),
             Arc::clone(&scope),
             Arc::clone(&strict),
@@ -160,6 +163,7 @@ impl TestApp {
             intercept,
             ca,
             strict,
+            transport,
             _tmp: tmp,
         }
     }
