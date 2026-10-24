@@ -301,8 +301,14 @@ impl Repeater {
         let msg = if crlf.is_empty() {
             msg.clone()
         } else {
-            let e = apply_edits(msg, &crlf, &self.cfg, None, ChangeReason::ContentLength)
-                .map_err(|e| SendError::Parse(e.to_string()))?;
+            let e = apply_edits(
+                msg,
+                &crlf,
+                &self.cfg,
+                None,
+                ChangeReason::Custom("crlf".into()),
+            )
+            .map_err(|e| SendError::Parse(e.to_string()))?;
             changes.extend(e.changes);
             e.message
         };

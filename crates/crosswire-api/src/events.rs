@@ -25,8 +25,10 @@ const FIRST_FRAME_TIMEOUT: Duration = Duration::from_secs(5);
 #[derive(Debug, Default, Deserialize, IntoParams)]
 #[into_params(parameter_in = Query)]
 pub struct EventsQuery {
-    /// Resync from this event sequence (replayed if buffered, else a single
-    /// `lagged` frame is sent first).
+    /// Resync marker: events cannot be replayed from the broadcast channel, so
+    /// the server sends a single `lagged` frame marking the gap and then
+    /// streams live events. The frame's `missed` is a best-effort marker
+    /// (currently 0), not an exact count.
     pub after: Option<u64>,
 }
 
@@ -41,7 +43,7 @@ struct FirstFrame {
 #[utoipa::path(
     get,
     path = "/api/v1/events",
-    params(("after" = Option<u64>, Query, description = "Resync from this event sequence")),
+    params(("after" = Option<u64>, Query, description = "Resync marker: no replay; a single lagged frame is sent, then live events")),
     responses(
         (status = 101, description = "WebSocket upgrade"),
         (status = 401, description = "Authentication failed"),

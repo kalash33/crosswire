@@ -84,11 +84,14 @@ pub async fn put_scope(
     let _ = state.store.audit(&ctx.actor, "scope.set", "", "ok");
     // Persist the source document so a later restart loads it (the server's
     // `load_scope` reads this same "scope" setting at open).
-    let _ = state
+    let persisted = state
         .control
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .setting_put("scope", &serialized);
+    if let Err(e) = persisted {
+        tracing::warn!(key = "scope", error = %e, "scope applied but not persisted; it will revert on restart");
+    }
     Ok(StatusCode::OK)
 }
 
@@ -132,10 +135,13 @@ pub async fn set_enforce_strict(
         if body.enabled { "enabled" } else { "disabled" },
     );
     // Persist the setting so a later restart keeps it.
-    let _ = state
+    let persisted = state
         .control
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .setting_put("enforce_scope_strictly", &body.enabled.to_string());
+    if let Err(e) = persisted {
+        tracing::warn!(key = "enforce_scope_strictly", error = %e, "setting applied but not persisted; it will revert on restart");
+    }
     Ok(StatusCode::OK)
 }

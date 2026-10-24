@@ -251,6 +251,18 @@ async fn audit_completeness() {
     let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(v["scope_state"], "out", "the send is out of scope");
 
+    // enforce_scope_strictly: after the send, since strict mode would block
+    // the deliberately out-of-scope send above.
+    let (st, _, _) = http(
+        api,
+        "PUT",
+        "/api/v1/settings/enforce_scope_strictly",
+        &admin,
+        Some(br#"{"enabled":true}"#),
+    )
+    .await;
+    assert_eq!(st, 200, "enforce_scope_strictly");
+
     // listener.stop is written on a clean shutdown.
     sigint_and_wait(&mut child.0);
 
@@ -278,6 +290,7 @@ async fn audit_completeness() {
         "token.create",
         "token.revoke",
         "scope.set",
+        "enforce_scope_strictly",
         "intercept.enabled",
         "intercept.rules",
         "repeater.send",

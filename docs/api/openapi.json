@@ -60,7 +60,7 @@
           {
             "name": "after",
             "in": "query",
-            "description": "Resync from this event sequence",
+            "description": "Resync marker: no replay; a single lagged frame is sent, then live events",
             "required": false,
             "schema": {
               "type": "integer",
