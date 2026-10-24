@@ -45,7 +45,7 @@ fn value(c: u8) -> Option<u32> {
 /// non-zero trailing bits.
 pub(crate) fn decode(input: &str) -> Option<Vec<u8>> {
     let s = input.as_bytes();
-    if s.len() % 4 != 0 {
+    if !s.len().is_multiple_of(4) {
         return None;
     }
     let mut out = Vec::with_capacity(s.len() / 4 * 3);
