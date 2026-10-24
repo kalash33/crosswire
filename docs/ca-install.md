@@ -13,6 +13,11 @@ on macOS), or in the directory you pass as `--ca-dir`. Its subject is
 `CN=Crosswire CA Crosswire CA`, which is the name to look for in a certificate
 store.
 
+> **Not tested end to end.** Apart from the Chromium key-pin route, which
+> Crosswire's browser test runs, the steps on this page were written from each
+> platform's and browser's documentation and have not been run as part of
+> Crosswire's own tests. Check what your platform shows.
+
 > **Trust it only where you test.** Anyone who holds `ca.key` can issue
 > certificates that every browser trusting this CA will accept for any site.
 > Use a separate browser profile or a test device, keep the key out of backups
@@ -36,12 +41,15 @@ Any one of these gives you the certificate (and the key pin, below).
   curl -x http://127.0.0.1:8080 -o crosswire-ca.der http://crosswire/ca.der
   ```
 
-  The page is plain HTTP and is served to anything that can reach the proxy,
-  proxy authentication or not. It can only be reached through the proxy: a
-  request that goes straight to the listener is answered only when its `Host` is
-  `crosswire` or the listener's own address as bound, which for a wildcard bind
-  such as `0.0.0.0:8080` is never the address a client uses (the second line
-  `crosswire serve` prints then names an address that does not work). On a phone,
+  The page is plain HTTP and is served to anything that can reach the
+  listener, proxy authentication or not. Through the proxy, open
+  `http://crosswire/`. A request sent straight to the listener (not as a proxy
+  request) also gets the page when its `Host` names the proxy: `crosswire`,
+  `crosswire:PORT`, the listener's own address as bound, or `localhost:PORT`
+  when the listener is on loopback. For a wildcard bind such as `0.0.0.0:8080`
+  the address as bound is never the one a client uses (the second line
+  `crosswire serve` prints then names an address that does not work), so use a
+  direct request with `Host: crosswire`, or go through the proxy. On a phone,
   set the proxy first, then open `http://crosswire/`.
 - **From the command line.** `crosswire ca export --format der --out
   crosswire-ca.der` (or `--format pem`). Without `--out` the certificate goes to
@@ -75,9 +83,8 @@ If you delete the CA directory, a new CA (and pin) is generated.
 
 Chrome and Edge on macOS and Windows use the system store, so installing the CA
 there covers them and most other native software. These commands change what
-your machine trusts; run them only on a test machine. They were written from the
-platforms' documented tools and have not been run as part of Crosswire's own
-tests.
+your machine trusts; run them only on a test machine (and see the note at the
+top: they have not been run as part of Crosswire's own tests).
 
 ### macOS
 

@@ -170,10 +170,11 @@ builder setter of the same name.
 | Body bytes kept per body | 50 MiB; longer sets `truncated_at` | `capture_cap` |
 | In-flight capture budget, all connections | 256 MiB; a refusal sets `capture_dropped` | `body_budget` |
 | Capture buffer growth | 4 KiB first, then doubling, never past `capture_cap` | `FIRST_STEP` (`capture.rs`) |
-| Read buffer per direction | 64 KiB | `READ_BUF` (`pump.rs`), `BUF` (`tunnel.rs`) |
+| Read buffer per direction | 64 KiB, allocated on the first read | `READ_BUF` (`pump.rs`), `BUF` (`tunnel.rs`) |
+| Records waiting for the recorder thread | 1,024; an overflowing exchange is dropped with a `Gap` marker | `RECORD_QUEUE` (`record.rs`) |
 | Request head read, first head on a connection | 30 s | `header_read` |
 | Idle, per read or write, and between requests | 60 s | `idle` |
-| One exchange, from the first request byte | 300 s | `total` |
+| One exchange, from the first request byte; also cuts long downloads, server-sent event streams and long polls | 300 s | `total` |
 | Client TLS handshake | 15 s | `tls_handshake` |
 | Wait for the ClientHello after the 200 | 5 s | `SNI_PEEK_TIMEOUT` (`mitm.rs`) |
 | Idle on an opaque tunnel | off | `tunnel_idle` |

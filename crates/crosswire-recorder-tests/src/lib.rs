@@ -1,9 +1,11 @@
 //! Integration tests spanning the Crosswire recorder crates, and the
-//! reference recipe for recording one exchange.
+//! reference client-side recording recipe.
 //!
-//! [`record_exchange`] is what the proxy relay copies: send a request over a
-//! [`Session`], read the response, and hand an [`Exchange`] built from the
-//! exact bytes written and read to an [`ExchangeSink`].
+//! [`record_exchange`] is how a client-side tool (the repeater) records what
+//! it sends: send a request over a [`Session`], read the response, and hand
+//! an [`Exchange`] built from the exact bytes written and read to an
+//! [`ExchangeSink`]. The proxy does not use it: its relay has its own
+//! capture, capture cap and in-flight budget (`crosswire-proxy`, ADR-0003).
 
 use std::sync::Arc;
 use std::time::Instant;

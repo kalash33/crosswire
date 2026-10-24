@@ -169,4 +169,7 @@ construction.
   (it needs scope, alpha.2); rejections are counted and one `Error` marker is
   written per window. `inline_memory` is a field of `ProxyLimits` but is not
   consulted yet. `total` (300 s) bounds a whole exchange, so a download longer
-  than that is cut with a `timeout: total` marker.
+  than that is cut with a `timeout: total` marker, and so is any long-lived
+  response that is still HTTP: a server-sent event stream or a long poll is
+  cut at 300 s the same way (a WebSocket is a tunnel and only has the tunnel
+  idle limit).

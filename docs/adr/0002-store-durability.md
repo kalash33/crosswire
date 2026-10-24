@@ -140,8 +140,12 @@ thread has not synced yet). The price is the second limitation below.
 - Memory is bounded: 64 MiB of queued exchanges and 10,000 events per subscriber.
   Disk is bounded: 1 GiB of journal. When both are full, recording stops with a
   gap marker and the proxy keeps relaying.
-- Every loss is a row a reader can find (`markers`, `Event::Marker`), and the gap
-  window is by ULID time, which is what the kill -9 test asserts.
+- Every lost exchange is covered by a row a reader can find (`markers`,
+  `Event::Marker`), and the gap window is by ULID time, which is what the kill -9
+  test asserts. Markers themselves are not journalled: they live in memory until
+  their batch commits, so one raised just before a crash, or refused with
+  `Full` while the queue is full, is lost without a trace (see
+  [format.md](../format.md)).
 - The durability promise is tested for process death only. The power-loss bound
   follows from SQLite's WAL semantics and the order of fsyncs above; no test pulls
   the power, and none could be run in CI.

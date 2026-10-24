@@ -37,7 +37,7 @@ The design is written up in full in [the spec](docs/superpowers/specs/2026-10-22
 
 ## Roadmap (short form)
 
-- **alpha.1 — headless recorder** (built, except the dated items in the spec): the HTTP/1 library (`crosswire-h1`), the exchange schema (`crosswire-model`), the local CA (`crosswire-ca`), the upstream client (`crosswire-client`), the crash-safe project store (`crosswire-store`), the MITM proxy (`crosswire-proxy`) and the `crosswire` binary (`crosswire-server`) that records a browser session to a project directory. What stays deferred inside v0.1.0 is listed in spec section 17.
+- **alpha.1 — headless recorder** (built, except the items deferred in spec §17): the HTTP/1 library (`crosswire-h1`), the exchange schema (`crosswire-model`), the local CA (`crosswire-ca`), the upstream client (`crosswire-client`), the crash-safe project store (`crosswire-store`), the MITM proxy (`crosswire-proxy`) and the `crosswire` binary (`crosswire-server`) that records a browser session to a project directory. Changes are listed in [CHANGELOG.md](CHANGELOG.md).
 - **alpha.2 — the sidecar** (next): history view, repeater (assisted and raw modes), request intercept, scope (and with it auto-passthrough), browser launcher, REST API, web UI.
 - **beta → v0.1.0**: match-and-replace, decoder, tags/notes, docs site, release pipeline.
 - Later: intruder, HTTP/2, plugins, team mode, HTTP/3. Dates are in the spec §14.
@@ -72,7 +72,7 @@ Library crates, the proxy engine, the `crosswire` binary, one integration-test c
   [its README](crates/crosswire-server/README.md).
 - `crates/crosswire-recorder-tests`: integration tests across the recorder
   crates (fetch over TLS and record into a project) and the `record_exchange`
-  recipe the proxy will copy.
+  client-side recording recipe (the repeater's, not the proxy's).
 - `corpus/h1`: the golden fidelity corpus used by the h1 tests; see
   [corpus/h1/README.md](corpus/h1/README.md).
 
