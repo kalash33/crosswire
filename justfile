@@ -11,6 +11,11 @@ browser-test:
     cargo test --locked -p crosswire-proxy --test browser -- --ignored --nocapture
     cargo test --locked -p crosswire-server --test browser -- --ignored --nocapture
 
+# Real headless browser to https://example.com/ through a fresh serve; needs
+# network and a Chromium-based browser (CROSSWIRE_BROWSER or PATH).
+first-capture:
+    scripts/first-capture.sh
+
 serve *ARGS:
     cargo run --locked -p crosswire-server -- serve {{ARGS}}
 

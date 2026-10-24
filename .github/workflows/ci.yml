@@ -30,6 +30,9 @@ jobs:
       # Real headless Chrome through the proxy (the ubuntu image ships it).
       - run: just browser-test
         if: matrix.os == 'ubuntu-latest'
+      # Install-to-first-capture against the real internet, under 120 s.
+      - run: just first-capture
+        if: matrix.os == 'ubuntu-latest'
       - run: just features
       - run: just bench
       # Runs rustdoc with RUSTDOCFLAGS=-D warnings.
