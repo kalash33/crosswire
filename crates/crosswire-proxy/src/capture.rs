@@ -34,11 +34,15 @@ impl Budget {
     /// Takes `n` bytes of the budget, or `None` when that would exceed the
     /// limit. The bytes are given back when the [`Reservation`] drops.
     pub(crate) fn try_reserve(self: &Arc<Self>, n: u64) -> Option<Reservation> {
-        self.used
+        // Rust 1.99 deprecates `fetch_update` for `try_update`, which the
+        // workspace MSRV (1.88) does not have; same wrapper rule as the store.
+        #[allow(deprecated)]
+        let reserved = self
+            .used
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |used| {
                 used.checked_add(n).filter(|&total| total <= self.limit)
-            })
-            .ok()?;
+            });
+        reserved.ok()?;
         Some(Reservation {
             budget: Arc::clone(self),
             n,
