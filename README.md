@@ -1,14 +1,20 @@
 # Crosswire
 
-**An open-source web security testing platform in Rust. Byte-exact HTTP, crash-safe projects, no paid tier.**
+**The wire-exact web security proxy, in Rust. What you send is what goes on the wire; what you record is what came back, byte for byte.**
 
 [![CI](https://github.com/kalash33/crosswire/actions/workflows/ci.yml/badge.svg)](https://github.com/kalash33/crosswire/actions/workflows/ci.yml)
 [![License: Apache-2.0 OR MIT](https://img.shields.io/badge/license-Apache--2.0%20OR%20MIT-blue.svg)](#licence)
 [![MSRV 1.88](https://img.shields.io/badge/MSRV-1.88-orange.svg)](Cargo.toml)
 [![Status: alpha.1](https://img.shields.io/badge/status-0.1.0--alpha.1-yellow.svg)](CHANGELOG.md)
 
-Crosswire is being built as the open alternative to Burp Suite and Caido for
-authorised web application testing. It is a pure community project: no company
+Crosswire is an open-source web application security testing platform for
+authorised testing. Every other open proxy is built on a normalising HTTP
+stack, so the bytes a tester sends and sees are not always the bytes on the
+wire. Crosswire is built on a byte-exact one, which makes two things possible
+that the others cannot do: fidelity-sensitive testing where malformed and
+ambiguous HTTP matters, and **evidence-grade captures** that are hashed,
+crash-safe and verifiable. The daily workflow (history, repeater, intercept,
+scope) is built underneath that. It is a pure community project: no company
 behind it, nothing gated, free self-hosted team mode when it ships.
 
 > **Status: 0.1.0-alpha.1, a headless recorder.** The `crosswire` binary runs an
@@ -29,6 +35,23 @@ always what went on the wire. Crosswire is built around one rule:
   a crash; every loss is bracketed by a gap marker. Verified by a kill -9 test.
 - **Memory stays bounded** under hostile servers and pages: every limit has a
   default, an action and an observable.
+
+## How it compares
+
+Checked against GitHub on 2026-10-24; the fuller version is in the spec §2.
+
+| Tool | What it is | Why Crosswire exists beside it |
+|---|---|---|
+| ZAP by Checkmarx | The established free scanner and proxy (Java) | Scanner-first; its proxy normalises HTTP |
+| OpenTRAP | New Burp-style UI on the ZAP engine (Java, AGPL) | Same normalising proxy underneath |
+| mitmproxy | The developer's interception tool (Python) | No tester workflow; not byte-exact |
+| proxelar | Rust traffic workbench on hyper | hyper rewrites framing; no diagnostics |
+| Burp Suite, Caido | The commercial workbenches | Closed source; Crosswire is the open sidecar beside them |
+
+None of these records diagnostics with byte spans, none sends a deliberately
+malformed message unchanged, and none makes a crash-safety or bounded-memory
+promise. A measured comparison, the fidelity corpus run through each tool, is a
+planned deliverable before the first public release.
 
 ## Quick start
 

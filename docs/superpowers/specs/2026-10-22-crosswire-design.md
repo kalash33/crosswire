@@ -26,6 +26,19 @@ Checked 2026-10-22:
 - **Caido:** closed-source, Rust, $200/year; about 36k new users in 2025 (caido.io 2025 review); free tier 2 projects / 3 plugins; team mode paid; outbound HTTP/2 incomplete (github.com/caido/caido/issues/439, open since 2023); scanner is a community plugin; 29 plugins added in 2025.
 - **ZAP:** Java; Checkmarx hired its three leads in 2024. **Hetty:** 12.5k stars, last release 2022. **mitmproxy:** developer tool. **OpenTRAP:** announced 2026-10-19, Java on ZAP, unevaluated.
 
+**Competitive re-check, 2026-10-24 (GitHub API, not search blurbs):**
+
+| Project | Stars | Last push | Stack / licence | Assessment |
+|---|---|---|---|---|
+| ZAP by Checkmarx | 16,018 | 2026-10-23 | Java, Apache-2.0 | The incumbent free alternative; scanner-first; the proxy normalises. |
+| mitmproxy | 46,266 | 2026-10-23 | Python, MIT | Developer tool; no tester workflow (no repeater/intruder). |
+| OpenTRAP | 412 (five days old) | 2026-10-24 | Java on the ZAP engine, AGPL-3.0, Linux only | Burp-style UI with repeater, intruder, collaborator, ZAP scanner; 19 releases in five days. Inherits ZAP's normalising proxy. Will contest the "free Burp UI" niche at launch. |
+| proxelar | 1,084 | 2026-10-23 | Rust, hyper-based, MIT | Closest Rust project: a scriptable traffic workbench (capture modes, HAR/curl export). hyper rewrites framing. |
+| Hetty | 12,527 | 2026-07-21 | Go, MIT | No release since 0.7.0 (2022); dormant. |
+| Hugin | 1 | 2026-10-17 | Rust, binary-only, licence unasserted | Closed-source distribution with an open-looking repo; a feature-rich competitor, not an open alternative. |
+
+Finding: "a free alternative to Burp" is not ours to own — ZAP has been that for a decade and OpenTRAP now leads with the same line. What none of these does is the thing Crosswire is built from: all are hyper- or ZAP-based and so normalise HTTP, none records diagnostics with byte spans, none promises crash-safe projects or bounded memory. The §2.3 "one row per tool, filled by actually running each tool" measurement has not yet been run and must be published before any launch. Positioning follows this in §1: **the wire-exact proxy**, with evidence-grade captures, not "a free Burp".
+
 ### 2.1 Prior art for the wire layer
 
 | Project | What it does | Precise gap |
