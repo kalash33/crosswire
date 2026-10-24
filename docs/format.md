@@ -16,6 +16,7 @@ A project is a directory. Everything Crosswire records lives in it. This documen
   audit.jsonl         append-only audit log, mode 0600
   audit.jsonl.1       the previous audit generation (after rotation)
   browser-profile/    the launcher's browser profile (optional); excluded from exports
+  project.db.v1.bak   pre-migration copy of project.db (only after a 1 -> 2 upgrade; see Migrations)
 ```
 
 Directories are created 0700 and files 0600 on unix. Other platforms use the platform default.
@@ -32,7 +33,7 @@ reset-profile` deletes it.
 - `PRAGMA user_version = 2`. `0` means an uninitialised database (not a project). A value above 2 is refused as a newer format; a value of 1 is an older project, migrated up to 2 on open (see [Migrations](#migrations)).
 - `PRAGMA journal_mode = WAL`, `synchronous = NORMAL`, `checkpoint_fullfsync = ON` (checkpoint syncs use `F_FULLFSYNC` on macOS; no effect elsewhere), `busy_timeout = 5000` on the writer connection. `Store::open` also sets `journal_size_limit` to 1 MiB so the WAL file does not stay at its high-water size.
 - The project is opened with `SQLITE_DBCONFIG_DEFENSIVE` on and `trusted_schema = OFF`, so a hostile project file cannot run SQL functions from its schema or write to shadow tables.
-- One writer connection (the store's writer thread) and any number of read-only connections (`query_only = ON`, `busy_timeout = 5000`, `cache_size = -16384` (16 MiB), `mmap_size = 268435456` (256 MiB)). There is also at most one *control* connection per [`Control`](#control-tables) handle: a second write connection, hardened and configured like the writer's (WAL, `synchronous = NORMAL`, `busy_timeout = 5000`), used only for the small, rare writes to the `settings`, `tokens` and `drafts` tables and for patching an exchange's `tags`/`notes`. It never writes bodies or packs, so it never contends with the writer for long; the 5 s busy timeout lets it wait out a batch commit.
+- One writer connection (the store's writer thread) and any number of read-only connections (`query_only = ON`, `busy_timeout = 5000`, `cache_size = -16384` (16 MiB), `mmap_size = 268435456` (256 MiB)). There is also at most one *control* connection per [`Control`](#control-tables-0002_sidecarsql) handle: a second write connection, hardened and configured like the writer's (WAL, `synchronous = NORMAL`, `busy_timeout = 5000`), used only for the small, rare writes to the `settings`, `tokens` and `drafts` tables and for patching an exchange's `tags`/`notes`. It never writes bodies or packs, so it never contends with the writer for long; the 5 s busy timeout lets it wait out a batch commit.
 - Migrations are in `crates/crosswire-store/migrations/` and run in one transaction that also sets `user_version`.
 
 #### Migrations
@@ -40,7 +41,7 @@ reset-profile` deletes it.
 A fresh project is created at the current `user_version` with every migration applied in one transaction. An existing project at an older `user_version` is migrated up on open, one step per transaction (each step also advances `user_version`, so an interrupted upgrade leaves a consistent earlier version). Before the first upgrade step, the pre-migration database is copied to `project.db.v<n>.bak` in the project directory (a plain file copy taken under the project lock, after a `wal_checkpoint(TRUNCATE)` folds the WAL into the main file and the write connection is closed), so a mistaken or interrupted upgrade can be rolled back by hand. A symlinked `.bak` path is refused rather than followed. The `.bak` is an ordinary regular file and is not part of the live project: opening a project with one present succeeds and never re-snapshots an already-current project.
 
 - `0001_init.sql` → `user_version` 1: `exchanges`, `bodies`, `blobs`, `packs`, `markers`, `meta`.
-- `0002_sidecar.sql` → `user_version` 2: `settings`, `tokens`, `drafts` (additive; see [Control tables](#control-tables)).
+- `0002_sidecar.sql` → `user_version` 2: `settings`, `tokens`, `drafts` (additive; see [Control tables](#control-tables-0002_sidecarsql)).
 
 ### Tables (`0001_init.sql`)
 
@@ -126,6 +127,16 @@ These three tables hold the sidecar backend's control state. They are written on
 | `key` | TEXT PRIMARY KEY | setting name |
 | `value` | TEXT NOT NULL | setting value (opaque to the store) |
 | `updated_at` | INTEGER NOT NULL | last write, unix milliseconds |
+
+The keys `crosswire serve` and the API use today:
+
+| key | value |
+|---|---|
+| `scope` | the scope document as JSON (`include` and `exclude` rule lists, see the [`crosswire-scope` README](../crates/crosswire-scope/README.md)), written by `PUT /api/v1/scope` and loaded when `serve` opens the project; an unparseable value is ignored with a warning and the scope starts empty |
+| `enforce_scope_strictly` | `true` or `false`, written by `PUT /api/v1/settings/enforce_scope_strictly`; `serve` enforces strictly when it is `true` or `--enforce-scope-strictly` is given |
+| `proxy_bind` | the proxy's bound address, recorded by `serve` at startup so `crosswire browser` can find it |
+
+Intercept rules and the intercept on/off state are not stored; intercept starts disabled with default rules on every run.
 
 `tokens` (`WITHOUT ROWID`), API tokens:
 

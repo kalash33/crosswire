@@ -47,12 +47,20 @@ The exact action strings the code emits, each produced once by
 `repeater.send.out_of_scope`, `allow.add`, `cert.override.config`,
 `browser.profile_reset`, `listener.bind`, `listener.stop`, `ca.generate`.
 
+`PUT /api/v1/settings/enforce_scope_strictly` also writes an audit row (action
+`enforce_scope_strictly`, result `enabled` or `disabled`). It is not in the list
+above, so `audit_completeness` does not assert it.
+
 ## Notes
 
 - The `idle-egress` gate reads a connect counter and a DNS counter added to
   `crosswire_client::Transport` (`connect_count()`, `dns_count()`); they only
   advance when the transport actually dials or resolves, so an idle run leaves
   them at zero.
+- The `idle-egress` gate is scoped to the in-process repeater `Transport`, the
+  single primitive every upstream dial and DNS lookup goes through. The test
+  builds the API over that transport and watches its counters; it does not run
+  the full `crosswire serve` binary. The test idles for about 10 seconds.
 - The route-auth, cookie-isolation and host-421 gates walk the committed
   OpenAPI document (`crosswire_api::document()`), so a new route cannot escape
   the walk without also appearing in the document the snapshot test guards.

@@ -156,11 +156,12 @@ construction.
 - **Truncation is visible.** A cut-off body records `truncated_at`, a dropped one
   `capture_dropped`, and both keep the full length and hash in `relay`.
   `resp_len` in the store is the relay length when it is present.
-- **Intercept is additive.** `Decision` has `Forward` and `Drop` today and is
-  `#[non_exhaustive]`. Holding a message for editing (`Hold`, `Modify`) arrives
-  with intercept in alpha.2 as new variants. The handler methods are
-  synchronous and called inline today, so a hold will need the relay to await a
-  decision; that is design work for alpha.2, not something this ADR settles.
+- **Intercept is additive.** `Decision` is `#[non_exhaustive]`. It had `Forward`
+  and `Drop` when this ADR was written; request intercept (alpha.2) added
+  `Modify` and `Respond504`, and `Handler::on_request` is now asynchronous so the
+  relay can await a held request's decision. The relay's byte pump is unchanged:
+  a held request is buffered up to `intercept_hold`, and a larger or streamed
+  body passes through unedited. See the `crosswire-proxy` README.
 - **The relay is serial per connection.** One exchange is in flight at a time
   per client connection, and pipelined requests are queued in the pump up to
   `max_pipelined` (16), beyond which the connection is closed with a

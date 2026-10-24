@@ -61,9 +61,9 @@ The `crosswire` binary that wires this crate to the store is
   whole requests); it takes the gate, DNS, TCP and TLS from `Transport` only.
 - Does **not** do HTTP/2 (the leaf's ALPN offers only `http/1.1`, so browsers
   fall back), HTTP/3, proxy chaining, upstream proxies or SOCKS.
-- Does **not** do automatic passthrough after handshake rejections. That needs
-  scope evaluation (alpha.2), so in alpha.1 rejections are counted and one
-  `Error` marker is written per window; the host stays intercepted. Manual
+- Does **not** do automatic passthrough after handshake rejections. Scope
+  evaluation exists now, but the switch is not wired: rejections are counted and
+  one `Error` marker is written per window; the host stays intercepted. Manual
   passthrough works.
 - Does **not** stream bodies to a pack-writer; bodies go inline through the
   store's queue (ADR-0003).

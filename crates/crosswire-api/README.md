@@ -6,8 +6,10 @@ checks scoped API tokens, isolates cookies by port and `Origin`, and
 authenticates the WebSocket.
 
 This crate builds the [`axum`] router over an [`AppState`]; the server that
-binds the loopback listener and delivers the bootstrap token lives in a
-separate task (`crosswire serve`).
+binds the loopback listener and delivers the bootstrap token is
+`crosswire serve` in `crosswire-server`. How to call the API is in
+[docs/api.md](https://github.com/kalash33/crosswire/blob/main/docs/api.md) and the credential design is in
+[ADR-0004](https://github.com/kalash33/crosswire/blob/main/docs/adr/0004-api-credentials.md).
 
 ## Entry points
 

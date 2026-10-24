@@ -9,12 +9,14 @@
 //! [`router`] (the [`axum::Router`] over that state), [`bootstrap_token`]
 //! (mint the single-use bootstrap token the server delivers out of band), and
 //! [`ApiConfig`] (the listener address and credential lifetimes). The server
-//! that binds the loopback listener and delivers the token lives in Task 7.
+//! that binds the loopback listener and delivers the token is `crosswire
+//! serve` in the `crosswire-server` crate.
 //!
 //! # Security model (spec §11.2)
 //!
-//! - The only unauthenticated routes are `GET /ca.der`, `GET /ca.pem`,
-//!   `POST /session`, `GET /openapi.json` and `GET /health`.
+//! - The only unauthenticated routes are `GET /api/v1/ca.der`,
+//!   `GET /api/v1/ca.pem`, `POST /api/v1/session`, `GET /api/v1/openapi.json`
+//!   and `GET /api/v1/health`.
 //! - Every other route needs a session cookie (`cw_sid_<port>`, `HttpOnly`,
 //!   `SameSite=Strict`, `Path=/api`) or an `Authorization: Bearer` API token.
 //! - A cookie-authenticated request must carry `Sec-Fetch-Site: same-origin`

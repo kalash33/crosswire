@@ -5,9 +5,11 @@ in a project's testing scope. Part of
 [Crosswire](https://github.com/kalash33/crosswire/blob/main/README.md), an
 open-source Rust web security testing platform.
 
-This crate depends on `crosswire-core` only. It returns its own
+This crate has no dependencies on other Crosswire crates. It returns its own
 [`PairVerdict`] for the two-identity case; the proxy and tools crates map that
-to the model's `ScopeState`.
+to the model's `ScopeState`. A `Scope` serialises to JSON (`include` and
+`exclude` lists of rules), which is the document the API's `PUT /api/v1/scope`
+accepts and the server stores in the project's `scope` setting.
 
 ## Model
 
