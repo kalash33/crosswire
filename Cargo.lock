@@ -467,7 +467,10 @@ version = "0.0.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
+ "bytes",
  "crosswire-ca",
+ "crosswire-client",
+ "crosswire-h1",
  "crosswire-model",
  "crosswire-proxy",
  "crosswire-scope",
@@ -479,6 +482,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "subtle",
+ "tempfile",
  "thiserror",
  "tokio",
  "tower-http",

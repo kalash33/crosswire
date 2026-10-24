@@ -1,0 +1,1079 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Crosswire API",
+    "description": "REST and WebSocket API for the Crosswire sidecar backend.",
+    "version": "1"
+  },
+  "paths": {
+    "/api/v1/ca.der": {
+      "get": {
+        "summary": "The CA certificate in DER form.",
+        "operationId": "ca_der",
+        "responses": {
+          "200": {
+            "description": "The CA certificate, DER",
+            "content": {
+              "application/pkix-cert": {}
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/ca.pem": {
+      "get": {
+        "summary": "The CA certificate in PEM form.",
+        "operationId": "ca_pem",
+        "responses": {
+          "200": {
+            "description": "The CA certificate, PEM",
+            "content": {
+              "application/x-pem-file": {}
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/counts": {
+      "get": {
+        "summary": "Project totals.",
+        "operationId": "get_counts",
+        "responses": {
+          "200": {
+            "description": "Project totals",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CountsDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/events": {
+      "get": {
+        "summary": "Opens the event stream, authenticating before the upgrade when a cookie or\nbearer header is present, else deferring to the first frame.",
+        "operationId": "events_ws",
+        "parameters": [
+          {
+            "name": "after",
+            "in": "query",
+            "description": "Resync from this event sequence",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "101": {
+            "description": "WebSocket upgrade"
+          },
+          "401": {
+            "description": "Authentication failed"
+          },
+          "403": {
+            "description": "Origin check failed or scope insufficient"
+          }
+        }
+      }
+    },
+    "/api/v1/exchanges": {
+      "get": {
+        "summary": "Lists recorded exchanges, newest first, with keyset paging and filters.",
+        "operationId": "list_exchanges",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Maximum rows (1..=1000)",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "description": "Keyset cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "method",
+            "in": "query",
+            "description": "Exact request method",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "host",
+            "in": "query",
+            "description": "Exact request host",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "host_contains",
+            "in": "query",
+            "description": "Host substring",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "status_min",
+            "in": "query",
+            "description": "Status lower bound",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "status_max",
+            "in": "query",
+            "description": "Status upper bound",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "namespace",
+            "in": "query",
+            "description": "Namespace",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "description": "Recording state",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "scope_state",
+            "in": "query",
+            "description": "Scope classification",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "tag",
+            "in": "query",
+            "description": "Required tag",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A page of exchange rows"
+          }
+        }
+      }
+    },
+    "/api/v1/exchanges/{id}": {
+      "get": {
+        "summary": "Fetches one exchange with its bodies rehydrated.",
+        "operationId": "get_exchange",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The exchange"
+          },
+          "404": {
+            "description": "No such exchange"
+          }
+        }
+      },
+      "patch": {
+        "summary": "Replaces an exchange's tags and/or notes.",
+        "operationId": "patch_exchange",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PatchBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Patched"
+          },
+          "404": {
+            "description": "No such exchange"
+          }
+        }
+      }
+    },
+    "/api/v1/exchanges/{id}/body/{side}": {
+      "get": {
+        "summary": "Returns one body side as raw bytes, with its length and truncation\nmarker in headers.",
+        "operationId": "get_body",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "side",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The body bytes",
+            "content": {
+              "application/octet-stream": {}
+            }
+          },
+          "404": {
+            "description": "No such body"
+          }
+        }
+      }
+    },
+    "/api/v1/health": {
+      "get": {
+        "summary": "Liveness probe.",
+        "operationId": "health",
+        "responses": {
+          "200": {
+            "description": "The API is serving",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/intercept": {
+      "get": {
+        "summary": "The current intercept status.",
+        "operationId": "get_intercept",
+        "responses": {
+          "200": {
+            "description": "Intercept status"
+          }
+        }
+      }
+    },
+    "/api/v1/intercept/enabled": {
+      "put": {
+        "summary": "Turns intercept on or off.",
+        "operationId": "put_enabled",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EnabledBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Intercept toggled"
+          }
+        }
+      }
+    },
+    "/api/v1/intercept/forward-all": {
+      "post": {
+        "summary": "Forwards every held request unchanged.",
+        "operationId": "forward_all",
+        "responses": {
+          "200": {
+            "description": "All forwarded"
+          }
+        }
+      }
+    },
+    "/api/v1/intercept/held/{id}/drop": {
+      "post": {
+        "summary": "Drops a held request, closing its client connection.",
+        "operationId": "drop_held",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Dropped"
+          },
+          "404": {
+            "description": "Not held"
+          }
+        }
+      }
+    },
+    "/api/v1/intercept/held/{id}/forward": {
+      "post": {
+        "summary": "Forwards a held request, unchanged or with edited bytes.",
+        "operationId": "forward_held",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ForwardBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Forwarded"
+          },
+          "404": {
+            "description": "Not held"
+          },
+          "409": {
+            "description": "Not editable"
+          },
+          "422": {
+            "description": "Edited bytes do not parse"
+          }
+        }
+      }
+    },
+    "/api/v1/intercept/rules": {
+      "put": {
+        "summary": "Replaces the intercept rules.",
+        "operationId": "put_rules",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RulesDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Rules replaced"
+          },
+          "400": {
+            "description": "Unknown rule spelling"
+          }
+        }
+      }
+    },
+    "/api/v1/markers": {
+      "get": {
+        "summary": "Lists markers, newest first.",
+        "operationId": "list_markers",
+        "parameters": [
+          {
+            "name": "after",
+            "in": "query",
+            "description": "Keyset cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Maximum rows (1..=1000)",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A page of markers"
+          }
+        }
+      }
+    },
+    "/api/v1/openapi.json": {
+      "get": {
+        "summary": "The OpenAPI document for the API.",
+        "operationId": "openapi_json",
+        "responses": {
+          "200": {
+            "description": "The OpenAPI document"
+          }
+        }
+      }
+    },
+    "/api/v1/repeater/send": {
+      "post": {
+        "summary": "Sends a request through the repeater and records it.",
+        "operationId": "send_request",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SendBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The send outcome"
+          },
+          "403": {
+            "description": "Out of scope"
+          },
+          "422": {
+            "description": "The request could not be parsed"
+          },
+          "502": {
+            "description": "The upstream exchange failed"
+          }
+        }
+      }
+    },
+    "/api/v1/repeater/tabs": {
+      "get": {
+        "summary": "Lists all saved repeater drafts.",
+        "operationId": "list_tabs",
+        "responses": {
+          "200": {
+            "description": "The saved drafts"
+          }
+        }
+      }
+    },
+    "/api/v1/repeater/tabs/{id}": {
+      "get": {
+        "summary": "Fetches one tab's saved draft.",
+        "operationId": "get_tab",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The draft"
+          },
+          "404": {
+            "description": "No such draft"
+          }
+        }
+      },
+      "put": {
+        "summary": "Saves (or overwrites) a tab's draft (at most 1 MiB).",
+        "operationId": "put_tab",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {}
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Saved"
+          },
+          "413": {
+            "description": "The draft exceeds 1 MiB"
+          }
+        }
+      },
+      "delete": {
+        "summary": "Deletes a tab's draft.",
+        "operationId": "delete_tab",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Deleted"
+          },
+          "404": {
+            "description": "No such draft"
+          }
+        }
+      }
+    },
+    "/api/v1/scope": {
+      "get": {
+        "summary": "Returns the current scope source document.",
+        "operationId": "get_scope",
+        "responses": {
+          "200": {
+            "description": "The scope document"
+          }
+        }
+      },
+      "put": {
+        "summary": "Replaces the scope. The new scope is compiled before anything is stored;\na compile error leaves the live scope untouched.",
+        "operationId": "put_scope",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {}
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The scope was replaced"
+          },
+          "422": {
+            "description": "The scope did not compile"
+          }
+        }
+      }
+    },
+    "/api/v1/scope/import": {
+      "post": {
+        "summary": "Parses a pasted scope list into a scope document, without saving it.",
+        "operationId": "import_scope",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImportBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The parsed scope"
+          },
+          "422": {
+            "description": "The list could not be parsed"
+          }
+        }
+      }
+    },
+    "/api/v1/session": {
+      "post": {
+        "summary": "Exchanges the single-use bootstrap token for an operator session cookie.",
+        "operationId": "create_session",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "A session was created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The bootstrap token was wrong, expired or reused"
+          },
+          "429": {
+            "description": "Too many bootstrap failures"
+          }
+        }
+      }
+    },
+    "/api/v1/settings/enforce_scope_strictly": {
+      "put": {
+        "summary": "Turns strict scope enforcement on or off.",
+        "operationId": "set_enforce_strict",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EnabledBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The setting was changed"
+          }
+        }
+      }
+    },
+    "/api/v1/tokens": {
+      "get": {
+        "summary": "Lists all tokens (metadata only).",
+        "operationId": "list_tokens",
+        "responses": {
+          "200": {
+            "description": "Token metadata"
+          }
+        }
+      },
+      "post": {
+        "summary": "Mints a token, returning its secret exactly once.",
+        "operationId": "create_token",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The token and its one-time secret"
+          },
+          "400": {
+            "description": "An unknown scope was requested"
+          }
+        }
+      }
+    },
+    "/api/v1/tokens/{id}": {
+      "delete": {
+        "summary": "Revokes a token.",
+        "operationId": "revoke_token",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Revoked"
+          },
+          "404": {
+            "description": "No such active token"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "CountsDto": {
+        "type": "object",
+        "description": "Project totals.",
+        "required": [
+          "exchanges",
+          "committed",
+          "error",
+          "markers",
+          "bytes_inline",
+          "bytes_packs",
+          "history",
+          "repeater",
+          "intruder"
+        ],
+        "properties": {
+          "bytes_inline": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Bytes stored inline.",
+            "minimum": 0
+          },
+          "bytes_packs": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Bytes stored in packs.",
+            "minimum": 0
+          },
+          "committed": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Exchanges committed.",
+            "minimum": 0
+          },
+          "error": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Exchanges in error.",
+            "minimum": 0
+          },
+          "exchanges": {
+            "type": "integer",
+            "format": "int64",
+            "description": "All exchanges.",
+            "minimum": 0
+          },
+          "history": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Proxy-history exchanges.",
+            "minimum": 0
+          },
+          "intruder": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Intruder exchanges.",
+            "minimum": 0
+          },
+          "markers": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Markers.",
+            "minimum": 0
+          },
+          "repeater": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Repeater exchanges.",
+            "minimum": 0
+          }
+        }
+      },
+      "CreateBody": {
+        "type": "object",
+        "description": "The `POST /tokens` body.",
+        "required": [
+          "name",
+          "scopes"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "A human label."
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The scopes to grant (`read`, `send`, `admin`)."
+          }
+        }
+      },
+      "EnabledBody": {
+        "type": "object",
+        "description": "The `PUT /intercept/enabled` body.",
+        "required": [
+          "enabled"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "Whether intercept is on."
+          }
+        }
+      },
+      "ForwardBody": {
+        "type": "object",
+        "description": "The `POST /intercept/held/{id}/forward` body.",
+        "properties": {
+          "body": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A replacement request body, base64 (standard)."
+          },
+          "head": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A replacement request head, base64 (standard)."
+          }
+        }
+      },
+      "HealthResponse": {
+        "type": "object",
+        "description": "The health response body.",
+        "required": [
+          "status"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "description": "Always `\"ok\"` while the API is serving."
+          }
+        }
+      },
+      "ImportBody": {
+        "type": "object",
+        "description": "The `POST /scope/import` body.",
+        "required": [
+          "text"
+        ],
+        "properties": {
+          "text": {
+            "type": "string",
+            "description": "A pasted scope list (bare hosts, wildcards, URLs, CIDR blocks)."
+          }
+        }
+      },
+      "PatchBody": {
+        "type": "object",
+        "description": "The `PATCH /exchanges/{id}` body.",
+        "properties": {
+          "notes": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Replacement notes."
+          },
+          "tags": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Replacement tags."
+          }
+        }
+      },
+      "RulesDto": {
+        "type": "object",
+        "description": "The intercept rules, over the wire.",
+        "required": [
+          "skip_extensions",
+          "skip_out_of_scope",
+          "overflow",
+          "on_timeout"
+        ],
+        "properties": {
+          "on_timeout": {
+            "type": "string",
+            "description": "`forward` or `respond-504` on a hold timeout."
+          },
+          "overflow": {
+            "type": "string",
+            "description": "`forward-newest` or `forward-oldest` on a full queue."
+          },
+          "skip_extensions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Path extensions never held (without the dot)."
+          },
+          "skip_out_of_scope": {
+            "type": "boolean",
+            "description": "Skip out-of-scope requests."
+          }
+        }
+      },
+      "SendBody": {
+        "type": "object",
+        "description": "The `POST /repeater/send` body (the `SendRequest` fields except `tab`).",
+        "required": [
+          "host",
+          "port",
+          "raw"
+        ],
+        "properties": {
+          "allow_out_of_scope": {
+            "type": "boolean",
+            "description": "Allow an out-of-scope send when strict mode is off."
+          },
+          "follow": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`off` (default), `in-scope` or `always`."
+          },
+          "host": {
+            "type": "string",
+            "description": "The host to dial."
+          },
+          "mode": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`assisted` or `raw` (default `raw`)."
+          },
+          "port": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The port to dial.",
+            "minimum": 0
+          },
+          "raw": {
+            "type": "string",
+            "description": "The raw request bytes, base64 (standard)."
+          },
+          "reuse": {
+            "type": "boolean",
+            "description": "Reuse a kept-alive connection."
+          },
+          "sni": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The SNI to send (defaults to `host`)."
+          },
+          "source": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A prior exchange this send derives from."
+          },
+          "tls": {
+            "type": "boolean",
+            "description": "Connect over TLS."
+          },
+          "verify": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`web-pki` (default) or `accept-invalid`."
+          }
+        }
+      },
+      "SessionRequest": {
+        "type": "object",
+        "description": "The bootstrap request body.",
+        "required": [
+          "bootstrap"
+        ],
+        "properties": {
+          "bootstrap": {
+            "type": "string",
+            "description": "The single-use bootstrap token."
+          }
+        }
+      },
+      "SessionResponse": {
+        "type": "object",
+        "description": "The bootstrap response body.",
+        "required": [
+          "expires_in"
+        ],
+        "properties": {
+          "expires_in": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Seconds until the session expires if idle.",
+            "minimum": 0
+          }
+        }
+      }
+    }
+  }
+}

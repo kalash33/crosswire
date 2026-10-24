@@ -18,6 +18,11 @@ crosswire-scope = { path = "../crosswire-scope", version = "0.0.0" }
 crosswire-proxy = { path = "../crosswire-proxy", version = "0.0.0" }
 crosswire-tools = { path = "../crosswire-tools", version = "0.0.0" }
 crosswire-ca = { path = "../crosswire-ca", version = "0.0.0" }
+# Needed to construct a `SendRequest` for `POST /repeater/send`: its `raw`
+# field is `bytes::Bytes` and its `verify` field is `crosswire_client::VerifyMode`.
+# The scaffolded manifest omitted both; `publish = false` keeps this allowed.
+crosswire-client = { path = "../crosswire-client", version = "0.0.0" }
+bytes = { version = "1", default-features = false, features = ["std"] }
 axum = { workspace = true }
 tower-http = { workspace = true }
 utoipa = { workspace = true }
@@ -33,3 +38,7 @@ ulid = { workspace = true }
 http = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+crosswire-h1 = { path = "../crosswire-h1", version = "0.0.0" }
