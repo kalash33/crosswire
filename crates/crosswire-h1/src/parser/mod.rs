@@ -5,7 +5,7 @@ mod framing;
 mod head;
 
 pub(crate) use diag::Diagnostics;
-pub(crate) use head::{find_line_end, parse_status, split_header};
+pub(crate) use head::{find_line_end, is_leading_ws, parse_status, split_header};
 
 use bytes::BytesMut;
 

@@ -107,6 +107,49 @@ if !done {
 assert_eq!(body, b"hello");
 ```
 
+## Editing
+
+`apply_edits(&msg, &edits, &cfg, ctx, reason)` is the one way to change a
+message. Each `Edit { span, replacement }` addresses `head ++ body` (an edit
+past the head needs an inline body); edits are sorted by start and must not
+overlap. The new bytes are parsed again with `cfg` (and, for a response, the
+`ResponseContext` of the request it answers; `None` means an ordinary
+request), so the edited `RawMessage` comes from `Progress::Head` like any
+other and its spans index its own head. The result, `Edited`, carries the
+message, one `Change` per edit with its span in the **new** bytes, and the
+diagnostics the edit introduced. Refusals are `EditError::{Overlap,
+OutOfRange, BodyNotInline, Reparse}`.
+
+Two helpers build common edits: `content_length_edit` sets `Content-Length`
+to the inline body's length (inserting the header if it is missing, and
+returning `None` when `Transfer-Encoding` is present or nothing changes), and
+`crlf_edits` turns bare LF line endings in the head into CRLF.
+
+```rust
+use bytes::Bytes;
+use crosswire_core::ChangeReason;
+use crosswire_h1::{apply_edits, content_length_edit, Edit, Parser, ParserConfig, Progress};
+
+let cfg = ParserConfig::default();
+let raw = b"POST /api HTTP/1.1\r\nHost: example.com\r\nContent-Length: 2\r\n\r\n";
+let Progress::Head(msg) = Parser::request(&cfg).feed(raw).unwrap().event else { panic!() };
+let msg = msg.with_inline_body(Bytes::from_static(b"{}"));
+
+// Rewrite the body, then fix the length in a second pass.
+let body_at = msg.bytes().len() as u32;
+let body = Edit {
+    span: crosswire_core::Span::new(body_at, body_at + 2),
+    replacement: Bytes::from_static(b"{\"admin\":true}"),
+};
+let step = apply_edits(&msg, &[body], &cfg, None, ChangeReason::InterceptEdit).unwrap();
+let fix = content_length_edit(&step.message).unwrap();
+let done = apply_edits(&step.message, &[fix], &cfg, None, ChangeReason::ContentLength).unwrap();
+let out = &done.message;
+let len = out.head().header(out.bytes(), "content-length").unwrap();
+assert_eq!(&out.bytes()[len.range()], b"14");
+assert_eq!(out.body().unwrap().as_ref(), b"{\"admin\":true}");
+```
+
 ## Features
 
 | feature | default | effect |

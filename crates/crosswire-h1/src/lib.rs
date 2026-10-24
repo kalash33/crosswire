@@ -7,6 +7,7 @@ mod chunked;
 #[cfg(feature = "http")]
 mod compat_http;
 mod config;
+mod edit;
 mod error;
 mod limits;
 mod message;
@@ -18,6 +19,7 @@ pub use chunked::{BodyDecoder, BodyEvent};
 #[cfg(feature = "http")]
 pub use compat_http::HttpConvertError;
 pub use config::{ParserConfig, ParserConfigBuilder};
+pub use edit::{apply_edits, content_length_edit, crlf_edits, Edit, EditError, Edited};
 pub use error::ParseError;
 pub use limits::{ParseLimits, ParseLimitsBuilder};
 pub use message::{
