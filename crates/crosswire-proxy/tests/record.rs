@@ -5,14 +5,16 @@ mod common;
 
 use std::net::IpAddr;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use common::relay::wait_for;
 use common::upstream::spawn_raw;
 use common::{connect_raw, loopback_config, read_until, ProxyHarness, UpstreamWiring};
 use crosswire_core::DiagnosticCode;
-use crosswire_model::{Body, Capture, Exchange, ExchangeSink, ExchangeState, Marker, SinkError};
+use crosswire_model::{
+    Body, Capture, Exchange, ExchangeSink, ExchangeState, Marker, MarkerKind, SinkError,
+};
 use crosswire_proxy::ProxyLimits;
 use crosswire_store::{BodySide, EventStream, ExchangeFilter, Project, Store, StoreConfig};
 use sha2::{Digest, Sha256};
@@ -534,4 +536,100 @@ async fn closed_sink_is_not_counted_as_full() {
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert_eq!(h.counters.sink_full.load(Ordering::Relaxed), 0);
     h.shutdown.shutdown().await;
+}
+
+/// A sink whose `submit` blocks (like a store fsyncing a journal on a slow
+/// disk) until released; markers never block.
+#[derive(Default)]
+struct SlowSink {
+    open: Mutex<bool>,
+    opened: Condvar,
+    exchanges: AtomicUsize,
+    markers: Mutex<Vec<Marker>>,
+}
+
+impl SlowSink {
+    fn release(&self) {
+        *self.open.lock().unwrap() = true;
+        self.opened.notify_all();
+    }
+}
+
+impl ExchangeSink for SlowSink {
+    fn submit(&self, _: Exchange) -> Result<(), SinkError> {
+        let mut open = self.open.lock().unwrap();
+        while !*open {
+            open = self.opened.wait(open).unwrap();
+        }
+        self.exchanges.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+
+    fn submit_marker(&self, marker: Marker) -> Result<(), SinkError> {
+        self.markers.lock().unwrap().push(marker);
+        Ok(())
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn blocked_sink_never_stalls_relays_or_connects() {
+    // More exchanges than the recorder queue (1,024) holds.
+    const CONNS: usize = 12;
+    const PER_CONN: usize = 100;
+    const TOTAL: usize = CONNS * PER_CONN;
+    let resp = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok".to_vec();
+    let up = spawn_raw(vec![resp.clone(); TOTAL + 1], None).await;
+    let sink = Arc::new(SlowSink::default());
+    let h = proxy(
+        Arc::clone(&sink) as Arc<dyn ExchangeSink>,
+        ProxyLimits::default(),
+        up.port(),
+    )
+    .await;
+    let port = up.port();
+    let mut clients = Vec::new();
+    for _ in 0..CONNS {
+        let (addr, resp) = (h.addr, resp.clone());
+        clients.push(tokio::spawn(async move {
+            let mut c = connect_raw(addr).await;
+            for i in 0..PER_CONN {
+                let req = format!("GET http://u.test:{port}/{i} HTTP/1.1\r\n\r\n");
+                c.write_all(req.as_bytes()).await.unwrap();
+                assert_eq!(read_exact_n(&mut c, resp.len()).await, resp);
+            }
+        }));
+    }
+    tokio::time::timeout(Duration::from_secs(60), async {
+        for c in clients {
+            c.await.unwrap();
+        }
+    })
+    .await
+    .expect("relays stalled behind a blocked sink");
+    // A new connection after the queue overflowed is served too.
+    let mut c = connect_raw(h.addr).await;
+    let req = format!("GET http://u.test:{port}/late HTTP/1.1\r\n\r\n");
+    c.write_all(req.as_bytes()).await.unwrap();
+    assert_eq!(read_exact_n(&mut c, resp.len()).await, resp);
+    drop(c);
+
+    let full = h.counters.sink_full.load(Ordering::SeqCst) as usize;
+    assert!(full > 0, "the queue overflowed");
+    wait_for("a gap marker per dropped exchange", || {
+        sink.markers.lock().unwrap().len() == full
+    })
+    .await;
+    assert!(sink
+        .markers
+        .lock()
+        .unwrap()
+        .iter()
+        .all(|m| m.kind() == MarkerKind::Gap
+            && m.from_ulid().is_some()
+            && m.from_ulid() == m.to_ulid()));
+    sink.release();
+    h.shutdown.shutdown().await;
+    // Shutdown waited for the recorder: every queued exchange reached the
+    // sink, and every other one is accounted for by a gap marker.
+    assert_eq!(sink.exchanges.load(Ordering::SeqCst) + full, TOTAL + 1);
 }

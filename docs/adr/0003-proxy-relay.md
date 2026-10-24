@@ -69,12 +69,18 @@ sounds.
    body: truncated at the cap, dropped for the budget, or cut short by a close or
    timeout.
 7. **Submit without blocking the relay.** A finished exchange is built by the
-   `Recorder` (`record.rs`) and handed to the store's `ExchangeSink` from
-   `spawn_blocking`, never awaited, because a spill to the journal fsyncs on
-   the submitting thread (ADR-0002). The capture's budget reservation moves into
-   that closure and is released once the sink has accepted or refused the
-   exchange. A refused exchange (`Full`) is counted in `sink_full` and logged at
-   most once every 10 s; the relay carries on.
+   `Recorder` (`record.rs`) and queued with `try_send` on a bounded channel
+   (1,024 records) to one dedicated recorder thread, which calls the store's
+   `ExchangeSink` in order. The sink may block, because a spill to the journal
+   fsyncs on the submitting thread (ADR-0002), so it runs on that thread and
+   not on tokio's blocking pool, which DNS lookups share: a slow store cannot
+   hold up new connections. The capture's budget reservation travels with the
+   record and is released once the sink has accepted or refused the exchange.
+   When the queue is full the exchange is dropped, counted in `sink_full`,
+   logged at most once every 10 s, and marked with a `Gap` marker for its id;
+   a refused exchange (`Full`) is counted and logged the same way. The relay
+   carries on either way. `Proxy::run` returns only after the recorder thread
+   has handed everything queued to the sink.
 8. **Generated responses are recorded as `Fidelity::Generated`.** When the proxy
    writes a response itself (a 502 for a failed connect, a 504 for a timeout, a
    400 for an unparseable request), it builds the bytes and the recorded

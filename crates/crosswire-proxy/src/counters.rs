@@ -24,6 +24,8 @@ pub struct Counters {
     pub tunnels: AtomicU64,
     /// Exchanges relayed.
     pub exchanges: AtomicU64,
-    /// Exchanges or markers the sink refused because it was full.
+    /// Exchanges or markers not recorded because the sink was full: refused
+    /// by the sink, or dropped because the recorder queue (1,024 records)
+    /// was full.
     pub sink_full: AtomicU64,
 }

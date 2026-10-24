@@ -19,7 +19,7 @@ use tokio::task::JoinSet;
 
 use crate::capture::Budget;
 use crate::front::{self, FirstRequest};
-use crate::record::Recorder;
+use crate::record::{Recorder, RecorderThread};
 use crate::rejections::RejectionTracker;
 use crate::{generated, info_page, Counters, Handler, ProxyConfig, ProxyError};
 use crate::{mitm, relay};
@@ -146,6 +146,7 @@ pub(crate) struct ConnCtx {
 pub struct Proxy {
     listener: TcpListener,
     shared: Arc<Shared>,
+    recorder: RecorderThread,
 }
 
 impl std::fmt::Debug for Proxy {
@@ -160,7 +161,8 @@ impl Proxy {
     /// Validates `cfg` and binds its listen address.
     ///
     /// # Errors
-    /// Whatever [`ProxyConfig::validate`] returns, or [`ProxyError::Bind`].
+    /// Whatever [`ProxyConfig::validate`] returns, [`ProxyError::Bind`], or
+    /// [`ProxyError::Io`] if the recorder thread cannot be started.
     pub async fn bind(cfg: ProxyConfig, deps: ProxyDeps) -> Result<Proxy, ProxyError> {
         cfg.validate()?;
         let listener = TcpListener::bind(cfg.bind)
@@ -175,8 +177,9 @@ impl Proxy {
     /// `cfg.bind` is replaced by the listener's address before validating.
     ///
     /// # Errors
-    /// Whatever [`ProxyConfig::validate`] returns, or [`ProxyError::Bind`]
-    /// if the listener's address cannot be read.
+    /// Whatever [`ProxyConfig::validate`] returns, [`ProxyError::Bind`]
+    /// if the listener's address cannot be read, or [`ProxyError::Io`] if
+    /// the recorder thread cannot be started.
     pub fn from_listener(
         mut cfg: ProxyConfig,
         listener: TcpListener,
@@ -196,13 +199,15 @@ impl Proxy {
         });
         let counters = Arc::new(Counters::default());
         let budget = Arc::new(Budget::new(cfg.limits.body_budget));
-        let recorder = Recorder::new(
+        let (recorder, recorder_thread) = Recorder::start(
             Arc::clone(&deps.sink),
             Arc::clone(&counters),
             cfg.limits.parse,
-        );
+        )
+        .map_err(ProxyError::Io)?;
         Ok(Proxy {
             listener,
+            recorder: recorder_thread,
             shared: Arc::new(Shared {
                 cfg,
                 deps,
@@ -232,8 +237,9 @@ impl Proxy {
     }
 
     /// Accepts and serves connections until `shutdown` becomes `true` (or
-    /// its sender is dropped). Then it stops accepting and waits up to five
-    /// seconds for live connections before aborting them.
+    /// its sender is dropped). Then it stops accepting, waits up to five
+    /// seconds for live connections before aborting them, and returns once
+    /// the recorder thread has handed everything recorded to the sink.
     ///
     /// # Errors
     /// None today; accept errors are logged and retried.
@@ -267,6 +273,7 @@ impl Proxy {
             tasks.abort_all();
             while tasks.join_next().await.is_some() {}
         }
+        self.recorder.stop().await;
         Ok(())
     }
 

@@ -231,7 +231,11 @@ The relay itself holds at most one 64 KiB read buffer per direction, so a
   project directory is as sensitive as the traffic; the store creates it 0700.
 - Markers are memory-only until the store commits them: they are not spilled to
   the journal, so one raised just before a crash can be lost, and one raised
-  while the store's queue is full is refused (`sink_full`).
+  while the store's queue or the recorder queue is full is refused
+  (`sink_full`).
+- Records reach the sink through a bounded queue (1,024) and one recorder
+  thread. An exchange that finds the queue full is dropped, counted in
+  `sink_full`, and marked with a `Gap` marker for its id.
 - Stored bodies are the raw wire bytes, so a hostile server's body is stored as
   sent. Nothing in this crate decodes, decompresses or renders it.
 
