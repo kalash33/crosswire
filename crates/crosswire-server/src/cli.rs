@@ -186,9 +186,13 @@ pub enum BrowserCommand {
 /// Options for `crosswire browser` (launch).
 #[derive(Debug, Args)]
 pub struct BrowserLaunchArgs {
-    /// Project directory (holds the browser profile).
+    /// Project directory (holds the browser profile). Required to launch a
+    /// browser; it is an `Option` so a `browser` maintenance subcommand (for
+    /// example `reset-profile`, which carries its own `--project`) parses
+    /// without it — clap's `subcommand_negates_reqs` does not reach a
+    /// `#[command(flatten)]` field, so the requirement is enforced in `launch`.
     #[arg(long, value_name = "PATH")]
-    pub project: PathBuf,
+    pub project: Option<PathBuf>,
 
     /// Path to a Chromium-based browser (skips auto-detection).
     #[arg(long, value_name = "PATH")]

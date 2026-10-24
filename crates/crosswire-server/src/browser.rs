@@ -35,7 +35,11 @@ pub fn run(args: BrowserArgs) -> Result<(), CliError> {
 }
 
 fn launch(args: BrowserLaunchArgs) -> Result<(), CliError> {
-    let proxy = resolve_proxy(&args)?;
+    let project = args
+        .project
+        .clone()
+        .ok_or_else(|| CliError::Config("--project is required to launch a browser".into()))?;
+    let proxy = resolve_proxy(&args, &project)?;
 
     // Pick the browser first, so the manual fallback can still print the proxy.
     let browser = match &args.browser_path {
@@ -48,7 +52,7 @@ fn launch(args: BrowserLaunchArgs) -> Result<(), CliError> {
         },
     };
 
-    let profile = args.project.join(PROFILE_DIR);
+    let profile = project.join(PROFILE_DIR);
     create_profile_dir(&profile)?;
 
     // The certificate pin lets the browser trust the proxy's leaves without
@@ -90,20 +94,20 @@ fn launch(args: BrowserLaunchArgs) -> Result<(), CliError> {
 
 /// Resolves the proxy address: `--proxy`, else the project's recorded
 /// `proxy_bind` (readable only when `serve` is not holding the project).
-fn resolve_proxy(args: &BrowserLaunchArgs) -> Result<String, CliError> {
+fn resolve_proxy(args: &BrowserLaunchArgs, project: &Path) -> Result<String, CliError> {
     if let Some(proxy) = &args.proxy {
         return Ok(proxy.clone());
     }
-    let project = Project::open_or_create(&args.project).map_err(|e| {
+    let opened = Project::open_or_create(project).map_err(|e| {
         CliError::runtime(
             &format!(
                 "opening project {} to read the proxy address (pass --proxy if `crosswire serve` is running)",
-                args.project.display()
+                project.display()
             ),
             e,
         )
     })?;
-    let store = Store::open(project, StoreConfig::default())
+    let store = Store::open(opened, StoreConfig::default())
         .map_err(|e| CliError::runtime("opening the store", e))?;
     let read = store
         .control()
