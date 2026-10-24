@@ -1,10 +1,13 @@
 //! The `crosswire` binary.
 
+mod api_cmd;
+mod browser;
 mod ca_cmd;
 mod cli;
 mod error;
 mod paths;
 mod serve;
+mod token_cmd;
 
 use std::process::ExitCode;
 
@@ -44,5 +47,7 @@ fn dispatch(command: Command) -> Result<(), CliError> {
     match command {
         Command::Serve(args) => serve::run(args),
         Command::Ca(cmd) => ca_cmd::run(cmd),
+        Command::Token(cmd) => token_cmd::run(cmd),
+        Command::Browser(args) => browser::run(args),
     }
 }

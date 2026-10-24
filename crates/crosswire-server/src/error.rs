@@ -9,6 +9,10 @@ pub enum CliError {
     /// A failure while running; exit code 1.
     #[error("{0}")]
     Runtime(String),
+    /// No supported browser was found (the launcher printed the manual
+    /// fallback); exit code 3.
+    #[error("{0}")]
+    NoBrowser(String),
 }
 
 impl CliError {
@@ -17,6 +21,7 @@ impl CliError {
         match self {
             CliError::Config(_) => 2,
             CliError::Runtime(_) => 1,
+            CliError::NoBrowser(_) => 3,
         }
     }
 

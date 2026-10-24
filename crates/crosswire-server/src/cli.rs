@@ -27,6 +27,11 @@ pub enum Command {
     /// Inspect or export the interception CA.
     #[command(subcommand)]
     Ca(CaCommand),
+    /// Mint, list, revoke or rotate API tokens for a project.
+    #[command(subcommand)]
+    Token(TokenCommand),
+    /// Launch a browser pre-configured to use the proxy.
+    Browser(BrowserArgs),
 }
 
 /// Arguments of `crosswire serve`.
@@ -70,6 +75,146 @@ pub struct ServeArgs {
     /// Bytes of each body kept in the capture; the rest is relayed only.
     #[arg(long, value_name = "BYTES")]
     pub capture_cap: Option<u64>,
+
+    /// Address the loopback REST+WebSocket API listens on (a separate socket
+    /// from the proxy). A non-loopback value warns and binds anyway.
+    #[arg(long, default_value = "127.0.0.1:8081", value_name = "ADDR")]
+    pub api_bind: SocketAddr,
+
+    /// Write the one-time bootstrap URL to this 0600 file instead of printing
+    /// it on stdout (the token then never appears on stdout).
+    #[arg(long, value_name = "PATH")]
+    pub bootstrap_file: Option<PathBuf>,
+
+    /// Refuse out-of-scope repeater sends outright (rather than recording them
+    /// with an out-of-scope audit row).
+    #[arg(long)]
+    pub enforce_scope_strictly: bool,
+}
+
+/// `crosswire token` subcommands.
+#[derive(Debug, Subcommand)]
+pub enum TokenCommand {
+    /// Mint a token; its secret is printed once and never recoverable.
+    Create {
+        /// Project directory.
+        #[arg(long, value_name = "PATH")]
+        project: PathBuf,
+        /// A human label.
+        #[arg(long, value_name = "NAME")]
+        name: String,
+        /// Comma-separated scopes (`read`, `send`, `admin`).
+        #[arg(
+            long,
+            value_name = "SCOPES",
+            required = true,
+            value_delimiter = ',',
+            value_parser = parse_scope
+        )]
+        scopes: Vec<TokenScopeArg>,
+    },
+    /// List a project's tokens (metadata only; never the secret).
+    List {
+        /// Project directory.
+        #[arg(long, value_name = "PATH")]
+        project: PathBuf,
+    },
+    /// Revoke a token by id.
+    Revoke {
+        /// Project directory.
+        #[arg(long, value_name = "PATH")]
+        project: PathBuf,
+        /// The token id (ULID).
+        #[arg(value_name = "ID")]
+        id: String,
+    },
+    /// Revoke a token and mint a replacement with the same name and scopes.
+    Rotate {
+        /// Project directory.
+        #[arg(long, value_name = "PATH")]
+        project: PathBuf,
+        /// The token id (ULID) to rotate.
+        #[arg(value_name = "ID")]
+        id: String,
+    },
+}
+
+/// A token scope parsed on the command line.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TokenScopeArg {
+    /// Read recorded exchanges and project state.
+    Read,
+    /// Send and replay requests.
+    Send,
+    /// Administer the project.
+    Admin,
+}
+
+/// Parses one scope name (`read`, `send` or `admin`).
+fn parse_scope(s: &str) -> Result<TokenScopeArg, String> {
+    match s.trim() {
+        "read" => Ok(TokenScopeArg::Read),
+        "send" => Ok(TokenScopeArg::Send),
+        "admin" => Ok(TokenScopeArg::Admin),
+        other => Err(format!("unknown scope {other:?} (read, send, admin)")),
+    }
+}
+
+/// Arguments of `crosswire browser`.
+#[derive(Debug, Args)]
+#[command(args_conflicts_with_subcommands = true, subcommand_negates_reqs = true)]
+pub struct BrowserArgs {
+    /// A maintenance subcommand; omit it to launch a browser.
+    #[command(subcommand)]
+    pub command: Option<BrowserCommand>,
+    /// Options for the default action (launching a browser).
+    #[command(flatten)]
+    pub launch: BrowserLaunchArgs,
+}
+
+/// `crosswire browser` maintenance subcommands.
+#[derive(Debug, Subcommand)]
+pub enum BrowserCommand {
+    /// Delete the project's browser profile directory.
+    ResetProfile {
+        /// Project directory.
+        #[arg(long, value_name = "PATH")]
+        project: PathBuf,
+    },
+}
+
+/// Options for `crosswire browser` (launch).
+#[derive(Debug, Args)]
+pub struct BrowserLaunchArgs {
+    /// Project directory (holds the browser profile).
+    #[arg(long, value_name = "PATH")]
+    pub project: PathBuf,
+
+    /// Path to a Chromium-based browser (skips auto-detection).
+    #[arg(long, value_name = "PATH")]
+    pub browser_path: Option<PathBuf>,
+
+    /// Proxy address to point the browser at. Defaults to the project's
+    /// recorded `proxy_bind` (readable only when `serve` is not running).
+    #[arg(long, value_name = "ADDR")]
+    pub proxy: Option<String>,
+
+    /// Launch headless (`--headless=new`).
+    #[arg(long)]
+    pub headless: bool,
+
+    /// Open this URL on launch.
+    #[arg(long, value_name = "URL")]
+    pub url: Option<String>,
+
+    /// CA directory, for the certificate pin passed to the browser
+    /// (default: see `crosswire ca path`).
+    #[arg(long, value_name = "PATH")]
+    pub ca_dir: Option<PathBuf>,
+
+    /// Extra flags passed through to the browser, after `--`.
+    #[arg(last = true, value_name = "FLAG")]
+    pub extra: Vec<String>,
 }
 
 /// `crosswire ca` subcommands.

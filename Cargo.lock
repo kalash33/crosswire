@@ -623,17 +623,21 @@ dependencies = [
 name = "crosswire-server"
 version = "0.0.0"
 dependencies = [
+ "axum",
  "base64 0.22.1",
  "clap",
+ "crosswire-api",
  "crosswire-ca",
  "crosswire-client",
  "crosswire-model",
  "crosswire-proxy",
  "crosswire-scope",
  "crosswire-store",
+ "crosswire-tools",
  "dirs",
  "rustls",
  "rustls-pki-types",
+ "serde_json",
  "sha2",
  "tempfile",
  "thiserror",
@@ -641,6 +645,7 @@ dependencies = [
  "tokio-rustls",
  "tracing",
  "tracing-subscriber",
+ "ulid",
  "x509-parser",
 ]
 
