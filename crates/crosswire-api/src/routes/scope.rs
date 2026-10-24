@@ -70,6 +70,10 @@ pub async fn put_scope(
     let compiled = scope.compile().map_err(|e| {
         ApiError::unprocessable("scope_invalid", format!("scope did not compile: {e}"))
     })?;
+    // Serialize before the swap (and before taking any lock), so a serialize
+    // failure cannot leave the live scope half-updated.
+    let serialized = serde_json::to_string(&scope)
+        .map_err(|e| ApiError::internal(format!("serializing the scope: {e}")))?;
     // Swap both the compiled matcher (what the proxy/repeater/intercept read)
     // and the source document (what GET returns), under their write locks.
     *state.scope.write().unwrap_or_else(PoisonError::into_inner) = compiled;
@@ -78,6 +82,13 @@ pub async fn put_scope(
         .write()
         .unwrap_or_else(PoisonError::into_inner) = scope;
     let _ = state.store.audit(&ctx.actor, "scope.set", "", "ok");
+    // Persist the source document so a later restart loads it (the server's
+    // `load_scope` reads this same "scope" setting at open).
+    let _ = state
+        .control
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .setting_put("scope", &serialized);
     Ok(StatusCode::OK)
 }
 

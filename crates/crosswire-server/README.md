@@ -76,8 +76,12 @@ Startup runs in this order, so a bad configuration creates nothing:
    marker.
 3. Load the CA, or generate one when neither `ca.crt` nor `ca.key` exists
    (audit `ca.generate`).
-4. Load the persisted scope from `settings` (empty if none); strict mode comes
-   from `--enforce-scope-strictly`. Request intercept always starts **disabled**.
+4. Load the persisted scope from `settings` (empty if none; the API's
+   `PUT /scope` writes it back). Strict scope enforcement is
+   `--enforce-scope-strictly` **or** the persisted `enforce_scope_strictly`
+   setting (the flag forces it on). Request intercept always starts **disabled**
+   with default rules; its rules are **not** persisted or loaded (pre-0.1.0
+   backlog, pending serialization support).
 5. Bind the proxy listener, then build the destination gate so it refuses the
    proxy's own port even when `--proxy-bind` asked for port 0.
 6. Audit each `--allow` (`allow.add`) and each `--accept-invalid-cert`

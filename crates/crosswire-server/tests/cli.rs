@@ -353,16 +353,18 @@ async fn serve_records_a_tls_fetch_and_closes_cleanly() {
     }
 }
 
-/// The four startup lines `serve` prints, parsed.
+/// The startup lines `serve` prints, parsed.
 struct Startup {
     #[allow(dead_code)]
     proxy: SocketAddr,
     api: SocketAddr,
     bootstrap_line: String,
+    /// Every stdout line seen up to and including the bootstrap line.
+    lines: Vec<String>,
 }
 
 /// Reads `serve`'s stdout until it has the proxy address, the API address and
-/// the bootstrap line, within 30 s.
+/// the bootstrap line, within 30 s, keeping every line seen.
 fn wait_serve_startup(child: &mut Child) -> Startup {
     let stdout = child.stdout.take().unwrap();
     let (tx, rx) = mpsc::channel();
@@ -374,6 +376,7 @@ fn wait_serve_startup(child: &mut Child) -> Startup {
     });
     let deadline = Instant::now() + Duration::from_secs(30);
     let (mut proxy, mut api, mut bootstrap) = (None, None, None);
+    let mut lines = Vec::new();
     while proxy.is_none() || api.is_none() || bootstrap.is_none() {
         let left = deadline.saturating_duration_since(Instant::now());
         let line = rx.recv_timeout(left).expect("a serve startup line in time");
@@ -384,13 +387,15 @@ fn wait_serve_startup(child: &mut Child) -> Startup {
         } else if line.starts_with("open http://localhost")
             || line.starts_with("bootstrap url written to")
         {
-            bootstrap = Some(line);
+            bootstrap = Some(line.clone());
         }
+        lines.push(line);
     }
     Startup {
         proxy: proxy.unwrap(),
         api: api.unwrap(),
         bootstrap_line: bootstrap.unwrap(),
+        lines,
     }
 }
 
@@ -511,6 +516,46 @@ async fn serve_prints_api_line_and_bootstrap_once_and_session_works() {
         .unwrap();
     let mut child = Reap(child);
     let startup = tokio::task::block_in_place(|| wait_serve_startup(&mut child.0));
+
+    // All four startup lines are present, in order.
+    assert!(
+        startup.lines[0].starts_with("proxy listening on "),
+        "lines: {:?}",
+        startup.lines
+    );
+    assert!(
+        startup.lines.iter().any(|l| l.starts_with("ca page at ")),
+        "lines: {:?}",
+        startup.lines
+    );
+    assert!(
+        startup
+            .lines
+            .iter()
+            .any(|l| l.starts_with("api listening on ")),
+        "lines: {:?}",
+        startup.lines
+    );
+    assert!(
+        startup
+            .lines
+            .iter()
+            .any(|l| l.starts_with("open http://localhost")),
+        "lines: {:?}",
+        startup.lines
+    );
+    // The bootstrap token appears on stdout EXACTLY once.
+    let occurrences: usize = startup
+        .lines
+        .iter()
+        .map(|l| l.matches("#bootstrap=").count())
+        .sum();
+    assert_eq!(
+        occurrences, 1,
+        "token must appear once: {:?}",
+        startup.lines
+    );
+
     let token = token_from_bootstrap_line(&startup.bootstrap_line);
     let api = startup.api;
 
@@ -717,4 +762,194 @@ async fn token_create_list_revoke_cli() {
     assert_eq!(c3, 200, "the rotated-in secret works");
 
     sigint_and_wait(&mut child.0);
+}
+
+/// Spawns `serve` on a project with ephemeral proxy and API ports.
+fn spawn_serve(project: &str, ca_dir: &str) -> Child {
+    Command::new(BIN)
+        .args([
+            "serve",
+            "--project",
+            project,
+            "--ca-dir",
+            ca_dir,
+            "--proxy-bind",
+            "127.0.0.1:0",
+            "--api-bind",
+            "127.0.0.1:0",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .unwrap()
+}
+
+/// Exchanges a bootstrap token for a session cookie.
+async fn api_session(api: SocketAddr, token: &str) -> String {
+    let body = format!("{{\"bootstrap\":\"{token}\"}}");
+    let (st, hdrs, _) = http(
+        api,
+        "POST",
+        "/api/v1/session",
+        &[("Content-Type", "application/json")],
+        Some(body.as_bytes()),
+    )
+    .await;
+    assert_eq!(st, 200, "the bootstrap token should create a session");
+    hdrs.iter()
+        .find(|(k, _)| k == "set-cookie")
+        .map(|(_, v)| v.split(';').next().unwrap().to_string())
+        .expect("a Set-Cookie header")
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn non_loopback_api_bind_warns_and_still_binds() {
+    let tmp = tempfile::tempdir().unwrap();
+    let project = tmp.path().join("proj");
+    let ca_dir = tmp.path().join("ca");
+    let child = Command::new(BIN)
+        .args([
+            "serve",
+            "--project",
+            project.to_str().unwrap(),
+            "--ca-dir",
+            ca_dir.to_str().unwrap(),
+            "--proxy-bind",
+            "127.0.0.1:0",
+            "--api-bind",
+            "0.0.0.0:0",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut child = Reap(child);
+
+    let stderr = child.0.stderr.take().unwrap();
+    let errlines = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let el = Arc::clone(&errlines);
+    std::thread::spawn(move || {
+        for line in BufReader::new(stderr).lines() {
+            let Ok(line) = line else { return };
+            el.lock().unwrap().push(line);
+        }
+    });
+
+    let startup = tokio::task::block_in_place(|| wait_serve_startup(&mut child.0));
+    // The API still bound, on a non-loopback (0.0.0.0) address.
+    assert!(
+        startup.api.ip().is_unspecified() || !startup.api.ip().is_loopback(),
+        "api addr: {}",
+        startup.api
+    );
+
+    // The warning is written to stderr before the bind, so it is already there.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let warned = loop {
+        if errlines
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|l| l.contains("warning: the API should stay on loopback"))
+        {
+            break true;
+        }
+        if Instant::now() > deadline {
+            break false;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    assert!(
+        warned,
+        "expected the loopback warning on stderr; saw: {:?}",
+        errlines.lock().unwrap()
+    );
+
+    sigint_and_wait(&mut child.0);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn scope_and_strict_persist_across_restart() {
+    let tmp = tempfile::tempdir().unwrap();
+    let project = tmp.path().join("proj");
+    let ca_dir = tmp.path().join("ca");
+    let p = project.to_str().unwrap();
+    let cad = ca_dir.to_str().unwrap();
+
+    // First run: set the scope and strict mode through the API, then stop.
+    {
+        let mut child = Reap(spawn_serve(p, cad));
+        let startup = tokio::task::block_in_place(|| wait_serve_startup(&mut child.0));
+        let api = startup.api;
+        let cookie = api_session(api, &token_from_bootstrap_line(&startup.bootstrap_line)).await;
+        let admin = [
+            ("Cookie", cookie.as_str()),
+            ("Sec-Fetch-Site", "same-origin"),
+            ("Content-Type", "application/json"),
+        ];
+        let scope =
+            br#"{"include":[{"host":{"type":"exact","value":"persist.test"}}],"exclude":[]}"#;
+        let (s, _, b) = http(api, "PUT", "/api/v1/scope", &admin, Some(scope)).await;
+        assert_eq!(s, 200, "put scope: {}", String::from_utf8_lossy(&b));
+        let (s2, _, _) = http(
+            api,
+            "PUT",
+            "/api/v1/settings/enforce_scope_strictly",
+            &admin,
+            Some(br#"{"enabled":true}"#),
+        )
+        .await;
+        assert_eq!(s2, 200, "put strict");
+        sigint_and_wait(&mut child.0);
+    }
+
+    // Second run over the same project: both survived.
+    {
+        let mut child = Reap(spawn_serve(p, cad));
+        let startup = tokio::task::block_in_place(|| wait_serve_startup(&mut child.0));
+        let api = startup.api;
+        let cookie = api_session(api, &token_from_bootstrap_line(&startup.bootstrap_line)).await;
+        let read = [
+            ("Cookie", cookie.as_str()),
+            ("Sec-Fetch-Site", "same-origin"),
+        ];
+
+        let (gs, _, gb) = http(api, "GET", "/api/v1/scope", &read, None).await;
+        assert_eq!(gs, 200);
+        let v: serde_json::Value = serde_json::from_slice(&gb).unwrap();
+        assert_eq!(
+            v["include"][0]["host"]["value"],
+            "persist.test",
+            "scope did not survive the restart: {}",
+            String::from_utf8_lossy(&gb)
+        );
+
+        // Strict mode survived: an out-of-scope send is refused 403 even with
+        // allow_out_of_scope, because strict overrides it.
+        let raw = base64::engine::general_purpose::STANDARD
+            .encode("GET / HTTP/1.1\r\nHost: blocked.test\r\n\r\n");
+        let send_body = format!(
+            "{{\"host\":\"blocked.test\",\"port\":443,\"tls\":true,\"raw\":\"{raw}\",\"allow_out_of_scope\":true}}"
+        );
+        let send_hdr = [
+            ("Cookie", cookie.as_str()),
+            ("Sec-Fetch-Site", "same-origin"),
+            ("Content-Type", "application/json"),
+        ];
+        let (ss, _, sb) = http(
+            api,
+            "POST",
+            "/api/v1/repeater/send",
+            &send_hdr,
+            Some(send_body.as_bytes()),
+        )
+        .await;
+        assert_eq!(
+            ss,
+            403,
+            "strict mode did not survive the restart (expected 403): {}",
+            String::from_utf8_lossy(&sb)
+        );
+        sigint_and_wait(&mut child.0);
+    }
 }

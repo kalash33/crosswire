@@ -15,9 +15,16 @@ A project is a directory. Everything Crosswire records lives in it. This documen
   journal/bad/        journal files and exchanges the writer could not commit
   audit.jsonl         append-only audit log, mode 0600
   audit.jsonl.1       the previous audit generation (after rotation)
+  browser-profile/    the launcher's browser profile (optional); excluded from exports
 ```
 
 Directories are created 0700 and files 0600 on unix. Other platforms use the platform default.
+
+`browser-profile/` is created (mode 0700) by `crosswire browser` as the
+`--user-data-dir` of the browser it launches. It holds the browser's own state —
+cookies, session storage and cache — not Crosswire records, so it is **excluded
+from exports** and is not part of the on-disk record contract; `crosswire browser
+reset-profile` deletes it.
 
 ## Database
 

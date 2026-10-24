@@ -19,6 +19,19 @@ pub(crate) const SETTING_SCOPE: &str = "scope";
 /// startup so `crosswire browser` can find it.
 pub(crate) const SETTING_PROXY_BIND: &str = "proxy_bind";
 
+/// The settings key holding strict scope enforcement (persisted by the API's
+/// `PUT /settings/enforce_scope_strictly`).
+pub(crate) const SETTING_ENFORCE_STRICT: &str = "enforce_scope_strictly";
+
+/// Reads the persisted strict-enforcement setting (default `false` when unset
+/// or unparseable).
+pub(crate) fn load_enforce_strict(control: &Control) -> Result<bool, CliError> {
+    let raw = control
+        .setting_get(SETTING_ENFORCE_STRICT)
+        .map_err(|e| CliError::runtime("reading the strict-enforcement setting", e))?;
+    Ok(raw.as_deref() == Some("true"))
+}
+
 /// Loads the persisted scope, falling back to the empty scope when nothing is
 /// stored or the stored value does not parse (a warning is logged then).
 pub(crate) fn load_scope(control: &Control) -> Result<Scope, CliError> {
@@ -103,4 +116,54 @@ fn write_private(path: &Path, contents: &str) -> std::io::Result<()> {
     file.write_all(b"\n")?;
     file.flush()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crosswire_store::{Project, Store, StoreConfig};
+
+    fn temp_store() -> (tempfile::TempDir, Store) {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = Project::open_or_create(&tmp.path().join("proj")).unwrap();
+        let store = Store::open(project, StoreConfig::default()).unwrap();
+        (tmp, store)
+    }
+
+    #[test]
+    fn load_enforce_strict_reads_the_setting() {
+        let (_tmp, store) = temp_store();
+        let control = store.control().unwrap();
+        // Absent → false.
+        assert!(!load_enforce_strict(&control).unwrap());
+        // "true" → true.
+        control.setting_put(SETTING_ENFORCE_STRICT, "true").unwrap();
+        assert!(load_enforce_strict(&control).unwrap());
+        // "false" → false.
+        control
+            .setting_put(SETTING_ENFORCE_STRICT, "false")
+            .unwrap();
+        assert!(!load_enforce_strict(&control).unwrap());
+        drop(control);
+        store.close().unwrap();
+    }
+
+    #[test]
+    fn load_scope_round_trips_through_the_setting() {
+        let (_tmp, store) = temp_store();
+        let control = store.control().unwrap();
+        // Absent → empty.
+        assert_eq!(load_scope(&control).unwrap(), Scope::default());
+        // A serialized scope round-trips.
+        let scope: Scope = serde_json::from_str(
+            r#"{"include":[{"host":{"type":"exact","value":"a.test"}}],"exclude":[]}"#,
+        )
+        .unwrap();
+        control
+            .setting_put(SETTING_SCOPE, &serde_json::to_string(&scope).unwrap())
+            .unwrap();
+        assert_eq!(load_scope(&control).unwrap(), scope);
+        drop(control);
+        store.close().unwrap();
+    }
 }

@@ -84,18 +84,39 @@ async fn serve(cfg: ProxyConfig, args: &ServeArgs, ca_dir: &Path) -> Result<(), 
         tracing::warn!("the previous run did not shut down cleanly; a gap marker was recorded");
     }
     let served = serve_with_store(cfg, args, ca_dir, Arc::clone(&store)).await;
-    // Every other handle (the API state, the repeater, the intercept) was
-    // dropped as `serve_with_store` returned, so this is the sole owner.
-    let closed = match Arc::try_unwrap(store) {
+    // The store is always closed here, on every path out of `serve_with_store`
+    // (success, early `?` error, or shutdown): see `close_store`.
+    let closed = close_store(store);
+    served.and(closed)
+}
+
+/// Closes the store cleanly through the one remaining owning handle.
+///
+/// By the time `serve_with_store` has returned, every clone it made is gone:
+/// the API server is awaited inline (not detached), so its `AppState` — and the
+/// per-connection clones graceful shutdown waits for — are dropped with it; the
+/// repeater and intercept are its locals, dropped as it returns (or unwound on
+/// an early error); and the only detached task (the shutdown signal) holds no
+/// store handle. So this `Arc` is the sole owner and the unwrap always succeeds.
+/// A non-unwrappable `Arc` would mean a future change leaked a store handle into
+/// a surviving task; it is surfaced loudly rather than left to silently skip the
+/// clean close.
+fn close_store(store: Arc<Store>) -> Result<(), CliError> {
+    match Arc::try_unwrap(store) {
         Ok(store) => store
             .close()
             .map_err(|e| CliError::runtime("closing the store", e)),
-        Err(_) => Err(CliError::runtime(
-            "closing the store",
-            "the store was still referenced at shutdown",
-        )),
-    };
-    served.and(closed)
+        Err(arc) => {
+            tracing::error!(
+                refs = Arc::strong_count(&arc),
+                "the store was still referenced at shutdown; the project may be left unclean"
+            );
+            Err(CliError::runtime(
+                "closing the store",
+                "the store was still referenced at shutdown",
+            ))
+        }
+    }
 }
 
 async fn serve_with_store(
@@ -123,8 +144,10 @@ async fn serve_with_store(
         .map_err(|e| CliError::runtime("opening a control handle", e))?;
 
     // The scope shared by the proxy, the intercept and the repeater, loaded
-    // from the store if present. Strict mode comes from the flag. Intercept
-    // always starts disabled (so a persisted "enabled" never surprises on open).
+    // from the store if present. Strict mode is the flag OR the persisted
+    // setting. Intercept always starts disabled and with default rules: its
+    // rules are deliberately NOT persisted or loaded (that is on the pre-0.1.0
+    // backlog, pending Serialize/Deserialize on InterceptRules).
     let loaded_scope = api_cmd::load_scope(&control)?;
     let compiled = loaded_scope.compile().unwrap_or_else(|e| {
         tracing::warn!(error = %e, "the stored scope did not compile; starting with an empty scope");
@@ -134,7 +157,10 @@ async fn serve_with_store(
     });
     let scope: Arc<RwLock<Compiled>> = Arc::new(RwLock::new(compiled));
     let scope_doc: Arc<RwLock<Scope>> = Arc::new(RwLock::new(loaded_scope));
-    let strict = Arc::new(AtomicBool::new(args.enforce_scope_strictly));
+    // The flag forces strict on; otherwise the persisted setting decides.
+    let strict = Arc::new(AtomicBool::new(
+        args.enforce_scope_strictly || api_cmd::load_enforce_strict(&control)?,
+    ));
 
     // Bind first: the gate must protect the proxy's own port, which is only
     // known now when --proxy-bind asked for port 0.
@@ -165,6 +191,7 @@ async fn serve_with_store(
     // (`ProxyDeps` has no budget field), so the intercept gets a matching one;
     // the two draw on separate budgets.
     let limits: ProxyLimits = cfg.limits.clone();
+    // Intercept starts disabled with default rules; rules are not persisted.
     let intercept = Arc::new(Intercept::new(
         &limits,
         Arc::clone(&scope),
@@ -283,6 +310,9 @@ async fn serve_with_store(
         let _ = rx_api.changed().await;
     });
 
+    // `join!` (not a detached spawn) means the API server future — and the
+    // per-connection tasks graceful shutdown waits for — are complete and
+    // dropped here, so the `AppState` (and its store clone) is gone.
     let (ran, api_res) = tokio::join!(proxy.run(rx), api_server);
     let ran = ran.map_err(|e| CliError::runtime("proxy", e));
     if let Err(e) = api_res {
@@ -295,8 +325,15 @@ async fn serve_with_store(
         "proxy stopped"
     );
     // Written before the store closes: the audit log is closed with it.
-    audit("listener.stop", &addr.to_string())?;
-    ran
+    let stopped = audit("listener.stop", &addr.to_string());
+    // Drop every remaining store handle before returning, so the caller can
+    // unwrap the sole `Arc` and close the store cleanly. `repeater` owns a store
+    // clone (its audit hook); `intercept` holds only a sink, but is dropped for
+    // clarity. The `audit` closure borrows `store`, and that borrow ends at its
+    // last use just above.
+    drop(repeater);
+    drop(intercept);
+    ran.and(stopped)
 }
 
 /// The CA private key must never live under a project directory (spec

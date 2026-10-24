@@ -42,6 +42,31 @@ async fn put_then_get_round_trips() {
 }
 
 #[tokio::test]
+async fn put_scope_persists_the_setting() {
+    let app = TestApp::new().await;
+    let cookie = app.session_cookie().await;
+    let h = admin(&cookie);
+
+    let scope = r#"{"include":[{"host":{"type":"exact","value":"persist.test"}}],"exclude":[]}"#;
+    let put = app
+        .send("PUT", "/api/v1/scope", &h, Some(scope.as_bytes()))
+        .await;
+    assert_eq!(put.status, 200, "{}", put.body_string());
+
+    // The source document is written to the "scope" setting, which the server's
+    // `load_scope` reads at open, so a restart keeps the scope.
+    let stored = app
+        .store
+        .control()
+        .unwrap()
+        .setting_get("scope")
+        .unwrap()
+        .expect("the scope setting was written");
+    let doc: serde_json::Value = serde_json::from_str(&stored).unwrap();
+    assert_eq!(doc["include"][0]["host"]["value"], "persist.test");
+}
+
+#[tokio::test]
 async fn import_parses_a_pasted_list() {
     let app = TestApp::new().await;
     let cookie = app.session_cookie().await;
