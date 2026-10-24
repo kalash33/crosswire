@@ -1,0 +1,35 @@
+[package]
+name = "crosswire-api"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "REST and WebSocket API for the Crosswire sidecar"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+crosswire-model = { path = "../crosswire-model", version = "0.0.0" }
+crosswire-store = { path = "../crosswire-store", version = "0.0.0" }
+crosswire-scope = { path = "../crosswire-scope", version = "0.0.0" }
+crosswire-proxy = { path = "../crosswire-proxy", version = "0.0.0" }
+crosswire-tools = { path = "../crosswire-tools", version = "0.0.0" }
+crosswire-ca = { path = "../crosswire-ca", version = "0.0.0" }
+axum = { workspace = true }
+tower-http = { workspace = true }
+utoipa = { workspace = true }
+utoipa-axum = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+rand = { workspace = true }
+sha2 = { workspace = true }
+subtle = { workspace = true }
+base64 = { workspace = true }
+ulid = { workspace = true }
+http = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }

@@ -26,6 +26,7 @@ features:
     cargo check --locked -p crosswire-h1 --no-default-features --features serde
     cargo check --locked -p crosswire-model --no-default-features
     cargo check --locked -p crosswire-model --no-default-features --features std
+    cargo check --locked -p crosswire-scope --no-default-features
     cargo check --locked -p crosswire-proxy
 
 # Seeds the libFuzzer corpora from the golden corpus. The targets read their

@@ -1,0 +1,24 @@
+[package]
+name = "crosswire-tools"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "Repeater and edit-engine tools for Crosswire"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+crosswire-core = { path = "../crosswire-core", version = "0.0.0" }
+crosswire-h1 = { path = "../crosswire-h1", version = "0.0.0" }
+crosswire-model = { path = "../crosswire-model", version = "0.0.0" }
+crosswire-client = { path = "../crosswire-client", version = "0.0.0" }
+crosswire-scope = { path = "../crosswire-scope", version = "0.0.0" }
+tokio = { workspace = true }
+bytes = { version = "1", default-features = false, features = ["std"] }
+thiserror = { workspace = true }
+ulid = { workspace = true }
+sha2 = { workspace = true }
