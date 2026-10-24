@@ -211,6 +211,9 @@ pub(crate) async fn run(
             flushed,
         }) => {
             if let Some(up) = relay.upstream.take() {
+                // Free the relay's read buffers and parsers before the
+                // tunnel, which brings its own: a WebSocket may live long.
+                drop(relay);
                 shared.counters.tunnels.fetch_add(1, Ordering::Relaxed);
                 let rec = RecordCtx {
                     recorder: shared.recorder.clone(),

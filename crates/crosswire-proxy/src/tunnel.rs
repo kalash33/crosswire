@@ -69,12 +69,56 @@ async fn idle_watch(idle: Duration, last: &AtomicU64, start: Instant) {
     }
 }
 
+/// The tunnel's counts, and its one recorded exchange: submitted when this
+/// is dropped, so a tunnel aborted at shutdown is recorded too.
+struct Recording {
+    ctx: RecordCtx,
+    reason: TunnelReason,
+    start: Instant,
+    bytes_in: AtomicU64,
+    bytes_out: AtomicU64,
+    /// When bytes last moved, in ms since `start`.
+    last: AtomicU64,
+}
+
+impl Recording {
+    fn stats(&self) -> TunnelStats {
+        TunnelStats {
+            bytes_in: self.bytes_in.load(Ordering::Relaxed),
+            bytes_out: self.bytes_out.load(Ordering::Relaxed),
+            duration: self.start.elapsed(),
+        }
+    }
+}
+
+impl Drop for Recording {
+    fn drop(&mut self) {
+        let stats = self.stats();
+        let head = Head::Tunnel {
+            bytes_in: stats.bytes_in,
+            bytes_out: stats.bytes_out,
+            duration_ms: millis(stats.duration),
+            reason: self.reason,
+        };
+        let msg = Message::new(
+            MessageKind::Tunnel,
+            Fidelity::Opaque,
+            head,
+            FramingRecord::None,
+            Body::None,
+            self.ctx.info.clone(),
+        );
+        self.ctx.submit(Exchange::new(msg));
+    }
+}
+
 /// Relays bytes between `a` (the client) and `b` (the upstream) until both
 /// directions end, either errors, or nothing moves for `idle`. Then records
 /// one [`Head::Tunnel`] exchange through `ctx` (never awaited) and returns
-/// the counts. `flushed` is what the caller already relayed into the
-/// tunnel (to `b`, to `a`) before handing it over; it counts as tunnel
-/// traffic.
+/// the counts; a tunnel dropped before that (aborted at shutdown) records
+/// its exchange with the counts so far. `flushed` is what the caller
+/// already relayed into the tunnel (to `b`, to `a`) before handing it
+/// over; it counts as tunnel traffic.
 pub(crate) async fn run(
     a: Box<dyn Conn>,
     b: Box<dyn Conn>,
@@ -84,23 +128,26 @@ pub(crate) async fn run(
     flushed: (u64, u64),
 ) -> TunnelStats {
     let start = Instant::now();
-    let (bytes_in, bytes_out, last) = (
-        AtomicU64::new(flushed.0),
-        AtomicU64::new(flushed.1),
-        AtomicU64::new(0),
-    );
+    let rec = Recording {
+        ctx,
+        reason,
+        start,
+        bytes_in: AtomicU64::new(flushed.0),
+        bytes_out: AtomicU64::new(flushed.1),
+        last: AtomicU64::new(0),
+    };
     {
         let (mut ar, mut aw) = tokio::io::split(a);
         let (mut br, mut bw) = tokio::io::split(b);
         let both = async {
             tokio::try_join!(
-                pump(&mut ar, &mut bw, &bytes_in, &last, start),
-                pump(&mut br, &mut aw, &bytes_out, &last, start),
+                pump(&mut ar, &mut bw, &rec.bytes_in, &rec.last, start),
+                pump(&mut br, &mut aw, &rec.bytes_out, &rec.last, start),
             )
         };
         let quiet = async {
             match idle {
-                Some(idle) => idle_watch(idle, &last, start).await,
+                Some(idle) => idle_watch(idle, &rec.last, start).await,
                 None => std::future::pending().await,
             }
         };
@@ -112,25 +159,7 @@ pub(crate) async fn run(
         }
         // Dropping the halves closes both sockets.
     }
-    let stats = TunnelStats {
-        bytes_in: bytes_in.into_inner(),
-        bytes_out: bytes_out.into_inner(),
-        duration: start.elapsed(),
-    };
-    let head = Head::Tunnel {
-        bytes_in: stats.bytes_in,
-        bytes_out: stats.bytes_out,
-        duration_ms: millis(stats.duration),
-        reason,
-    };
-    let msg = Message::new(
-        MessageKind::Tunnel,
-        Fidelity::Opaque,
-        head,
-        FramingRecord::None,
-        Body::None,
-        ctx.info.clone(),
-    );
-    ctx.submit(Exchange::new(msg));
+    let stats = rec.stats();
+    drop(rec);
     stats
 }

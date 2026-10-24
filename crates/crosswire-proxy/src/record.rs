@@ -422,10 +422,17 @@ mod tests {
             sink.markers.lock().unwrap().len() == 2
         })
         .await;
-        for (m, id) in sink.markers.lock().unwrap().iter().zip(&dropped) {
+        // One gap marker per dropped id, in either order (each is
+        // submitted from its own blocking task).
+        let mut marked: Vec<Ulid> = Vec::new();
+        for m in sink.markers.lock().unwrap().iter() {
             assert_eq!(m.kind(), MarkerKind::Gap);
-            assert_eq!((m.from_ulid(), m.to_ulid()), (Some(*id), Some(*id)));
+            assert_eq!(m.from_ulid(), m.to_ulid());
+            marked.push(m.from_ulid().expect("a gap marker names its exchange"));
         }
+        marked.sort();
+        dropped.sort();
+        assert_eq!(marked, dropped);
         sink.release();
         thread.stop().await;
         assert_eq!(*sink.exchanges.lock().unwrap(), kept, "kept ones, in order");

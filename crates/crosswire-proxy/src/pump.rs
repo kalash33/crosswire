@@ -14,6 +14,9 @@ use crate::Decision;
 
 /// Size of one read: the most bytes read ahead of the parser.
 pub(crate) const READ_BUF: usize = 64 * 1024;
+/// `head_seen` capacity kept between heads; a larger buffer (left by a
+/// large head) is freed so an idle keep-alive connection does not hold it.
+const HEAD_SEEN_KEEP: usize = 16 * 1024;
 
 /// How a body pump ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -78,6 +81,8 @@ type Limit = Option<(Instant, Clock)>;
 /// the `deadline`, when set ([`Pump::set_limits`]).
 pub(crate) struct Pump {
     pending: BytesMut,
+    /// The read buffer, [`READ_BUF`] bytes once the pump first reads
+    /// (empty before, so a connection that never reads costs nothing).
     scratch: Box<[u8]>,
     first_byte: Option<Instant>,
     /// The bytes the parser consumed for the current head (at most the
@@ -92,7 +97,7 @@ impl Pump {
     pub(crate) fn new(initial: Bytes) -> Pump {
         Pump {
             pending: BytesMut::from(&initial[..]),
-            scratch: vec![0u8; READ_BUF].into_boxed_slice(),
+            scratch: Box::default(),
             first_byte: None,
             head_seen: BytesMut::new(),
             idle: None,
@@ -133,6 +138,14 @@ impl Pump {
         self.first_byte
     }
 
+    /// The read buffer, allocated on first use.
+    fn scratch(&mut self) -> &mut [u8] {
+        if self.scratch.is_empty() {
+            self.scratch = vec![0u8; READ_BUF].into_boxed_slice();
+        }
+        &mut self.scratch
+    }
+
     fn limit(&self) -> Limit {
         let idle = self.idle.map(|d| (Instant::now() + d, Clock::Idle));
         let total = self.deadline.map(|d| (d, Clock::Total));
@@ -152,7 +165,7 @@ impl Pump {
         if !self.pending.is_empty() {
             return Probe::Stray;
         }
-        let mut rb = ReadBuf::new(&mut self.scratch);
+        let mut rb = ReadBuf::new(self.scratch());
         std::future::poll_fn(|cx| {
             Poll::Ready(match Pin::new(&mut *from).poll_read(cx, &mut rb) {
                 Poll::Pending => Probe::Idle,
@@ -170,7 +183,7 @@ impl Pump {
         R: AsyncRead + Unpin + ?Sized,
     {
         let limit = self.limit();
-        let read = from.read(&mut self.scratch);
+        let read = from.read(self.scratch());
         let n = match limit {
             None => read.await,
             Some((until, clock)) => tokio::time::timeout_at(until.into(), read)
@@ -204,7 +217,11 @@ impl Pump {
     where
         R: AsyncRead + Unpin + ?Sized,
     {
-        self.head_seen.clear();
+        if self.head_seen.capacity() > HEAD_SEEN_KEEP {
+            self.head_seen = BytesMut::new();
+        } else {
+            self.head_seen.clear();
+        }
         loop {
             if !self.pending.is_empty() {
                 let step = parser.feed(&self.pending).map_err(PumpFail::Parse)?;
@@ -362,11 +379,33 @@ mod tests {
 
     /// Review focus: a slow reader holds back at most one read of the
     /// other side, never the whole body.
-    #[test]
-    fn read_buffer_is_64_kib() {
+    #[tokio::test]
+    async fn read_buffer_is_64_kib_and_allocated_on_first_read() {
         assert_eq!(READ_BUF, 64 * 1024);
-        let pump = Pump::new(Bytes::new());
+        let mut pump = Pump::new(Bytes::new());
+        assert!(pump.scratch.is_empty(), "no read buffer before a read");
+        let cfg = crosswire_h1::ParserConfig::default();
+        let mut parser = Parser::request(&cfg);
+        let mut src: &[u8] = b"GET / HTTP/1.1\r\n\r\n";
+        assert!(pump.head(&mut src, &mut parser).await.unwrap().is_some());
         assert_eq!(pump.scratch.len(), 64 * 1024);
+    }
+
+    #[tokio::test]
+    async fn head_seen_is_freed_after_a_large_head() {
+        let cfg = crosswire_h1::ParserConfig::default();
+        let mut parser = Parser::request(&cfg);
+        let line = format!("X: {}\r\n", "a".repeat(1000));
+        let big = format!("GET / HTTP/1.1\r\n{}\r\n", line.repeat(24));
+        let mut pump = Pump::new(Bytes::from(big));
+        let mut src = tokio::io::empty();
+        assert!(pump.head(&mut src, &mut parser).await.unwrap().is_some());
+        assert!(pump.head_seen.capacity() > HEAD_SEEN_KEEP);
+        // The next head starts from a fresh buffer; the connection then
+        // closes (no bytes), which is a clean end between messages.
+        parser.reset();
+        assert!(pump.head(&mut src, &mut parser).await.unwrap().is_none());
+        assert!(pump.head_seen.capacity() <= HEAD_SEEN_KEEP);
     }
 
     /// Takes `room` bytes, then never accepts more (`Pending`).

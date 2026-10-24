@@ -578,6 +578,36 @@ async fn switching_case(via: Via) {
 }
 
 #[tokio::test]
+async fn tunnel_aborted_at_shutdown_is_recorded() {
+    let rig = rig(
+        Via::Plain,
+        vec![SWITCH.to_vec(), b"PONG".to_vec()],
+        None,
+        &["u.test"],
+    )
+    .await;
+    let mut c = rig.open("u.test").await;
+    let req = format!(
+        "{}\r\nHost: u.test\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n",
+        rig.start_line("GET", "u.test", "/ws")
+    );
+    c.write_all(req.as_bytes()).await.unwrap();
+    assert_eq!(read_n(&mut c, SWITCH.len()).await, SWITCH);
+    let ping = b"PING /f HTTP/1.1\r\n\r\n";
+    c.write_all(ping).await.unwrap();
+    assert_eq!(read_n(&mut c, 4).await, b"PONG");
+    // The WebSocket stays open: shutdown aborts it after the grace period.
+    let sink = Arc::clone(&rig.h.sink);
+    rig.h.shutdown.shutdown().await;
+    let ex = sink.exchanges.lock().unwrap().clone();
+    assert_eq!(ex.len(), 2, "{ex:#?}");
+    let (reason, bytes_in, bytes_out) = tunnel_of(&ex);
+    assert_eq!(reason, TunnelReason::Ws);
+    assert_eq!((bytes_in, bytes_out), (ping.len() as u64, 4));
+    drop(c);
+}
+
+#[tokio::test]
 async fn switching_protocols_records_upgrade_then_ws_tunnel() {
     switching_case(Via::Plain).await;
     switching_case(Via::Tls).await;
