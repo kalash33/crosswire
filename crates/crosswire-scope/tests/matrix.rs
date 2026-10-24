@@ -280,6 +280,58 @@ const CASES: &[(&str, &str, Verdict)] = &[
         Verdict::Out,
     ),
     ("in exact example.com", "http://[::1]/", Verdict::Out),
+    // Trailing-dot rule host normalizes the same way the input does.
+    ("in exact example.com.", "http://example.com/", Verdict::In),
+    ("in apex example.com.", "http://a.example.com/", Verdict::In),
+    ("in apex example.com.", "http://example.com/", Verdict::In),
+    // Exclude rule carrying a port/scheme/path constraint: it only subtracts
+    // the requests it fully matches.
+    (
+        "in apex example.com;ex exact api.example.com path=/admin",
+        "http://api.example.com/admin/users",
+        Verdict::Out,
+    ),
+    (
+        "in apex example.com;ex exact api.example.com path=/admin",
+        "http://api.example.com/public",
+        Verdict::In,
+    ),
+    (
+        "in apex example.com;ex exact api.example.com scheme=http",
+        "http://api.example.com/",
+        Verdict::Out,
+    ),
+    (
+        "in apex example.com;ex exact api.example.com scheme=http",
+        "https://api.example.com/",
+        Verdict::In,
+    ),
+    (
+        "in apex example.com;ex exact api.example.com port=8080",
+        "http://api.example.com:8080/",
+        Verdict::Out,
+    ),
+    (
+        "in apex example.com;ex exact api.example.com port=8080",
+        "http://api.example.com/",
+        Verdict::In,
+    ),
+    // Multiple excludes: any matching exclude wins.
+    (
+        "in apex example.com;ex exact a.example.com;ex exact b.example.com",
+        "http://a.example.com/",
+        Verdict::Out,
+    ),
+    (
+        "in apex example.com;ex exact a.example.com;ex exact b.example.com",
+        "http://b.example.com/",
+        Verdict::Out,
+    ),
+    (
+        "in apex example.com;ex exact a.example.com;ex exact b.example.com",
+        "http://c.example.com/",
+        Verdict::In,
+    ),
 ];
 
 #[test]

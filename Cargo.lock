@@ -605,10 +605,10 @@ dependencies = [
 name = "crosswire-scope"
 version = "0.0.0"
 dependencies = [
- "crosswire-core",
  "ipnet",
  "regex",
  "serde",
+ "serde_json",
  "thiserror",
  "url",
 ]

@@ -132,11 +132,7 @@ struct Normalized<'a> {
 
 impl<'a> Normalized<'a> {
     fn new(input: &Input<'a>) -> Self {
-        let mut host = input.host;
-        if let Some(inner) = host.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
-            host = inner;
-        }
-        let host = host.strip_suffix('.').unwrap_or(host).to_ascii_lowercase();
+        let host = normalize_host(input.host);
         let ip = host.parse::<IpAddr>().ok();
         Normalized {
             host,
@@ -146,6 +142,18 @@ impl<'a> Normalized<'a> {
             path: input.path,
         }
     }
+}
+
+/// Normalizes a host for matching: unbracket an IPv6 literal (`[::1]`), strip a
+/// single trailing dot, and ASCII-lowercase. Applied to both request inputs and
+/// to the host text of `Exact`/`Suffix` rules so a trailing dot or bracketed
+/// form on either side still matches.
+fn normalize_host(host: &str) -> String {
+    let host = host
+        .strip_prefix('[')
+        .and_then(|s| s.strip_suffix(']'))
+        .unwrap_or(host);
+    host.strip_suffix('.').unwrap_or(host).to_ascii_lowercase()
 }
 
 #[derive(Clone, Debug)]
@@ -159,9 +167,9 @@ struct CompiledRule {
 impl CompiledRule {
     fn new(rule: &Rule) -> Result<Self, ScopeError> {
         let host = match &rule.host {
-            HostPattern::Exact(h) => CompiledHost::Exact(h.to_ascii_lowercase()),
+            HostPattern::Exact(h) => CompiledHost::Exact(normalize_host(h)),
             HostPattern::Suffix { suffix, also_apex } => {
-                let apex = suffix.to_ascii_lowercase();
+                let apex = normalize_host(suffix);
                 CompiledHost::Suffix {
                     dot_suffix: format!(".{apex}"),
                     apex,

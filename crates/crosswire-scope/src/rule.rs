@@ -10,8 +10,10 @@ use crate::input::Scheme;
 
 /// How a rule matches the host of a request.
 ///
-/// The variants are tagged for serde with a kebab-case `type` field and a
-/// `value` payload, e.g. `{"type":"exact","value":"example.com"}`.
+/// The variants are tagged for serde with a lowercase `type` field and a
+/// `value` payload, e.g. `{"type":"exact","value":"example.com"}`. Struct
+/// fields use snake_case, so [`Suffix`](HostPattern::Suffix) serializes as
+/// `{"type":"suffix","value":{"suffix":"example.com","also_apex":true}}`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "value", rename_all = "kebab-case")]
 pub enum HostPattern {
@@ -49,7 +51,6 @@ pub enum PathMatch {
 /// every set constraint also matches; an unset (`None`) constraint matches
 /// anything.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
 pub struct Rule {
     /// The host pattern.
     pub host: HostPattern,
