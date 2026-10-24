@@ -6,7 +6,7 @@ resolver = "2"
 [workspace.package]
 edition = "2021"
 license = "Apache-2.0 OR MIT"
-rust-version = "1.86"
+rust-version = "1.88"
 repository = "https://github.com/kalash33/crosswire"
 
 [workspace.lints.rust]

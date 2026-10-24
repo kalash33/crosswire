@@ -1,7 +1,7 @@
 //! Compare-and-update helpers for the counters shared between threads.
 //!
 //! Rust 1.99 renamed `fetch_update` to `try_update` and deprecated the old
-//! name. The workspace's minimum supported Rust is 1.86, which only has the
+//! name. The workspace's minimum supported Rust is 1.88, which only has the
 //! old name, so the deprecated call is confined to this module and every
 //! other site goes through these wrappers.
 
