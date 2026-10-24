@@ -14,7 +14,7 @@ workspace = true
 [dependencies]
 crosswire-core = { path = "../crosswire-core", version = "0.0.0" }
 regex = { workspace = true }
-ipnet = { workspace = true }
-serde = { workspace = true }
+ipnet = { workspace = true, features = ["serde"] }
+serde = { workspace = true, features = ["std"] }
 thiserror = { workspace = true }
 url = { workspace = true }
