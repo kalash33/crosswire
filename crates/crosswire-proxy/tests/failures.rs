@@ -427,6 +427,101 @@ async fn invalid_chunk_in_response_body_falls_to_tunnel() {
     undelimitable_case(Via::Plain, resp, n).await;
 }
 
+/// The tunnel exchange among `ex`: its reason and byte counts.
+fn tunnel_of(ex: &[Exchange]) -> (TunnelReason, u64, u64) {
+    let tunnel = ex
+        .iter()
+        .find(|e| matches!(e.request().head(), Head::Tunnel { .. }))
+        .expect("a tunnel exchange");
+    let Head::Tunnel {
+        reason,
+        bytes_in,
+        bytes_out,
+        ..
+    } = tunnel.request().head()
+    else {
+        unreachable!()
+    };
+    (*reason, *bytes_in, *bytes_out)
+}
+
+async fn invalid_content_length_case(via: Via) {
+    let resp = ok("seen");
+    let rig = rig(via, vec![resp.clone()], None, &["u.test"]).await;
+    let mut c = rig.open("u.test").await;
+    let head = format!(
+        "{}\r\nHost: u.test\r\nContent-Length: 5x\r\n\r\n",
+        rig.start_line("POST", "u.test", "/icl")
+    );
+    let mut req = head.clone().into_bytes();
+    req.extend_from_slice(b"hello");
+    c.write_all(&req).await.unwrap();
+    // The body bytes are not dropped or parsed as a request: they reach the
+    // upstream raw, right after the head.
+    let got = rig.received_at_least(5).await;
+    assert!(
+        got.ends_with(b"\r\n\r\nhello"),
+        "{:?}",
+        String::from_utf8_lossy(&got)
+    );
+    assert_eq!(read_n(&mut c, resp.len()).await, resp);
+    drop(c);
+    let ex = rig.exchanges(2).await;
+    let http = ex
+        .iter()
+        .find(|e| !matches!(e.request().head(), Head::Tunnel { .. }))
+        .unwrap();
+    assert_eq!(http.state(), ExchangeState::Error);
+    assert!(http.response().is_none());
+    assert!(head_bytes(http.request()).starts_with(b"POST /icl HTTP/1.1\r\n"));
+    let (reason, bytes_in, bytes_out) = tunnel_of(&ex);
+    assert_eq!(reason, TunnelReason::Undelimitable);
+    assert_eq!(bytes_in, 5);
+    assert_eq!(bytes_out, resp.len() as u64);
+    wait_marker(
+        &rig.h,
+        MarkerKind::Error,
+        &format!("undelimitable request to u.test:{}", rig.port),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn invalid_content_length_request_falls_to_tunnel() {
+    invalid_content_length_case(Via::Plain).await;
+    invalid_content_length_case(Via::Tls).await;
+}
+
+#[tokio::test]
+async fn connect_success_inside_a_tunnel_is_tunnelled() {
+    const ESTABLISHED: &[u8] = b"HTTP/1.1 200 Connection established\r\n\r\n";
+    let rig = rig(
+        Via::Tls,
+        vec![ESTABLISHED.to_vec(), b"PONG".to_vec()],
+        None,
+        &["u.test"],
+    )
+    .await;
+    let mut c = rig.open("u.test").await;
+    let req = b"CONNECT inner.test:443 HTTP/1.1\r\nHost: inner.test:443\r\n\r\n";
+    c.write_all(req).await.unwrap();
+    assert_eq!(read_n(&mut c, ESTABLISHED.len()).await, ESTABLISHED);
+    // What follows the 2xx is the inner connection's bytes, relayed raw.
+    let ping = b"PING /f HTTP/1.1\r\n\r\n";
+    c.write_all(ping).await.unwrap();
+    assert_eq!(read_n(&mut c, 4).await, b"PONG");
+    drop(c);
+    let ex = rig.exchanges(2).await;
+    let connect = ex
+        .iter()
+        .find(|e| !matches!(e.request().head(), Head::Tunnel { .. }))
+        .unwrap();
+    assert_eq!(connect.state(), ExchangeState::Received);
+    assert_eq!(head_bytes(connect.response().unwrap()), ESTABLISHED);
+    let (_, bytes_in, bytes_out) = tunnel_of(&ex);
+    assert_eq!((bytes_in, bytes_out), (ping.len() as u64, 4));
+}
+
 const SWITCH: &[u8] =
     b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n";
 

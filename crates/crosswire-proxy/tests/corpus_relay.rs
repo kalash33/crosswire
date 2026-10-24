@@ -25,7 +25,7 @@ use common::relay::{body_bytes, head_bytes, wait_for};
 use common::upstream::spawn_raw;
 use common::{connect_raw, read_until, ProxyHarness, UpstreamWiring};
 use crosswire_core::{ChangeOp, DiagnosticCode};
-use crosswire_h1::Progress;
+use crosswire_h1::{BodyFraming, Progress, ResolutionRule};
 use crosswire_model::{Exchange, ExchangeState, Head, MarkerKind, Message, TunnelReason};
 use crosswire_proxy::{NoopHandler, ProxyConfig, ProxyLimits};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -316,6 +316,29 @@ async fn run_request(case: Case, pattern: Pattern) -> Outcome {
 
     let want = OK.repeat(msgs);
     assert_eq!(read_exact_n(&mut c, want.len()).await, want, "{name}");
+    if invalid_content_length(&case) {
+        // The body length is unknown: the head is relayed, the exchange is
+        // recorded as Error without a response, and the rest of the bytes
+        // (the upstream's answer included) go through a raw tunnel.
+        let (forwarded, _) = strip_proxy_lines(&case.input);
+        wait_for("the upstream bytes", || {
+            up.received.lock().unwrap().len() >= forwarded.len()
+        })
+        .await;
+        assert!(
+            *up.received.lock().unwrap() == forwarded,
+            "{name}: upstream bytes differ"
+        );
+        let head = &forwarded[..head_len_of(&case) - (case.input.len() - forwarded.len())];
+        let ex = exchange_with_head(&h, head, |e| Some(e.request())).await;
+        assert_eq!(ex.state(), ExchangeState::Error, "{name}");
+        assert!(ex.response().is_none(), "{name}");
+        wait_marker(&h, MarkerKind::Error, "undelimitable request to").await;
+        return Outcome::ErrorPath(
+            "request: undelimitable tunnel + Error marker".into(),
+            exchange_codes(&ex),
+        );
+    }
     // Inside a tunnel the relay forwards the request verbatim except for
     // `Proxy-Connection` / `Proxy-Authorization` lines (hop-by-hop to the
     // proxy), which it deletes and records as diffs.
@@ -402,6 +425,21 @@ fn strip_proxy_lines(bytes: &[u8]) -> (Vec<u8>, Vec<(usize, Vec<u8>)>) {
     }
     kept.extend_from_slice(&bytes[head_end..]);
     (kept, removed)
+}
+
+/// Whether the case's head has an invalid `Content-Length` (its body
+/// cannot be delimited).
+fn invalid_content_length(case: &Case) -> bool {
+    match case.parser().feed(&case.input).map(|s| s.event) {
+        Ok(Progress::Head(m)) => matches!(
+            m.head().framing(),
+            BodyFraming::Ambiguous {
+                rule: ResolutionRule::InvalidContentLength,
+                ..
+            }
+        ),
+        _ => false,
+    }
 }
 
 /// The status of the case's response head, when it parses.

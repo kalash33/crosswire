@@ -69,6 +69,7 @@ The `json` column and journal files hold the `crosswire-model` `Exchange` schema
 | `error` | `timeout: {phase} {host}:{port}` | a timeout after the response began or during the request body; `phase` is `request body`, `response body` or `total` |
 | `error` | `upstream {host}:{port} closed mid-body: {error}` or `upstream {host}:{port} failed mid-body: {error}` | the upstream ended or failed in the middle of a response body |
 | `error` | `undelimitable response from {host}:{port}: {code}` | a response could not be delimited, so the connection became an opaque tunnel |
+| `error` | `undelimitable request to {host}:{port}: invalid Content-Length` | a request's body could not be delimited (an invalid `Content-Length`); its head was sent and the connection became an opaque tunnel |
 | `error` | `extra bytes after response from {host}:{port}` | the upstream sent bytes after a complete response; the connection was dropped |
 | `error` | `rewritten request head did not re-parse` | the proxy's own request rewrite produced a head the parser rejects; the original head was recorded |
 | `error` | `passthrough upstream failed for {host}:{port}: {reason}` | a CONNECT was answered, then the passthrough connect to the upstream failed |

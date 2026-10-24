@@ -42,9 +42,11 @@ The `crosswire` binary that wires this crate to the store is
   bodies are the **raw framed wire bytes**; `relay` (length and SHA-256 of
   everything that crossed) is recorded only when the stored bytes are not the
   whole body (cut at `capture_cap`, dropped for the budget, or cut short).
-- Treats a message it cannot delimit, and a 101 upgrade, as the end of HTTP:
-  the connection becomes an opaque tunnel and a `Tunnel` exchange records the
-  byte counts (reason `Undelimitable` or `Ws`).
+- Treats a message it cannot delimit (including a request with an invalid
+  `Content-Length`), a 101 upgrade, and a 2xx answer to a `CONNECT` sent
+  inside a tunnel as the end of HTTP: the connection becomes an opaque tunnel
+  and a `Tunnel` exchange records the byte counts (reason `Undelimitable` or
+  `Ws`).
 - Calls a `Handler` at the four message points. `Decision` has `Forward` and
   `Drop` only; `Hold` and `Modify` arrive with intercept in alpha.2.
 - Does **not** use `crosswire_client::Session` on the proxy path (it buffers
@@ -117,6 +119,7 @@ Substituted text in a generated body or marker is capped at 1,024 bytes.
 | request head does not parse, or is over a limit, inside a tunnel or on a later request | 400 `Crosswire could not parse the request: {code}` | nothing | `LimitExceeded` for the limit errors, else `Error` |
 | the first request on a connection does not parse, is not a proxy request, or has a bad target | 400 (431 for an oversize head, 407 for missing credentials) with a fixed text | nothing | none |
 | request body does not parse | 400 | `Error`, request as captured | as above |
+| request has an invalid `Content-Length` (its body cannot be delimited) | the head is sent upstream, then an opaque tunnel carries the rest | `Error` (request only), then `Tunnel` (`Undelimitable`) | `Error`: `undelimitable request to {host}:{port}: invalid Content-Length` |
 | upstream connect: DNS, I/O, protocol | 502 `Crosswire could not connect to {host}:{port}: {reason}` | `Error`, generated response | none |
 | destination refused by the gate (including the proxy's own port) | 502 with the `--allow host:port` hint | `Error`, generated | none |
 | upstream certificate refused | 502 with the `--accept-invalid-cert host` hint | `Error`, generated | none |
@@ -132,6 +135,7 @@ Substituted text in a generated body or marker is capped at 1,024 bytes.
 | client leaves mid-request-body or mid-response | none | `Error`, body cut | none (debug log) |
 | a final response arrives while the request body is still uploading | the response, then close | as normal, request body cut | none |
 | 101 Switching Protocols | the head, then an opaque tunnel | `Received` (framing `Upgrade`), then `Tunnel` (`Ws`) | none |
+| 2xx to a `CONNECT` sent inside a tunnel | the head, then an opaque tunnel | `Received` (framing `Upgrade`), then `Tunnel` (`Undelimitable`) | none |
 | extra bytes after a complete response | the response only; the upstream connection is dropped | the exchange | `Error`: `extra bytes after response from {host}:{port}` |
 | request pipeline deeper than `max_pipelined` | the response to the request in progress, then close | that exchange | `LimitExceeded`: `pipelining: {n} requests queued on one connection from {peer} (max {m})` |
 | rewritten request head does not re-parse | unaffected | the original head | `Error`: `rewritten request head did not re-parse` |

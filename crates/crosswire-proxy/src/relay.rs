@@ -17,7 +17,8 @@ use bytes::{Bytes, BytesMut};
 use crosswire_client::{ClientError, Conn, Target};
 use crosswire_core::Diagnostic;
 use crosswire_h1::{
-    BodyFraming, ParseError, Parser, ParserConfig, Progress, RawMessage, ResponseContext, StartLine,
+    BodyFraming, ParseError, Parser, ParserConfig, Progress, RawMessage, ResolutionRule,
+    ResponseContext, StartLine,
 };
 use crosswire_model::{
     ConnectionInfo, Diff, ExchangeState, Marker, MarkerKind, Message, Timing, TunnelReason,
@@ -273,9 +274,13 @@ impl Relay {
     ///    connection, else a 502; no head within `idle` after the body is a
     ///    504. A client that breaks the body gets a 400; one that leaves or
     ///    stalls is recorded as a partial `Error` exchange.
-    /// 4. Response head: a 101 is recorded and the rest is a `Ws` tunnel;
-    ///    a head without a valid status, like any response that does not
-    ///    parse, makes the rest an `Undelimitable` tunnel.
+    ///    A request with an invalid `Content-Length` is not delimitable:
+    ///    its head is sent, it is recorded as `Error`, and the rest is an
+    ///    `Undelimitable` tunnel.
+    /// 4. Response head: a 101 is recorded and the rest is a `Ws` tunnel; a
+    ///    2xx to a `CONNECT` is recorded and the rest is an `Undelimitable`
+    ///    tunnel; a head without a valid status, like any response that
+    ///    does not parse, makes the rest an `Undelimitable` tunnel.
     /// 5. Response body: an upstream that closes early, a client that
     ///    leaves, or a clock that runs out ends both sides with a partial
     ///    `Error` exchange (and a marker for the first and last).
@@ -317,6 +322,15 @@ impl Relay {
         let bodiless = matches!(
             resolved(head.head().framing()),
             BodyFraming::None | BodyFraming::ContentLength(0)
+        );
+        // An invalid Content-Length leaves the body length unknown: what
+        // follows the head cannot be framed (RFC 9112 section 6.3 rule 5).
+        let undelimitable_req = matches!(
+            head.head().framing(),
+            BodyFraming::Ambiguous {
+                rule: ResolutionRule::InvalidContentLength,
+                ..
+            }
         );
         let req = Req {
             head,
@@ -365,6 +379,16 @@ impl Relay {
             } else {
                 (up.connect_ms, up.tls_ms)
             };
+            if undelimitable_req {
+                let timing = Timing {
+                    connect_ms,
+                    tls_ms,
+                    ..Timing::default()
+                };
+                return Ok(self
+                    .undelimitable_request(client, req, req_cap, info, timing, deadline)
+                    .await);
+            }
             self.resp_parser.reset_response(resp_ctx);
             self.resp_pump.arm();
             let sent = send_request(
@@ -460,13 +484,22 @@ impl Relay {
             self.submit(draft);
             return Ok(Next::Close { linger: false });
         }
-        if status == Some(101) {
+        // A 101, or a 2xx answer to a CONNECT sent inside a tunnel: no HTTP
+        // follows on this connection pair.
+        if status == Some(101)
+            || matches!(resolved(resp_head.head().framing()), BodyFraming::Upgrade)
+        {
+            let reason = if status == Some(101) {
+                TunnelReason::Ws
+            } else {
+                TunnelReason::Undelimitable
+            };
             let mut draft = self.draft(req, req_cap, info.clone(), timing);
             draft.resp_head = Some(resp_head);
             draft.interim = interim;
             self.submit(draft);
             return Ok(self
-                .hand_to_tunnel(client, Bytes::new(), TunnelReason::Ws, info)
+                .hand_to_tunnel(client, Bytes::new(), reason, info)
                 .await);
         }
 
@@ -790,6 +823,48 @@ impl Relay {
             ),
         );
         self.hand_to_tunnel(client, raw, TunnelReason::Undelimitable, info)
+            .await
+    }
+
+    /// A request whose body cannot be delimited (an invalid
+    /// `Content-Length`): the head goes upstream, the exchange is recorded
+    /// as `Error` with no response, and the rest of the connection pair,
+    /// starting with the bytes read after the head, is an `Undelimitable`
+    /// tunnel.
+    async fn undelimitable_request(
+        &mut self,
+        client: &mut dyn Conn,
+        req: Req,
+        mut req_cap: CaptureBuf,
+        info: ConnectionInfo,
+        timing: Timing,
+        deadline: Instant,
+    ) -> Next {
+        let idle = self.shared.cfg.limits.idle;
+        self.req_pump.set_limits(Some(idle), Some(deadline));
+        let sent = match self.upstream.as_mut() {
+            Some(up) => self
+                .req_pump
+                .send(&mut *up.io, &req.rewritten)
+                .await
+                .is_ok(),
+            None => false,
+        };
+        req_cap.cut();
+        let mut draft = self.draft(req, req_cap, info.clone(), timing);
+        draft.state = ExchangeState::Error;
+        self.submit(draft);
+        if !sent {
+            return Next::Close { linger: false };
+        }
+        self.marker(
+            MarkerKind::Error,
+            format!(
+                "undelimitable request to {}:{}: invalid Content-Length",
+                self.dest.host, self.dest.port
+            ),
+        );
+        self.hand_to_tunnel(client, Bytes::new(), TunnelReason::Undelimitable, info)
             .await
     }
 
