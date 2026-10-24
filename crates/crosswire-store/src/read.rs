@@ -6,7 +6,9 @@
 use crate::bodies::{BodySide, BodyStore};
 use crate::error::StoreError;
 use crate::store::Store;
-use crosswire_model::{Body, Exchange, ExchangeState, Marker, MarkerKind, NamespaceKind};
+use crosswire_model::{
+    Body, Exchange, ExchangeState, Marker, MarkerKind, NamespaceKind, ScopeState,
+};
 use rusqlite::types::Value as Sql;
 use rusqlite::{Connection, OptionalExtension, Row};
 use std::ops::RangeInclusive;
@@ -36,6 +38,11 @@ pub struct ExchangeFilter {
     pub namespace: Option<NamespaceKind>,
     /// The recording state.
     pub state: Option<ExchangeState>,
+    /// The scope classification (exact match on the stored `scope_state`).
+    pub scope_state: Option<ScopeState>,
+    /// A tag the exchange must carry. Matched exactly against the elements of
+    /// the JSON `tags` array, so it scans rather than using an index.
+    pub tag: Option<String>,
 }
 
 /// One page of results and where the next one starts.
@@ -87,6 +94,21 @@ pub struct Counts {
     pub bytes_inline: u64,
     /// Bytes of records in packs (sum of `blobs.len`).
     pub bytes_packs: u64,
+    /// Exchange counts split by namespace.
+    pub by_namespace: NamespaceCounts,
+}
+
+/// Exchange counts per namespace (a fixed struct rather than a map, so
+/// [`Counts`] stays `Copy` and every namespace is always present).
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct NamespaceCounts {
+    /// Proxy history.
+    pub history: u64,
+    /// Repeater send history.
+    pub repeater: u64,
+    /// Intruder attack results.
+    pub intruder: u64,
 }
 
 fn corrupt(what: &str) -> StoreError {
@@ -152,6 +174,16 @@ fn list_query(
     if let Some(s) = filter.state {
         conds.push("state = ?");
         params.push(Sql::Text(to_wire(&s)?));
+    }
+    if let Some(ss) = filter.scope_state {
+        conds.push("scope_state = ?");
+        params.push(Sql::Text(to_wire(&ss)?));
+    }
+    if let Some(t) = &filter.tag {
+        // `tags` is a JSON array string, or '' when empty; guard json_each
+        // against the empty string so it is never handed malformed JSON.
+        conds.push("tags <> '' AND EXISTS (SELECT 1 FROM json_each(tags) WHERE value = ?)");
+        params.push(Sql::Text(t.clone()));
     }
     if !conds.is_empty() {
         sql.push_str(" WHERE ");
@@ -361,6 +393,20 @@ impl Store {
             let one = |sql: &str| -> Result<u64, StoreError> {
                 Ok(unsigned(conn.query_row(sql, [], |r| r.get(0))?))
             };
+            let mut by_namespace = NamespaceCounts::default();
+            let mut stmt =
+                conn.prepare("SELECT namespace, count(*) FROM exchanges GROUP BY namespace")?;
+            let mut rows = stmt.query([])?;
+            while let Some(r) = rows.next()? {
+                let ns: String = r.get(0)?;
+                let count = unsigned(r.get(1)?);
+                match ns.as_str() {
+                    "history" => by_namespace.history = count,
+                    "repeater" => by_namespace.repeater = count,
+                    "intruder" => by_namespace.intruder = count,
+                    _ => {}
+                }
+            }
             Ok(Counts {
                 exchanges: one("SELECT count(*) FROM exchanges")?,
                 committed: one("SELECT count(*) FROM exchanges WHERE state = 'committed'")?,
@@ -370,6 +416,7 @@ impl Store {
                     "SELECT coalesce(sum(len), 0) FROM bodies WHERE inline IS NOT NULL",
                 )?,
                 bytes_packs: one("SELECT coalesce(sum(len), 0) FROM blobs")?,
+                by_namespace,
             })
         })
     }

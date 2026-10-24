@@ -35,7 +35,7 @@ fn create_then_open_roundtrip() {
     let v: i64 = r
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(v, 1);
+    assert_eq!(v, 2);
     let a: i64 = r
         .query_row("PRAGMA application_id", [], |r| r.get(0))
         .unwrap();
@@ -53,6 +53,67 @@ fn create_then_open_roundtrip() {
         .query_row("PRAGMA journal_mode", [], |r| r.get(0))
         .unwrap();
     assert_eq!(jm, "wal");
+}
+
+#[test]
+fn migrates_v1_project_to_v2_with_snapshot() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("p");
+    // A fresh project is at the current version; downgrade it to a v1 fixture:
+    // drop the v2 tables and set user_version back to 1.
+    drop(Project::create(&dir).unwrap());
+    {
+        let c = raw(&dir);
+        c.execute_batch("DROP TABLE settings; DROP TABLE tokens; DROP TABLE drafts;")
+            .unwrap();
+        c.pragma_update(None, "user_version", 1).unwrap();
+    }
+
+    // Opening migrates 1 -> 2 and leaves a pre-migration snapshot.
+    let p = Project::open(&dir).unwrap();
+    assert!(
+        dir.join("project.db.v1.bak").is_file(),
+        "snapshot must exist"
+    );
+    let r = p.reader().unwrap();
+    let v: i64 = r
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(v, 2);
+    let n: i64 = r
+        .query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN \
+             ('settings','tokens','drafts')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(n, 3, "the v2 tables appear");
+    // The snapshot is a complete v1 database (no v2 tables, user_version 1).
+    let bak = Connection::open(dir.join("project.db.v1.bak")).unwrap();
+    let bv: i64 = bak
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(bv, 1);
+    let bn: i64 = bak
+        .query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='settings'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(bn, 0);
+    drop(bak);
+    drop(p);
+
+    // Re-opening with the snapshot present still succeeds (already v2, no re-snapshot).
+    let p = Project::open(&dir).unwrap();
+    let v: i64 = p
+        .reader()
+        .unwrap()
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(v, 2);
 }
 
 #[test]
@@ -82,10 +143,10 @@ fn newer_format_refused() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path().join("p");
     drop(Project::create(&dir).unwrap());
-    raw(&dir).pragma_update(None, "user_version", 2).unwrap();
+    raw(&dir).pragma_update(None, "user_version", 3).unwrap();
     assert!(matches!(
         Project::open(&dir),
-        Err(StoreError::NewerFormat(2))
+        Err(StoreError::NewerFormat(3))
     ));
 }
 
@@ -218,7 +279,7 @@ fn open_or_create_recreates_a_zero_byte_db() {
         .unwrap()
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(v, 1);
+    assert_eq!(v, 2);
 }
 
 #[test]

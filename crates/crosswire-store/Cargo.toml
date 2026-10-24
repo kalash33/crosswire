@@ -16,6 +16,8 @@ rusqlite = { workspace = true }
 zstd = { workspace = true }
 sha2 = { workspace = true }
 ulid = { workspace = true }
+rand = { workspace = true }
+base64 = { workspace = true }
 serde_json = { workspace = true }
 rustix = { workspace = true }
 thiserror = { workspace = true }

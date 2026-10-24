@@ -85,6 +85,20 @@ The sentence is kept as written. The write path below is what makes it true.
    dropping a `Store` commits what is in memory, leaves the journal for the next
    open and leaves the project marked unclean, so the next open writes a gap.
 
+10. **A second write connection for the control path.** The settings, API
+    tokens, repeater drafts and the tags/notes edits are small, rare writes that
+    do not belong on the writer thread's batch path. They go through a separate
+    `Control` write connection (hardened and configured like the writer's, with
+    the same 5 s `busy_timeout`), which never touches `exchanges` bodies, packs
+    or the journal. Two writers to one WAL database serialise on SQLite's write
+    lock; because the control transactions are tiny and infrequent, the busy
+    timeout lets each side wait out the other's commit rather than surfacing
+    `SQLITE_BUSY`, and the durability promise above is unchanged: it is a
+    statement about the exchange stream, which the control connection does not
+    write. The migration that adds these tables (`user_version` 1 → 2) runs under
+    the project lock and first copies `project.db` to `project.db.v1.bak`, so an
+    upgrade is reversible by hand.
+
 A failure caused by one exchange (a body over 64 MiB, a JSON or constraint error)
 sets that exchange aside in `journal/bad/`, records a gap, and commits the rest. A
 database failure (disk full, I/O error) writes queued exchanges back to the

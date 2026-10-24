@@ -641,10 +641,12 @@ dependencies = [
 name = "crosswire-store"
 version = "0.0.0"
 dependencies = [
+ "base64 0.22.1",
  "bytes",
  "crosswire-core",
  "crosswire-h1",
  "crosswire-model",
+ "rand 0.9.5",
  "rusqlite",
  "rustix",
  "serde",

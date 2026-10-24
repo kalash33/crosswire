@@ -36,10 +36,16 @@ writer process with SIGKILL under load.
 - On open: validates pack tails, truncates a torn one, replays the journal, and
   writes a gap marker if the previous run did not close.
 - Broadcasts ordered events and keeps an fsynced `audit.jsonl`.
-- Reads: `list` (newest first, filter by method, host, status, namespace, state),
-  `get`, `get_body`, `markers`, `counts`.
+- Reads: `list` (newest first, filter by method, host, status, namespace, state,
+  scope, tag), `get`, `get_body`, `markers`, `counts` (totals, including a split
+  by namespace).
+- Control path (`Store::control`): a second write connection for settings, API
+  tokens, repeater drafts, and editing an exchange's tags and notes; it never
+  writes bodies or packs.
+- Migrates an older project up on open (currently 1 → 2), taking a
+  `project.db.v<n>.bak` snapshot first.
 - Does **not** do search beyond those filters (no full-text index), retention or
-  purge, compaction, encryption at rest, or migration beyond schema version 1.
+  purge, compaction, or encryption at rest.
 - Unix only: the lock and the file modes use unix APIs, and the crate does not
   compile elsewhere yet.
 - Does not guarantee power-loss durability for every commit. See the limits in
@@ -54,7 +60,8 @@ writer process with SIGKILL under load.
 | `StoreConfig` | batch, queue, journal, checkpoint, event and audit limits (below) |
 | `OpenReport` | what open did: sweep result, journal files drained, the unclean-restart gap marker, events sent before anyone could subscribe |
 | `EventStream` | `recv`, `blocking_recv`, `try_recv`; strictly increasing `seq`, with a synthesised `Event::Lagged` when a subscriber falls behind |
-| `ExchangeFilter`, `Page`, `ExchangeRow`, `Counts` | the read API's inputs and outputs; `PAGE_LIMIT_MAX` is 1000 |
+| `ExchangeFilter`, `Page`, `ExchangeRow`, `Counts`, `NamespaceCounts` | the read API's inputs and outputs; `PAGE_LIMIT_MAX` is 1000 |
+| `Control`, `TokenRecord`, `TokenScope`, `Draft` | the control path: settings, API tokens, repeater drafts, tags and notes |
 | `BodyStore`, `BodySide`, `BodyLocator` | store and fetch one body, inline or in a pack |
 | `PackWriter`, `BlobRef` | the append-only pack file writer and a pointer to one record |
 | `sweep`, `SweepReport` | the startup validation of packs |
@@ -130,7 +137,7 @@ store.close()?; // the only call that marks the project cleanly closed
 ## Status
 
 Pre-alpha, `publish = false`; the API is not frozen. The project format is
-version 1 and is documented in `docs/format.md`. The crate depends on the
+version 2 and is documented in `docs/format.md`. The crate depends on the
 unpublished `crosswire-model` (and through it `crosswire-core` and `crosswire-h1`),
 so it cannot be packaged yet.
 

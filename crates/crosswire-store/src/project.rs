@@ -83,10 +83,17 @@ impl Project {
     /// Opens an existing project.
     ///
     /// Refuses a database whose `application_id` is not Crosswire's, or whose
-    /// `user_version` is 0 ([`StoreError::NotAProject`]) or above 1
-    /// ([`StoreError::NewerFormat`]), and (before taking the lock) a project
-    /// whose `project.db`, `-wal`, `-shm` or `audit.jsonl` is a symlink ([`StoreError::Corrupt`]). Runs `PRAGMA integrity_check` only when
-    /// the previous run did not shut down cleanly.
+    /// `user_version` is 0 ([`StoreError::NotAProject`]) or above
+    /// the newest version this build supports ([`StoreError::NewerFormat`]), and (before taking the
+    /// lock) a project whose `project.db`, `-wal`, `-shm` or `audit.jsonl` is
+    /// a symlink ([`StoreError::Corrupt`]). Runs `PRAGMA integrity_check` only
+    /// when the previous run did not shut down cleanly.
+    ///
+    /// An older project is migrated up to the current version in place. Before the
+    /// first upgrade step the pre-migration database is copied to
+    /// `project.db.v<n>.bak` (a plain file copy taken while the project is held
+    /// exclusively under the lock), so a mistaken or interrupted upgrade can be
+    /// rolled back by hand.
     pub fn open(dir: &Path) -> Result<Project, StoreError> {
         refuse_symlinked_files(dir)?;
         if !dir.join(DB_FILE).is_file() {
@@ -97,7 +104,8 @@ impl Project {
     }
 
     fn open_locked(dir: &Path, lock: ProjectLock) -> Result<Project, StoreError> {
-        let db = open_writer(&dir.join(DB_FILE)).map_err(classify)?;
+        let db_path = dir.join(DB_FILE);
+        let db = open_writer(&db_path).map_err(classify)?;
         let app: i64 = db
             .query_row("PRAGMA application_id", [], |r| r.get(0))
             .map_err(classify_sqlite)?;
@@ -123,6 +131,11 @@ impl Project {
                 return Err(StoreError::Corrupt(result));
             }
         }
+        let db = if version < USER_VERSION {
+            migrate_with_snapshot(dir, &db_path, db, version)?
+        } else {
+            db
+        };
         configure_writer(&db).map_err(classify)?;
         Ok(Project {
             dir: dir.to_path_buf(),
@@ -224,6 +237,52 @@ pub(crate) fn open_reader(dir: &Path) -> Result<Connection, StoreError> {
          PRAGMA cache_size=-16384; PRAGMA mmap_size=268435456;",
     )?;
     Ok(conn)
+}
+
+/// A dedicated write connection for the control path (settings, tokens,
+/// drafts, tags and notes): small, rare transactions on a separate connection
+/// from the writer thread's. Same hardening and pragmas as the writer, with a
+/// 5 s busy timeout so it waits for the writer's batch commits rather than
+/// surfacing `SQLITE_BUSY`.
+pub(crate) fn open_control(dir: &Path) -> Result<Connection, StoreError> {
+    let conn = open_writer(&dir.join(DB_FILE)).map_err(classify)?;
+    configure_writer(&conn).map_err(classify)?;
+    Ok(conn)
+}
+
+/// Copies `project.db` to `project.db.v<from>.bak`, then applies the
+/// migrations from `from` up to [`USER_VERSION`].
+///
+/// The WAL is first folded into the main file with a `TRUNCATE` checkpoint and
+/// the write connection is dropped, so the snapshot is a plain copy of a
+/// complete database taken with no writer open on it.
+fn migrate_with_snapshot(
+    dir: &Path,
+    db_path: &Path,
+    db: Connection,
+    from: u32,
+) -> Result<Connection, StoreError> {
+    db.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+        .map_err(|e| classify(StoreError::Sqlite(e)))?;
+    drop(db);
+
+    let bak = dir.join(format!("project.db.v{from}.bak"));
+    // The snapshot is a fresh regular file; refuse a planted symlink so the
+    // copy cannot be redirected out of the project directory.
+    match fs::symlink_metadata(&bak) {
+        Ok(m) if m.file_type().is_symlink() => {
+            return Err(StoreError::Corrupt(format!(
+                "{} is a symlink",
+                bak.display()
+            )));
+        }
+        Ok(_) | Err(_) => {}
+    }
+    fs::copy(db_path, &bak)?;
+
+    let mut db = open_writer(db_path).map_err(classify)?;
+    schema::migrate(&mut db, from)?;
+    Ok(db)
 }
 
 /// Maps `SQLITE_CORRUPT` and `SQLITE_NOTADB` to their store errors.

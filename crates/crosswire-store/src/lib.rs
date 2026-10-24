@@ -7,6 +7,7 @@
 mod atomic;
 mod audit;
 mod bodies;
+mod control;
 mod error;
 mod events;
 mod journal;
@@ -21,10 +22,11 @@ mod sweep;
 mod writer;
 
 pub use bodies::{BodyLocator, BodySide, BodyStore};
+pub use control::{Control, Draft, TokenRecord, TokenScope};
 pub use error::StoreError;
 pub use events::EventStream;
 pub use packs::{BlobRef, PackWriter};
 pub use project::Project;
-pub use read::{Counts, ExchangeFilter, ExchangeRow, Page, PAGE_LIMIT_MAX};
+pub use read::{Counts, ExchangeFilter, ExchangeRow, NamespaceCounts, Page, PAGE_LIMIT_MAX};
 pub use store::{OpenReport, Store, StoreConfig};
 pub use sweep::{sweep, SweepReport};
