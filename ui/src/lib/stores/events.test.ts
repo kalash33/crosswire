@@ -122,6 +122,19 @@ describe('event store', () => {
     s.close();
   });
 
+  it('announces lagged when the first successful open follows a failed attempt', () => {
+    const s = createEventStore({ socketFactory: factory, baseDelayMs: 100 });
+    const onLagged = vi.fn();
+    s.subscribe(vi.fn(), onLagged);
+    s.start();
+    last().drop(); // never opened
+    vi.advanceTimersByTime(100);
+    expect(MockSocket.instances).toHaveLength(2);
+    last().open();
+    expect(onLagged).toHaveBeenCalledTimes(1);
+    s.close();
+  });
+
   it('stops reconnecting and closes the socket on close()', () => {
     const s = createEventStore({ socketFactory: factory, baseDelayMs: 100 });
     s.start();

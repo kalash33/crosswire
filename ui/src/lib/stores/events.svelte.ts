@@ -49,7 +49,7 @@ export function createEventStore(opts: EventStoreOptions = {}) {
   let timer: ReturnType<typeof setTimeout> | null = null;
   let delay = baseDelay;
   let running = false;
-  let hasOpened = false;
+  let attempts = 0;
 
   function announceLagged() {
     for (const s of subs) s.onLagged();
@@ -85,6 +85,7 @@ export function createEventStore(opts: EventStoreOptions = {}) {
 
   function connect() {
     if (!running) return;
+    attempts += 1;
     const sock = factory(eventsUrl());
     socket = sock;
     sock.onopen = () => {
@@ -92,8 +93,9 @@ export function createEventStore(opts: EventStoreOptions = {}) {
       connected = true;
       delay = baseDelay;
       // Anything may have happened while we were away: make consumers refetch.
-      if (hasOpened) announceLagged();
-      hasOpened = true;
+      // Only a clean first attempt skips this: after any failed attempt the
+      // consumer may already have fetched its view before the socket was up.
+      if (attempts > 1) announceLagged();
     };
     sock.onmessage = (e) => {
       if (socket === sock) handle(e.data);
@@ -127,7 +129,7 @@ export function createEventStore(opts: EventStoreOptions = {}) {
       const sock = socket;
       socket = null;
       connected = false;
-      hasOpened = false;
+      attempts = 0;
       delay = baseDelay;
       sock?.close();
     },
