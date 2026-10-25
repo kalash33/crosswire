@@ -224,6 +224,12 @@ test('mouse-free: drop a held item via the Ctrl+D chord', async ({ page }) => {
   await page.goto('/');
   await expect(page.getByTestId('app-shell')).toBeVisible();
 
+  // READINESS: the global toggle-intercept handler no-ops until the intercept
+  // status has loaded (the status bar shows "…" until then, "OFF"/"ON" after).
+  // Waiting for "OFF" guarantees `intercept.loaded` is true, so the Ctrl+T chord
+  // cannot land before the handler can act — the fix for the earlier race.
+  await expect(page.getByTestId('status-intercept')).toContainText('OFF');
+
   // Turn intercept on with the chord, then open the intercept view.
   await page.keyboard.press('Control+t');
   await expect.poll(() => h.enabledPuts).toEqual([{ enabled: true }]);

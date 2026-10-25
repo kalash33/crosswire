@@ -77,6 +77,13 @@ test.describe('detector self-test (the harness can fail)', () => {
   test('catches a dialog, an off-origin request and a navigation', async ({ page, baseURL }) => {
     const origin = new URL(baseURL!).origin;
     await page.route('http://evil.invalid/**', (r) => r.abort());
+    // Navigation target is FULFILLED (not aborted) with a real document so the
+    // main frame actually commits cross-origin and `framenavigated` fires every
+    // run. Aborting the navigation left the commit racy — the frame committed
+    // (and fired framenavigated) only sometimes, which made this gate flaky.
+    await page.route('http://nav.invalid/**', (r) =>
+      r.fulfill({ status: 200, contentType: 'text/html', body: '<!doctype html><title>x</title>' }),
+    );
     await page.goto('/e2e/fixture/index.html');
     const violations = watch(page, origin);
     await page.evaluate(() => {
@@ -86,8 +93,8 @@ test.describe('detector self-test (the harness can fail)', () => {
       document.body.appendChild(img);
     });
     await expect.poll(() => violations.some((v) => v.startsWith('dialog'))).toBe(true);
-    expect(violations.some((v) => v.startsWith('off-origin request:'))).toBe(true);
-    await page.evaluate(() => { location.href = 'http://evil.invalid/nav'; });
+    await expect.poll(() => violations.some((v) => v.startsWith('off-origin request:'))).toBe(true);
+    await page.evaluate(() => { location.href = 'http://nav.invalid/nav'; });
     await expect.poll(() => violations.some((v) => v.startsWith('navigated away'))).toBe(true);
   });
 });
