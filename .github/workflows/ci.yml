@@ -33,6 +33,24 @@ jobs:
       # Install-to-first-capture against the real internet, under 120 s.
       - run: just first-capture
         if: matrix.os == 'ubuntu-latest'
+      # UI toolchain: ubuntu only, so cargo build and `just test` stay Node-free
+      # on every OS. Node 24 matches the version that built the committed
+      # bundle; ui-dist-check fails if assets/ui drifts from ui/ sources.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        if: matrix.os == 'ubuntu-latest'
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - run: npm ci
+        working-directory: ui
+        if: matrix.os == 'ubuntu-latest'
+      - run: just ui-lint
+        if: matrix.os == 'ubuntu-latest'
+      - run: just ui-test
+        if: matrix.os == 'ubuntu-latest'
+      - run: just ui-dist-check
+        if: matrix.os == 'ubuntu-latest'
       - run: just features
       - run: just bench
       # Runs rustdoc with RUSTDOCFLAGS=-D warnings.
