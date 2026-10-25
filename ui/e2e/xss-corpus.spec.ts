@@ -1,5 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import { XSS_CORPUS } from './fixtures/xss-corpus';
+import { watch, liveProbe } from './fixtures/xss-detect';
 
 // Text-rendering half of the XSS gate: captured bytes are attacker-controlled,
 // so seed the corpus into every rendered field and prove nothing executes.
@@ -70,39 +71,19 @@ async function mockApi(page: Page) {
     r.fulfill({ status: 200, json: { items: [ROW], next_cursor: null } }),
   );
 }
-
-// Execution detectors. Returns the collected violations; the caller asserts empty.
-function watch(page: Page, appOrigin: string) {
-  const violations: string[] = [];
-  page.on('dialog', async (d) => {
-    violations.push(`dialog(${d.type()}): ${d.message()}`);
-    await d.dismiss();
-  });
-  page.on('request', (req) => {
-    const u = new URL(req.url());
-    if (!/^https?:$/.test(u.protocol)) return; // data:/blob:/about: carry no network egress
-    if (u.origin !== appOrigin) violations.push(`off-origin request: ${req.url()}`);
-    else if (!u.pathname.startsWith('/api/v1/') && !u.pathname.startsWith('/assets/') && u.pathname !== '/')
-      violations.push(`unexpected same-origin request: ${req.url()}`);
-  });
-  page.on('requestfailed', (req) => {
-    if (new URL(req.url()).origin !== appOrigin && /^https?:/.test(req.url()))
-      violations.push(`off-origin request failed: ${req.url()}`);
-  });
-  page.on('framenavigated', (f) => {
-    if (f === page.mainFrame() && new URL(f.url()).origin !== appOrigin)
-      violations.push(`navigated away: ${f.url()}`);
-  });
-  page.on('popup', (p) => violations.push(`popup: ${p.url()}`));
-  return violations;
-}
-
 test.describe('detector self-test (the harness can fail)', () => {
-  // Proves the listeners above really catch execution, using a throwaway page
+  // Proves the listeners (fixtures/xss-detect.ts) really catch execution, using a throwaway page
   // rather than any production render path (no {@html} anywhere in ui/src).
   test('catches a dialog, an off-origin request and a navigation', async ({ page, baseURL }) => {
     const origin = new URL(baseURL!).origin;
     await page.route('http://evil.invalid/**', (r) => r.abort());
+    // Navigation target is FULFILLED (not aborted) with a real document so the
+    // main frame actually commits cross-origin and `framenavigated` fires every
+    // run. Aborting the navigation left the commit racy — the frame committed
+    // (and fired framenavigated) only sometimes, which made this gate flaky.
+    await page.route('http://nav.invalid/**', (r) =>
+      r.fulfill({ status: 200, contentType: 'text/html', body: '<!doctype html><title>x</title>' }),
+    );
     await page.goto('/e2e/fixture/index.html');
     const violations = watch(page, origin);
     await page.evaluate(() => {
@@ -112,8 +93,8 @@ test.describe('detector self-test (the harness can fail)', () => {
       document.body.appendChild(img);
     });
     await expect.poll(() => violations.some((v) => v.startsWith('dialog'))).toBe(true);
-    expect(violations.some((v) => v.startsWith('off-origin request:'))).toBe(true);
-    await page.evaluate(() => { location.href = 'http://evil.invalid/nav'; });
+    await expect.poll(() => violations.some((v) => v.startsWith('off-origin request:'))).toBe(true);
+    await page.evaluate(() => { location.href = 'http://nav.invalid/nav'; });
     await expect.poll(() => violations.some((v) => v.startsWith('navigated away'))).toBe(true);
   });
 });
@@ -150,12 +131,7 @@ test('corpus in list and detail renders as inert text', async ({ page, baseURL }
   await page.waitForTimeout(500);
 
   // No payload became live DOM anywhere in the app.
-  const live = await page.evaluate(() => ({
-    pwned: (window as unknown as { __xss?: number }).__xss ?? 0,
-    injected: document.querySelectorAll(
-      '[data-testid="app-root"] script, iframe, object, embed, meta[http-equiv], base, svg[onload], [onmouseover], [onerror], [onfocus], a[href^="javascript:"], link[rel=stylesheet][href*="evil"]',
-    ).length,
-  }));
+  const live = await liveProbe(page);
   expect(live.pwned).toBe(0);
   expect(live.injected).toBe(0);
   expect(page.url()).toBe(startUrl);

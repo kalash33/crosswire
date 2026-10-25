@@ -4,21 +4,11 @@
   import type { CountsDto } from '../api/types';
   import { events } from '../stores/events.svelte';
 
-  // Minimal local shapes: only what the bar reads. GET /intercept and
-  // GET /scope are untyped in openapi.json (see InterceptStatus / Scope in
-  // the Rust handlers); the full types belong to a later task.
-  interface InterceptStatus {
-    enabled: boolean;
-    held: unknown[];
-  }
-  interface ScopeDoc {
-    include: unknown[];
-    exclude: unknown[];
-  }
+  import { intercept } from '../stores/intercept.svelte';
+
+  import { scope } from '../stores/scope.svelte';
 
   let counts = $state<CountsDto | null>(null);
-  let intercept = $state<InterceptStatus | null>(null);
-  let scope = $state<ScopeDoc | null>(null);
   let failed = $state(false);
 
   async function refreshCounts() {
@@ -28,41 +18,36 @@
       failed = true;
     }
   }
-  async function refreshIntercept() {
-    try {
-      intercept = await apiGet<InterceptStatus>('/api/v1/intercept');
-    } catch {
-      failed = true;
-    }
-  }
   async function refreshScope() {
-    try {
-      scope = await apiGet<ScopeDoc>('/api/v1/scope');
-    } catch {
-      failed = true;
-    }
+    await scope.load();
+    if (scope.error) failed = true;
   }
   function refreshAll() {
     failed = false;
     void refreshCounts();
-    void refreshIntercept();
+    void intercept.refresh();
     void refreshScope();
   }
 
   onMount(() => {
     refreshAll();
-    return events.subscribe((e) => {
+    // The shared intercept store keeps itself in sync (events + lagged).
+    intercept.start();
+    const off = events.subscribe((e) => {
       if (e.type === 'committed') void refreshCounts();
-      else if (e.type === 'intercept') void refreshIntercept();
     }, refreshAll);
+    return () => {
+      off();
+      intercept.stop();
+    };
   });
 
   const scopeLabel = $derived(
-    scope === null
+    !scope.loaded
       ? '…'
-      : scope.include.length + scope.exclude.length === 0
+      : scope.scope.include.length + scope.scope.exclude.length === 0
         ? 'none'
-        : `${scope.include.length} in / ${scope.exclude.length} out`,
+        : `${scope.scope.include.length} in / ${scope.scope.exclude.length} out`,
   );
 </script>
 
@@ -70,11 +55,22 @@
   <span data-testid="status-api">API {location.host}</span>
   <!-- TODO: proxy bind address needs a future endpoint (no GET /settings in alpha.2). -->
   <span data-testid="status-proxy">Proxy n/a</span>
-  <span data-testid="status-intercept" data-enabled={intercept?.enabled ?? ''}>
-    Intercept {intercept === null ? '…' : intercept.enabled ? 'ON' : 'OFF'}{#if intercept && intercept.held.length > 0}
+  <span data-testid="status-intercept" data-enabled={intercept.loaded ? intercept.enabled : ''}>
+    Intercept {intercept.loaded ? (intercept.enabled ? 'ON' : 'OFF') : '…'}{#if intercept.held.length > 0}
       ({intercept.held.length} held){/if}
   </span>
-  <span data-testid="status-scope">Scope {scopeLabel}</span>
+  <button
+    type="button"
+    class="toggle"
+    data-testid="intercept-toggle"
+    role="switch"
+    aria-checked={intercept.enabled}
+    disabled={!intercept.loaded}
+    onclick={() => void intercept.setEnabled(!intercept.enabled)}
+  >
+    {intercept.enabled ? 'Turn intercept off' : 'Turn intercept on'}
+  </button>
+  <span data-testid="status-scope">Scope {scopeLabel}{#if scope.strictKnown} · strict {scope.enforceStrict ? 'ON' : 'OFF'}{/if}</span>
   <span data-testid="status-counts">
     {#if counts}History {counts.history} · Repeater {counts.repeater} · Intruder {counts.intruder}{:else}Counts …{/if}
   </span>
@@ -89,5 +85,11 @@
     padding: 0.25rem 0.75rem;
     font-size: 0.8rem;
     border-top: 1px solid #8884;
+    align-items: center;
+  }
+  .toggle {
+    font: inherit;
+    font-size: 0.75rem;
+    cursor: pointer;
   }
 </style>

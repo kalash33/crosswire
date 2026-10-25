@@ -24,6 +24,12 @@ const SCRIPT_URL_MESSAGE =
   '§11.1: javascript: URLs execute. Captured bytes must never become an executable URL.';
 const SVELTE_ELEMENT_MESSAGE =
   '§11.1: <svelte:element this={...}> can render an attacker-chosen tag. Use a fixed element.';
+const SETATTR_SINK_MESSAGE =
+  '§11.1: setAttribute() with srcdoc or an on* handler installs live markup / an executable handler from a string. Set text/data attributes only.';
+const SPREAD_SINK_MESSAGE =
+  '§11.1: a spread attribute carrying srcdoc or an on* handler hides a DOM/exec sink. Bind these explicitly, never through a spread of captured data.';
+const DYNAMIC_URL_MESSAGE =
+  '§11.1: a dynamic href/src/action bound to a non-literal could carry an attacker-controlled URL (e.g. javascript:). Allowlist the scheme/origin before binding.';
 
 const restrictedProperties = [
   { property: 'innerHTML', message: HTML_SINK_MESSAGE },
@@ -32,8 +38,20 @@ const restrictedProperties = [
   { property: 'srcdoc', message: HTML_SINK_MESSAGE },
 ];
 
+// Plain-JS/TS AST selectors (component <script> blocks and *.ts modules).
+//   el.setAttribute('srcdoc'|'on*', …) -> installs markup / an executable handler
+const jsRestrictedSyntax = [
+  {
+    // Matches a string-literal first arg of srcdoc or any on* event handler.
+    selector:
+      "CallExpression[callee.property.name='setAttribute'][arguments.0.value=/^(srcdoc|on\\w+)$/i]",
+    message: SETATTR_SINK_MESSAGE,
+  },
+];
+
 // Selectors evaluated against the svelte-eslint-parser AST (templates).
 const svelteRestrictedSyntax = [
+  ...jsRestrictedSyntax,
   {
     selector: "SvelteAttribute[key.name='srcdoc']",
     message: HTML_SINK_MESSAGE,
@@ -48,6 +66,26 @@ const svelteRestrictedSyntax = [
     // string "svelte:element".
     selector: "SvelteElement[name.name='svelte:element']",
     message: SVELTE_ELEMENT_MESSAGE,
+  },
+  {
+    // Spread attribute <el {...x}> whose object literal carries a srcdoc/on*
+    // KEY (identifier form, e.g. {...{ srcdoc: s }} / {...{ onclick: f }}).
+    selector: "SvelteSpreadAttribute Property[key.name=/^(srcdoc|on\\w+)$/i]",
+    message: SPREAD_SINK_MESSAGE,
+  },
+  {
+    // Same, string-literal key form ({...{ 'onerror': f }}).
+    selector: "SvelteSpreadAttribute Property[key.value=/^(srcdoc|on\\w+)$/i]",
+    message: SPREAD_SINK_MESSAGE,
+  },
+  {
+    // Dynamic href/src/action/… bound to a NON-literal expression. A literal
+    // (string/template) is handled by the javascript: rule above; anything else
+    // (identifier, member, call, ternary …) is an unvetted, possibly
+    // attacker-controlled URL.
+    selector:
+      "SvelteAttribute[key.name=/^(href|xlink:href|src|formaction|action|data|poster)$/i] > SvelteMustacheTag[expression.type!='Literal'][expression.type!='TemplateLiteral']",
+    message: DYNAMIC_URL_MESSAGE,
   },
 ];
 
@@ -69,6 +107,7 @@ export default tseslint.config(
     rules: {
       'no-script-url': 'error',
       'no-restricted-properties': ['error', ...restrictedProperties],
+      'no-restricted-syntax': ['error', ...jsRestrictedSyntax],
     },
   },
 
@@ -84,6 +123,7 @@ export default tseslint.config(
     rules: {
       'no-script-url': 'error',
       'no-restricted-properties': ['error', ...restrictedProperties],
+      'no-restricted-syntax': ['error', ...jsRestrictedSyntax],
     },
   },
 

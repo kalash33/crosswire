@@ -155,6 +155,76 @@ async fn enable_hold_forward_with_edit() {
 }
 
 #[tokio::test]
+async fn held_bytes_route_serves_original_and_404s() {
+    let upstream = spawn_upstream(OK_CLOSE.to_vec()).await;
+    let app = TestApp::new().await;
+    let cookie = app.session_cookie().await;
+    let (proxy, _shutdown) = start_proxy(&app, &upstream).await;
+
+    let read = [
+        ("Cookie", cookie.as_str()),
+        ("Sec-Fetch-Site", "same-origin"),
+    ];
+
+    // An unknown id is a 404, even with a valid session.
+    let unknown = app
+        .get("/api/v1/intercept/held/01ARZ3NDEKTSV4RRFFQ69G5FAV/head", &read)
+        .await;
+    assert_eq!(unknown.status, 404, "{}", unknown.body_string());
+
+    // Enable intercept and hold a request.
+    app.send(
+        "PUT",
+        "/api/v1/intercept/enabled",
+        &admin(&cookie),
+        Some(b"{\"enabled\":true}"),
+    )
+    .await;
+    let mut client = send_via_proxy(proxy, upstream.port, "/original").await;
+    let id = wait_held(&app, &cookie).await;
+
+    // The original head bytes come back verbatim as octet-stream.
+    let head = app
+        .get(&format!("/api/v1/intercept/held/{id}/head"), &read)
+        .await;
+    assert_eq!(head.status, 200, "{}", head.body_string());
+    assert_eq!(
+        head.header("content-type"),
+        Some("application/octet-stream")
+    );
+    assert!(
+        head.body_string().contains("/original"),
+        "head carries the original request line"
+    );
+    assert_eq!(
+        head.header("x-crosswire-length"),
+        Some(head.body.len().to_string().as_str())
+    );
+
+    // A bodiless GET has no buffered body -> 404.
+    let body = app
+        .get(&format!("/api/v1/intercept/held/{id}/body"), &read)
+        .await;
+    assert_eq!(body.status, 404, "{}", body.body_string());
+
+    // An unknown part -> 400.
+    let bad = app
+        .get(&format!("/api/v1/intercept/held/{id}/tail"), &read)
+        .await;
+    assert_eq!(bad.status, 400, "{}", bad.body_string());
+
+    // Release the held request so the client connection closes cleanly.
+    app.send(
+        "POST",
+        &format!("/api/v1/intercept/held/{id}/forward"),
+        &admin(&cookie),
+        None,
+    )
+    .await;
+    let _ = read_to_close(&mut client).await;
+}
+
+#[tokio::test]
 async fn hold_then_drop_closes_client() {
     let upstream = spawn_upstream(OK_CLOSE.to_vec()).await;
     let app = TestApp::new().await;

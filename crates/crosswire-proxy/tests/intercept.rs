@@ -25,6 +25,7 @@ use crosswire_proxy::{
 use crosswire_scope::{Compiled, HostPattern, Rule, Scope};
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
+use ulid::Ulid;
 
 /// A running proxy whose handler is a real [`Intercept`], reaching a plain
 /// upstream recorded as `u.test`.
@@ -233,6 +234,47 @@ async fn held_request_forwarded_with_edited_head_records_changes() {
 }
 
 #[tokio::test]
+async fn held_bytes_exposes_original_head_and_body() {
+    let r = rig(
+        ProxyLimits::default(),
+        InterceptRules::default(),
+        empty_scope(),
+        vec![resp("hi")],
+        true,
+    )
+    .await;
+    let body = b"name=value";
+    let head = format!(
+        "POST http://u.test:{}/submit HTTP/1.1\r\nHost: u.test\r\nContent-Length: {}\r\n\r\n",
+        r.upstream.port(),
+        body.len()
+    );
+    let mut req = head.into_bytes();
+    req.extend_from_slice(body);
+    let mut c = r.open(&req).await;
+    r.wait_held(1).await;
+    let id = r.intercept.held()[0].id;
+
+    let bytes = r.intercept.held_bytes(id).expect("held bytes are present");
+    assert!(
+        bytes.head.windows(7).any(|w| w == b"/submit"),
+        "the head is the original request head"
+    );
+    assert!(bytes.head.starts_with(b"POST "));
+    assert_eq!(
+        bytes.body.as_deref(),
+        Some(&body[..]),
+        "the buffered body is returned verbatim"
+    );
+
+    // An unknown id yields nothing.
+    assert!(r.intercept.held_bytes(Ulid::new()).is_none());
+
+    r.intercept.forward(id, None).unwrap();
+    let _ = read_until_close(&mut c).await;
+}
+
+#[tokio::test]
 async fn held_request_dropped_closes_client() {
     let r = rig(
         ProxyLimits::default(),
@@ -290,6 +332,13 @@ async fn body_over_hold_limit_streams_through_not_editable() {
             "a body over the hold limit is not editable"
         );
         assert_eq!(held[0].size, 0, "an unbuffered body has no held size");
+        // The head is still available, but an over-limit body is not buffered.
+        let bytes = r.intercept.held_bytes(held[0].id).expect("held bytes");
+        assert!(!bytes.head.is_empty(), "the head is always buffered");
+        assert!(
+            bytes.body.is_none(),
+            "an over-limit body is not buffered, so no body bytes"
+        );
         // Editing a non-editable request is refused; it stays held.
         let edit = EditedBytes {
             head: Bytes::from_static(b"POST /x HTTP/1.1\r\nHost: u.test\r\n\r\n"),
