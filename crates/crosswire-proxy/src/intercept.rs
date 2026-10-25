@@ -86,6 +86,18 @@ pub struct EditedBytes {
     pub body: Option<Bytes>,
 }
 
+/// The original buffered bytes of a held request, the baseline the UI edits
+/// for byte-exact edit-and-forward and send-to-repeater-from-held.
+#[derive(Clone, Debug)]
+pub struct HeldBytes {
+    /// The original request head bytes (always buffered).
+    pub head: Bytes,
+    /// The original request body bytes, or `None` when the body was not
+    /// buffered because it exceeded the hold limit (an `editable: false`
+    /// held request).
+    pub body: Option<Bytes>,
+}
+
 /// A summary of one held request, for the operator's queue view.
 #[derive(Clone, Debug)]
 pub struct HeldSummary {
@@ -277,6 +289,21 @@ impl Intercept {
             .iter()
             .map(Held::summary)
             .collect()
+    }
+
+    /// The original head and body bytes of the held request `id`, cloned out
+    /// from under the queue lock (the clone is the only work done while
+    /// holding it; there is no `.await`). The body is `None` when the
+    /// request's body was not buffered because it exceeded the hold limit.
+    /// Returns `None` when no request is held with that id.
+    #[must_use]
+    pub fn held_bytes(&self, id: Ulid) -> Option<HeldBytes> {
+        let queue = self.queue.lock().unwrap_or_else(PoisonError::into_inner);
+        let held = queue.iter().find(|h| h.id == id)?;
+        Some(HeldBytes {
+            head: held.head.clone(),
+            body: held.body.clone(),
+        })
     }
 
     /// A receiver that observes the held-count version: it changes whenever

@@ -26,7 +26,8 @@ pub use counters::Counters;
 pub use error::ProxyError;
 pub use handler::{BoxFuture, Decision, Handler, HeldRequest, NoopHandler};
 pub use intercept::{
-    EditedBytes, HeldSummary, Intercept, InterceptError, InterceptRules, OnTimeout, Overflow,
+    EditedBytes, HeldBytes, HeldSummary, Intercept, InterceptError, InterceptRules, OnTimeout,
+    Overflow,
 };
 pub use limits::{ProxyLimits, ProxyLimitsBuilder};
 #[doc(hidden)]

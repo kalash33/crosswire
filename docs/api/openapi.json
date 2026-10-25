@@ -415,6 +415,44 @@
         }
       }
     },
+    "/api/v1/intercept/held/{id}/{part}": {
+      "get": {
+        "summary": "Returns a held request's original `head` or `body` bytes, so the UI can do\nbyte-exact edit-and-forward and send-to-repeater-from-held. Mirrors\n`GET /exchanges/{id}/body/{side}`: raw `application/octet-stream` with an\n`x-crosswire-length` header. Held bodies are stored whole up to the hold\nlimit (over-limit bodies are not buffered at all, so there is no partial\nbody and no truncation marker to report).",
+        "operationId": "get_held_bytes",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "part",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The held request bytes",
+            "content": {
+              "application/octet-stream": {}
+            }
+          },
+          "400": {
+            "description": "The part is not head or body"
+          },
+          "404": {
+            "description": "Not held, or (for body) no buffered body"
+          }
+        }
+      }
+    },
     "/api/v1/intercept/rules": {
       "put": {
         "summary": "Replaces the intercept rules.",

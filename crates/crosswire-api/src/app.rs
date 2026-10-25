@@ -159,6 +159,7 @@ pub(crate) fn api_routes() -> OpenApiRouter<AppState> {
         .routes(routes!(scope::import_scope))
         .routes(routes!(scope::set_enforce_strict))
         .routes(routes!(intercept::get_intercept))
+        .routes(routes!(intercept::get_held_bytes))
         .routes(routes!(intercept::put_enabled))
         .routes(routes!(intercept::put_rules))
         .routes(routes!(intercept::forward_held))

@@ -3,6 +3,7 @@
 
 use crate::extract::{Json, Path};
 use axum::extract::State;
+use axum::response::IntoResponse;
 use axum::Extension;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
@@ -10,6 +11,7 @@ use bytes::Bytes;
 use crosswire_proxy::{
     EditedBytes, HeldSummary, Intercept, InterceptError, InterceptRules, OnTimeout, Overflow,
 };
+use http::header::CONTENT_TYPE;
 use http::StatusCode;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -270,6 +272,48 @@ pub async fn forward_held(
     };
     state.intercept.forward(id, edited).map_err(map_err)?;
     Ok(StatusCode::OK)
+}
+
+/// Returns a held request's original `head` or `body` bytes, so the UI can do
+/// byte-exact edit-and-forward and send-to-repeater-from-held. Mirrors
+/// `GET /exchanges/{id}/body/{side}`: raw `application/octet-stream` with an
+/// `x-crosswire-length` header. Held bodies are stored whole up to the hold
+/// limit (over-limit bodies are not buffered at all, so there is no partial
+/// body and no truncation marker to report).
+#[utoipa::path(
+    get,
+    path = "/api/v1/intercept/held/{id}/{part}",
+    responses(
+        (status = 200, description = "The held request bytes", content_type = "application/octet-stream"),
+        (status = 400, description = "The part is not head or body"),
+        (status = 404, description = "Not held, or (for body) no buffered body")
+    )
+)]
+pub async fn get_held_bytes(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path((id, part)): Path<(String, String)>,
+) -> ApiResult<impl IntoResponse> {
+    ctx.scopes.require(Scope::Read)?;
+    let id = parse_ulid(&id)?;
+    let held = state
+        .intercept
+        .held_bytes(id)
+        .ok_or_else(|| ApiError::not_found("not_held", "no request is held with that id"))?;
+    let bytes = match part.as_str() {
+        "head" => held.head,
+        "body" => held.body.ok_or_else(|| {
+            ApiError::not_found("not_found", "the held request has no buffered body")
+        })?,
+        _ => return Err(ApiError::bad_request("bad_part", "part must be head or body")),
+    };
+    let mut headers = http::HeaderMap::new();
+    headers.insert(CONTENT_TYPE, "application/octet-stream".parse().unwrap());
+    headers.insert(
+        "x-crosswire-length",
+        bytes.len().to_string().parse().unwrap(),
+    );
+    Ok((StatusCode::OK, headers, bytes))
 }
 
 /// Drops a held request, closing its client connection.
