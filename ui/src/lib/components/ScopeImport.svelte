@@ -30,7 +30,7 @@
       <ul>
         {#each scope.preview.exclude as r, i (i)}<li data-testid="preview-rule">{describeRule(r)}</li>{/each}
       </ul>
-      <button type="button" data-testid="import-apply" onclick={() => void scope.applyPreview()}>Apply to scope</button>
+      <button type="button" data-testid="import-apply" disabled={!scope.loaded} onclick={() => void scope.applyPreview()}>Apply to scope</button>
       <button type="button" data-testid="import-discard" onclick={() => scope.discardPreview()}>Discard</button>
     </section>
   {/if}

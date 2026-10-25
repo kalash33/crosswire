@@ -115,4 +115,15 @@ describe('scope store', () => {
     expect(s.enforceStrict).toBe(false);
     expect(s.error).toBe('nope');
   });
+
+  it('save and applyPreview never PUT before a successful load', async () => {
+    const api = mockApi({ getScope: vi.fn().mockRejectedValue(new Error('down')) });
+    const s = createScope({ api });
+    await s.load();
+    expect(s.loaded).toBe(false);
+    expect(await s.save({ include: [], exclude: [] })).toBe(false);
+    await s.importList('x');
+    expect(await s.applyPreview()).toBe(false);
+    expect(api.putScope).not.toHaveBeenCalled();
+  });
 });

@@ -43,6 +43,12 @@ export function createScope(opts: ScopeOptions = {}) {
   }
 
   async function save(next: Scope): Promise<boolean> {
+    // Never PUT before a successful first load: an unloaded (empty) editor
+    // would otherwise wipe the server's scope.
+    if (!loaded) {
+      error = 'scope not loaded yet; reload before saving';
+      return false;
+    }
     try {
       await api.putScope(next);
       scope = clone(next);
@@ -93,7 +99,7 @@ export function createScope(opts: ScopeOptions = {}) {
       preview = null;
     },
     async applyPreview(): Promise<boolean> {
-      if (!preview) return false;
+      if (!preview || !loaded) return false;
       const ok = await save(preview);
       if (ok) preview = null;
       return ok;

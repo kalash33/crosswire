@@ -4,7 +4,10 @@
   import ScopeImport from '../lib/components/ScopeImport.svelte';
   import { scope } from '../lib/stores/scope.svelte';
 
-  onMount(() => void scope.load());
+  onMount(() => {
+    scope.clearError(); // a stale error from History's add-host must not show here
+    void scope.load();
+  });
 </script>
 
 <div class="scope" data-testid="scope-view">

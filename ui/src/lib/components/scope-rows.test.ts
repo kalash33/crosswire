@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { hostRule, ruleFromRow, rowFromRule, parsePorts } from './scope-rows';
+import { blankRow, hostRule, ruleFromRow, rowFromRule, parsePorts } from './scope-rows';
 
 describe('scope rows', () => {
   it('hostRule: exact, host:port, ip', () => {
@@ -19,5 +19,9 @@ describe('scope rows', () => {
   it('parsePorts rejects junk', () => {
     expect(() => parsePorts('80, x')).toThrow();
     expect(parsePorts('')).toBeUndefined();
+  });
+  it('ruleFromRow rejects an empty host', () => {
+    expect(() => ruleFromRow(blankRow())).toThrow('empty host');
+    expect(() => ruleFromRow({ ...blankRow(), hostValue: '  ' })).toThrow();
   });
 });

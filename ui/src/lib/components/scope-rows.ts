@@ -45,6 +45,7 @@ export function parsePorts(text: string): number[] | undefined {
 
 export function ruleFromRow(row: RuleRow): Rule {
   const v = row.hostValue.trim();
+  if (v === '') throw new RowError('a rule has an empty host');
   let host: HostPattern;
   switch (row.hostType) {
     case 'suffix':

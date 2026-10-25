@@ -117,7 +117,7 @@
 
   {#if localError}<p class="error" role="alert" data-testid="scope-local-error">{localError}</p>{/if}
   {#if scope.error}<p class="error" role="alert" data-testid="scope-error">{scope.error}</p>{/if}
-  <div><button type="button" data-testid="scope-save" onclick={() => void save()}>Save scope</button></div>
+  <div><button type="button" data-testid="scope-save" disabled={!scope.loaded} onclick={() => void save()}>Save scope</button></div>
 </div>
 
 <style>
