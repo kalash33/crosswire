@@ -1,1 +1,0 @@
-:root{--lightningcss-light:initial;--lightningcss-dark: ;color-scheme:light dark;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;line-height:1.5}@media (prefers-color-scheme:dark){:root{--lightningcss-light: ;--lightningcss-dark:initial}}*{box-sizing:border-box}body{margin:0}.app-root{padding:1rem}
