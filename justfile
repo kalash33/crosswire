@@ -16,6 +16,14 @@ browser-test:
 first-capture:
     scripts/first-capture.sh
 
+# Install-to-first-capture THROUGH THE UI (§12 DoD): builds and starts a real
+# `crosswire serve` (embedded production bundle), then drives the served SPA
+# with Playwright to prove the example.com capture appears in the history view
+# under 120 s. Needs network, a Chromium-based browser (CROSSWIRE_BROWSER or
+# PATH), and Playwright's chromium (`npx playwright install chromium`).
+first-capture-ui:
+    scripts/first-capture-ui.sh
+
 # Build the Svelte UI bundle and stage it into the server crate for embedding.
 # Run this after changing ui/src; `cargo build` stays Node-free because the
 # built bundle is committed under crates/crosswire-server/assets/ui/ and
