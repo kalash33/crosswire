@@ -10,13 +10,18 @@ const FRAGMENT_KEY = 'bootstrap';
 function extractToken(raw: string): string {
   const text = raw.trim();
   const m = new RegExp(`[#&?]${FRAGMENT_KEY}=([^&\\s]+)`).exec(text);
-  return m ? decodeURIComponent(m[1]) : text;
+  if (!m) return text;
+  try {
+    return decodeURIComponent(m[1]);
+  } catch {
+    return m[1]; // malformed %-escape: use the raw value, the server will reject it
+  }
 }
 
 function fragmentToken(): string | null {
   const hash = location.hash.startsWith('#') ? location.hash.slice(1) : location.hash;
-  const t = new URLSearchParams(hash).get(FRAGMENT_KEY);
-  return t ? t : null;
+  // null = no bootstrap key at all; '' = key present but empty/unusable.
+  return new URLSearchParams(hash).get(FRAGMENT_KEY);
 }
 
 function describe(e: unknown): string {
@@ -52,6 +57,12 @@ class Session {
     // Drop the token from the URL before the request: it is single-use, so it
     // must not linger in the address bar/history whether or not this succeeds.
     history.replaceState(null, '', location.pathname + location.search);
+    if (token === '') {
+      // Present but unusable: treat like a failed exchange, never stay `unknown`.
+      this.status = 'unauthenticated';
+      this.error = 'The bootstrap link carried no token.';
+      return;
+    }
     await this.exchange(token);
   }
 

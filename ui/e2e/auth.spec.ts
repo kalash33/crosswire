@@ -47,6 +47,12 @@ test('no token shows the auth screen', async ({ page }) => {
   await expect(page.getByTestId('app-shell')).toHaveCount(0);
 });
 
+test('an empty bootstrap fragment lands on the auth screen with the URL cleared', async ({ page }) => {
+  await page.goto('/#bootstrap=');
+  await expect(page.getByTestId('auth-screen')).toBeVisible();
+  expect(page.url()).not.toContain('bootstrap');
+});
+
 test('pasting a valid token enters the app; invalid shows an error', async ({ page }) => {
   await page.goto('/');
   await page.getByTestId('token-input').fill('wrong');

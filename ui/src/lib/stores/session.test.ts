@@ -39,6 +39,23 @@ describe('bootstrapFromFragment', () => {
     expect(location.hash).toBe('');
   });
 
+  it('treats a present-but-empty fragment as unauthenticated and clears it', async () => {
+    history.replaceState(null, '', '/#bootstrap=');
+    const fn = mockFetch(200, {});
+    await session.bootstrapFromFragment();
+    expect(fn).not.toHaveBeenCalled();
+    expect(session.status).toBe('unauthenticated');
+    expect(location.hash).toBe('');
+  });
+
+  it('does not throw on a malformed %-escape and never stays unknown', async () => {
+    history.replaceState(null, '', '/#bootstrap=%zz');
+    mockFetch(401, { error: { code: 'unauthorized', message: 'bad' } });
+    await session.bootstrapFromFragment();
+    expect(session.status).toBe('unauthenticated');
+    expect(location.hash).toBe('');
+  });
+
   it('does nothing without a fragment token', async () => {
     const fn = mockFetch(200, {});
     await session.bootstrapFromFragment();
@@ -68,6 +85,14 @@ describe('submitToken', () => {
     await session.submitToken('bad');
     expect(session.status).toBe('unauthenticated');
     expect(session.error).toBe('nope');
+  });
+});
+
+describe('submitToken malformed', () => {
+  it('survives a malformed %-escape in a pasted URL', async () => {
+    mockFetch(401, { error: { code: 'unauthorized', message: 'bad' } });
+    await session.submitToken('http://x/#bootstrap=%zz');
+    expect(session.status).toBe('unauthenticated');
   });
 });
 
