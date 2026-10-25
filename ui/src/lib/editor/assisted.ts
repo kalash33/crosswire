@@ -17,6 +17,7 @@
 // WHATWG TextDecoder — the C1 range (0x80..0x9F) must survive the head scan.
 
 import { bytesToLatin1 } from './encoding';
+import type { ChangeDto } from '../api/types';
 import type { Chip } from './chips';
 
 export type { Chip } from './chips';
@@ -27,18 +28,6 @@ export interface AssistedToggles {
   contentLength: boolean;
   /** Normalize bare LF / lone CR to CRLF in the head on send. */
   lineEndings: boolean;
-}
-
-/** One entry of `SendOutcomeDto.changes`, returned by the server after a send. */
-export interface ChangeDto {
-  /** What was changed, e.g. "content-length" / "line-endings". */
-  op: string;
-  /** Why, e.g. "recomputed" / "normalized to CRLF". */
-  reason: string;
-  /** Byte offset where the change starts (in the sent bytes). */
-  start: number;
-  /** Byte offset where the change ends. */
-  end: number;
 }
 
 // Does the request HEAD carry a Transfer-Encoding header? We scan only the head

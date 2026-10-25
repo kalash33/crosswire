@@ -105,3 +105,18 @@ export interface SessionResponse {
   /** Seconds until the session expires if idle. */
   expires_in: number;
 }
+
+/**
+ * One recorded edit from a repeater send (`SendOutcomeDto.changes`), from
+ * `routes/repeater.rs`. Not in openapi.json (responses are untyped there).
+ */
+export interface ChangeDto {
+  /** What was changed, e.g. "content-length" / "line-endings". */
+  op: string;
+  /** Why, e.g. "recomputed" / "normalized to CRLF". */
+  reason: string;
+  /** Byte offset where the change starts (in the sent bytes). */
+  start: number;
+  /** Byte offset where the change ends. */
+  end: number;
+}

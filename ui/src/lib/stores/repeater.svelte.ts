@@ -1,0 +1,359 @@
+// Repeater store: tabs, debounced draft autosave, send, and "send to repeater".
+//
+// Wire notes (from crates/crosswire-api/src/routes/repeater.rs):
+//  - Tab ids are ULIDs (the server parse_ulid()s the path id), so newTabId()
+//    mints a real ULID client-side.
+//  - POST /repeater/send takes `raw` as STANDARD BASE64 of the request bytes.
+//  - A tab draft's `json` is opaque to the server (<= 1 MiB). We store `raw`
+//    there as a Latin-1 string (encoding.ts, 1:1 byte<->char), never a JS array.
+import { apiGetBytes, apiGet } from '../api/client';
+import { ApiError } from '../api/errors';
+import {
+  deleteTab,
+  listTabs,
+  putTab,
+  sendRequest,
+  type DraftDto,
+  type SendOutcomeDto,
+} from '../api/repeater';
+import type { SendBody } from '../api/types';
+import { bytesToLatin1, latin1ToBytes } from '../editor/encoding';
+
+export type Follow = 'off' | 'in-scope' | 'always';
+export type Mode = 'assisted' | 'raw';
+
+export interface TabConn {
+  host: string;
+  port: number;
+  tls: boolean;
+  sni?: string;
+  verify?: string;
+  reuse: boolean;
+  follow: Follow;
+}
+
+/** The UI model of one repeater tab. `outcome`/`error`/`sending` are not persisted. */
+export interface RepeaterTab {
+  id: string;
+  conn: TabConn;
+  mode: Mode;
+  /** The full request bytes. */
+  raw: Uint8Array;
+  outcome?: SendOutcomeDto;
+  error?: string;
+  sending?: boolean;
+}
+
+export interface TabSeed {
+  conn?: Partial<TabConn>;
+  mode?: Mode;
+  raw?: Uint8Array;
+}
+
+/** Injectable I/O so tests need no fetch. */
+export interface RepeaterApi {
+  sendRequest(body: SendBody): Promise<SendOutcomeDto>;
+  listTabs(): Promise<DraftDto[]>;
+  putTab(id: string, json: unknown): Promise<void>;
+  deleteTab(id: string): Promise<void>;
+  /** `GET /exchanges/{id}` (the full model `Exchange` JSON). */
+  getExchange(id: string): Promise<unknown>;
+  /** `GET /exchanges/{id}/body/req` as exact bytes. */
+  getBody(id: string): Promise<Uint8Array>;
+}
+
+const defaultApi: RepeaterApi = {
+  sendRequest,
+  listTabs,
+  putTab,
+  deleteTab,
+  getExchange: (id) => apiGet<unknown>(`/api/v1/exchanges/${encodeURIComponent(id)}`),
+  getBody: async (id) =>
+    (await apiGetBytes(`/api/v1/exchanges/${encodeURIComponent(id)}/body/req`)).bytes,
+};
+
+// ---- ULID (Crockford base32: 48-bit ms time + 80 random bits) ----
+
+const CROCKFORD = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+
+export function newTabId(): string {
+  let t = Date.now();
+  let time = '';
+  for (let i = 0; i < 10; i++) {
+    time = CROCKFORD[t % 32] + time;
+    t = Math.floor(t / 32);
+  }
+  const rnd = new Uint8Array(16);
+  crypto.getRandomValues(rnd);
+  let rand = '';
+  for (let i = 0; i < 16; i++) rand += CROCKFORD[rnd[i] & 31];
+  return time + rand;
+}
+
+// ---- tab <-> draft json ----
+
+const FOLLOWS: readonly Follow[] = ['off', 'in-scope', 'always'];
+
+/** Serialize a tab to the draft `json`. `raw` is a Latin-1 string (byte-exact). */
+export function toJson(tab: RepeaterTab): unknown {
+  return { conn: { ...tab.conn }, mode: tab.mode, raw: bytesToLatin1(tab.raw) };
+}
+
+/** Parse a draft `json` back into a tab; null if it is not a draft we wrote. */
+export function fromJson(id: string, json: unknown): RepeaterTab | null {
+  if (typeof json !== 'object' || json === null) return null;
+  const j = json as { conn?: Partial<TabConn>; mode?: unknown; raw?: unknown };
+  if (typeof j.raw !== 'string') return null;
+  const c = j.conn ?? {};
+  const conn: TabConn = {
+    host: typeof c.host === 'string' ? c.host : '',
+    port: typeof c.port === 'number' ? c.port : 80,
+    tls: c.tls === true,
+    reuse: c.reuse === true,
+    follow: FOLLOWS.includes(c.follow as Follow) ? (c.follow as Follow) : 'off',
+  };
+  if (typeof c.sni === 'string') conn.sni = c.sni;
+  if (typeof c.verify === 'string') conn.verify = c.verify;
+  return { id, conn, mode: j.mode === 'assisted' ? 'assisted' : 'raw', raw: latin1ToBytes(j.raw) };
+}
+
+function b64(bytes: Uint8Array): string {
+  return btoa(bytesToLatin1(bytes));
+}
+
+function unb64(s: string): Uint8Array {
+  return latin1ToBytes(atob(s));
+}
+
+function messageOf(e: unknown): string {
+  return e instanceof ApiError || e instanceof Error ? e.message : String(e);
+}
+
+export interface RepeaterOptions {
+  api?: RepeaterApi;
+  /** Autosave debounce in ms (default 500). */
+  debounceMs?: number;
+}
+
+export function createRepeater(opts: RepeaterOptions = {}) {
+  const api = opts.api ?? defaultApi;
+  const debounceMs = opts.debounceMs ?? 500;
+
+  let tabs = $state<RepeaterTab[]>([]);
+  let activeTabId = $state<string | null>(null);
+  const activeTab = $derived(tabs.find((t) => t.id === activeTabId));
+  let loadError = $state<string | null>(null);
+
+  // One timer per tab: a new edit replaces it, so rapid edits coalesce into a
+  // single PUT fired `debounceMs` after the LAST change. Plain (non-reactive).
+  const timers: Record<string, ReturnType<typeof setTimeout> | undefined> = Object.create(null);
+
+  function find(id: string): RepeaterTab | undefined {
+    return tabs.find((t) => t.id === id);
+  }
+
+  async function save(id: string): Promise<void> {
+    delete timers[id];
+    const tab = find(id);
+    if (!tab) return;
+    try {
+      await api.putTab(id, toJson(tab));
+    } catch (e) {
+      // The draft stays in memory; surface it and the next edit retries.
+      const t = find(id);
+      if (t) t.error = `draft not saved: ${messageOf(e)}`;
+    }
+  }
+
+  function schedule(id: string): void {
+    const prev = timers[id];
+    if (prev !== undefined) clearTimeout(prev);
+    timers[id] = setTimeout(() => void save(id), debounceMs);
+  }
+
+  /** Save every pending draft now (e.g. on tab close / page hide). */
+  async function flushDrafts(): Promise<void> {
+    const ids = Object.keys(timers);
+    for (const id of ids) clearTimeout(timers[id]);
+    await Promise.all(ids.map((id) => save(id)));
+  }
+
+  function newTab(seed: TabSeed = {}): string {
+    const tab: RepeaterTab = {
+      id: newTabId(),
+      conn: {
+        host: '',
+        port: 80,
+        tls: false,
+        reuse: false,
+        follow: 'off',
+        ...seed.conn,
+      },
+      mode: seed.mode ?? 'assisted',
+      raw: seed.raw ?? new Uint8Array(),
+    };
+    tabs.push(tab);
+    activeTabId = tab.id;
+    schedule(tab.id);
+    return tab.id;
+  }
+
+  function selectTab(id: string): void {
+    if (find(id)) activeTabId = id;
+  }
+
+  async function closeTab(id: string): Promise<void> {
+    const i = tabs.findIndex((t) => t.id === id);
+    if (i < 0) return;
+    const timer = timers[id];
+    if (timer !== undefined) clearTimeout(timer);
+    delete timers[id];
+    tabs.splice(i, 1);
+    if (activeTabId === id) activeTabId = tabs[Math.min(i, tabs.length - 1)]?.id ?? null;
+    try {
+      await api.deleteTab(id);
+    } catch (e) {
+      loadError = `could not delete draft: ${messageOf(e)}`;
+    }
+  }
+
+  function setRaw(id: string, raw: Uint8Array): void {
+    const t = find(id);
+    if (!t) return;
+    t.raw = raw;
+    schedule(id);
+  }
+
+  function setConn(id: string, patch: Partial<TabConn>): void {
+    const t = find(id);
+    if (!t) return;
+    Object.assign(t.conn, patch);
+    schedule(id);
+  }
+
+  function setMode(id: string, mode: Mode): void {
+    const t = find(id);
+    if (!t) return;
+    t.mode = mode;
+    schedule(id);
+  }
+
+  async function send(id: string, o: { allowOutOfScope?: boolean } = {}): Promise<void> {
+    const t = find(id);
+    if (!t) return;
+    const body: SendBody = {
+      host: t.conn.host,
+      port: t.conn.port,
+      tls: t.conn.tls,
+      raw: b64(t.raw),
+      mode: t.mode,
+      follow: t.conn.follow,
+      reuse: t.conn.reuse,
+      allow_out_of_scope: o.allowOutOfScope === true,
+    };
+    if (t.conn.sni) body.sni = t.conn.sni;
+    if (t.conn.verify) body.verify = t.conn.verify;
+    t.sending = true;
+    t.error = undefined;
+    try {
+      const outcome = await api.sendRequest(body);
+      const cur = find(id);
+      if (cur) cur.outcome = outcome;
+    } catch (e) {
+      // 403 out-of-scope / 422 unparseable / 502 upstream: show it, keep the draft.
+      const cur = find(id);
+      if (cur) cur.error = messageOf(e);
+    } finally {
+      const cur = find(id);
+      if (cur) cur.sending = false;
+    }
+  }
+
+  async function loadTabs(): Promise<void> {
+    loadError = null;
+    let drafts: DraftDto[];
+    try {
+      drafts = await api.listTabs();
+    } catch (e) {
+      loadError = messageOf(e);
+      return;
+    }
+    const loaded: RepeaterTab[] = [];
+    for (const d of [...drafts].sort((a, b) => a.updated_at - b.updated_at)) {
+      const tab = fromJson(d.tab_id, d.json);
+      if (tab) loaded.push(tab);
+    }
+    // Hydration is not an edit: no autosave is scheduled.
+    tabs = loaded;
+    if (!activeTabId || !find(activeTabId)) activeTabId = loaded[0]?.id ?? null;
+  }
+
+  /**
+   * Seed a new tab from a history exchange (best-effort).
+   *
+   * Raw bytes = the stored request HEAD bytes (`request.head.bytes`, base64 in
+   * `GET /exchanges/{id}`, only for `http1-raw` heads, ending in the blank line)
+   * followed by the request body from `GET /exchanges/{id}/body/req`. Conn comes
+   * from `request.connection` (`target_addr`, `port`, `sni`); the model records
+   * no scheme, so `tls` is inferred from a non-null `tls_version`. A missing body
+   * (404) is treated as empty. Throws if the exchange has no raw HTTP/1 head.
+   */
+  async function sendFromExchange(exchangeId: string): Promise<string> {
+    const ex = (await api.getExchange(exchangeId)) as {
+      request?: {
+        head?: { type?: string; bytes?: string };
+        connection?: { target_addr?: string; port?: number; sni?: string | null; tls_version?: string | null };
+      };
+    };
+    const req = ex.request;
+    if (req?.head?.type !== 'http1-raw' || typeof req.head.bytes !== 'string') {
+      throw new ApiError('unsupported', 'this exchange has no raw HTTP/1 request to repeat', 0);
+    }
+    const head = unb64(req.head.bytes);
+    let body: Uint8Array = new Uint8Array();
+    try {
+      body = await api.getBody(exchangeId);
+    } catch (e) {
+      if (!(e instanceof ApiError && e.status === 404)) throw e;
+    }
+    const raw = new Uint8Array(head.length + body.length);
+    raw.set(head, 0);
+    raw.set(body, head.length);
+    const c = req.connection ?? {};
+    const tls = typeof c.tls_version === 'string' && c.tls_version !== '';
+    const conn: Partial<TabConn> = {
+      host: c.target_addr ?? '',
+      port: typeof c.port === 'number' && c.port > 0 ? c.port : tls ? 443 : 80,
+      tls,
+    };
+    if (c.sni) conn.sni = c.sni;
+    return newTab({ conn, raw });
+  }
+
+  return {
+    get tabs() {
+      return tabs;
+    },
+    get activeTabId() {
+      return activeTabId;
+    },
+    get activeTab() {
+      return activeTab;
+    },
+    get loadError() {
+      return loadError;
+    },
+    newTab,
+    closeTab,
+    selectTab,
+    setRaw,
+    setConn,
+    setMode,
+    send,
+    loadTabs,
+    flushDrafts,
+    sendFromExchange,
+  };
+}
+
+export const repeater = createRepeater();
