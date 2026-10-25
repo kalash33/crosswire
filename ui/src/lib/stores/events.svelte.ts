@@ -52,7 +52,13 @@ export function createEventStore(opts: EventStoreOptions = {}) {
   let attempts = 0;
 
   function announceLagged() {
-    for (const s of subs) s.onLagged();
+    for (const s of subs) {
+      try {
+        s.onLagged();
+      } catch {
+        // One failing subscriber must not starve the others.
+      }
+    }
   }
 
   function handle(data: unknown) {
@@ -71,7 +77,13 @@ export function createEventStore(opts: EventStoreOptions = {}) {
       return;
     }
     latest = [...latest, ev].slice(-maxEvents);
-    for (const s of subs) s.onEvent(ev);
+    for (const s of subs) {
+      try {
+        s.onEvent(ev);
+      } catch {
+        // One failing subscriber must not starve the others.
+      }
+    }
   }
 
   function scheduleReconnect() {

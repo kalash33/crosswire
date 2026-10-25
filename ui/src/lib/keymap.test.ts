@@ -51,11 +51,11 @@ describe('keymap dispatch', () => {
     expect(ev.defaultPrevented).toBe(true);
   });
 
-  it('prevents default for a bound chord even with no handler', () => {
+  it('is a no-op (browser default kept) for a bound chord with no handler', () => {
     const km = createKeymap();
     const ev = key({ key: 'd', code: 'KeyD', ctrlKey: true });
     expect(() => km.dispatch(ev)).not.toThrow();
-    expect(ev.defaultPrevented).toBe(true);
+    expect(ev.defaultPrevented).toBe(false);
   });
 
   it('is a no-op for an unbound chord', () => {

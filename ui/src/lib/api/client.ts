@@ -1,4 +1,4 @@
-import { errorFromResponse } from './errors';
+import { ApiError, errorFromResponse } from './errors';
 
 export type QueryValue = string | number | boolean | null | undefined;
 export type QueryParams = Record<string, QueryValue | readonly QueryValue[]>;
@@ -26,7 +26,11 @@ async function request<T>(url: string, init: RequestInit): Promise<T> {
   const text = await res.text();
   if (!res.ok) throw errorFromResponse(res.status, res.statusText, text);
   if (text === '') return undefined as T;
-  return JSON.parse(text) as T;
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    throw new ApiError('invalid_response', 'the server returned a non-JSON success body', res.status);
+  }
 }
 
 export function apiGet<T>(path: string, params?: QueryParams): Promise<T> {

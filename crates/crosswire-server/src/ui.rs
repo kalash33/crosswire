@@ -129,7 +129,7 @@ fn csp(api_port: u16, nonce: &str) -> String {
     format!(
         "default-src 'self'; \
          frame-src http://127.0.0.1:{api_port}; \
-         connect-src 'self' ws://localhost:{api_port}; \
+         connect-src 'self' ws://localhost:{api_port} ws://127.0.0.1:{api_port}; \
          object-src 'none'; base-uri 'none'; frame-ancestors 'none'; \
          style-src 'self' 'nonce-{nonce}'"
     )

@@ -154,6 +154,29 @@ describe('event store', () => {
     expect(MockSocket.instances).toHaveLength(2);
   });
 
+  it('a throwing subscriber does not abort delivery to the others', () => {
+    const s = createEventStore({ socketFactory: factory });
+    const boom = vi.fn(() => {
+      throw new Error('boom');
+    });
+    const second = vi.fn();
+    const lag1 = vi.fn(() => {
+      throw new Error('boom');
+    });
+    const lag2 = vi.fn();
+    s.subscribe(boom, lag1);
+    s.subscribe(second, lag2);
+    s.start();
+    last().open();
+    expect(() => last().send({ type: 'received', id: 'A', seq: 1 })).not.toThrow();
+    expect(() => last().send({ type: 'lagged', missed: 2, seq: 2 })).not.toThrow();
+    expect(boom).toHaveBeenCalledTimes(1);
+    expect(second).toHaveBeenCalledTimes(1);
+    expect(lag1).toHaveBeenCalledTimes(1);
+    expect(lag2).toHaveBeenCalledTimes(1);
+    s.close();
+  });
+
   it('unsubscribe stops delivery', () => {
     const s = createEventStore({ socketFactory: factory });
     const onEvent = vi.fn();

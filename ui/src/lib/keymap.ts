@@ -87,14 +87,20 @@ export function createKeymap(initial: Readonly<Record<Action, string>> = DEFAULT
       if (holder && holder !== action) bindings.delete(holder);
       bindings.set(action, norm);
     },
-    /** The single keydown entry point. Bound chords are always preventDefault'd. */
+    /**
+     * The single keydown entry point. Only a chord bound to an action WITH a
+     * registered handler is preventDefault'd and dispatched; anything else is
+     * left to the browser untouched.
+     */
     dispatch(e: KeyboardEvent): void {
       const chord = chordFromEvent(e);
       if (chord === null) return;
       const action = actionFor(chord);
       if (!action) return;
+      const handler = handlers.get(action);
+      if (!handler) return;
       e.preventDefault();
-      handlers.get(action)?.(e);
+      handler(e);
     },
   };
 }

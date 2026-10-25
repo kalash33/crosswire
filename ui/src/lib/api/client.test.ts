@@ -97,6 +97,15 @@ describe('apiSend', () => {
     expect(new Headers(init.headers).has('content-type')).toBe(false);
   });
 
+  it('rejects with ApiError invalid_response on a 2xx non-JSON body', async () => {
+    mockFetch(200, '<html>not json</html>', true);
+    const err = await rejection(apiGet('/api/v1/health'));
+    expect(err).toBeInstanceOf(ApiError);
+    expect(err).not.toBeInstanceOf(SyntaxError);
+    expect(err.code).toBe('invalid_response');
+    expect(err.status).toBe(200);
+  });
+
   it('rejects with ApiError on a non-2xx envelope', async () => {
     mockFetch(400, { error: { code: 'bad_request', message: 'nope' } });
     const err = await rejection(apiSend('PUT', '/api/v1/intercept/enabled', { enabled: true }));
