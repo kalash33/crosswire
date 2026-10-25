@@ -18,3 +18,9 @@ export function createRouter() {
     },
   };
 }
+
+/**
+ * The app's single router instance. Exported so views (Task 8's History) and
+ * App.svelte share one reactive `path`; `navigate` is reachable app-wide.
+ */
+export const router = createRouter();

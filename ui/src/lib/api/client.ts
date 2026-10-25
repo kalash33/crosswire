@@ -33,6 +33,30 @@ export function apiGet<T>(path: string, params?: QueryParams): Promise<T> {
   return request<T>(path + toQuery(params), { method: 'GET' });
 }
 
+/**
+ * Raw-bytes GET for body endpoints (`GET /exchanges/{id}/body/{side}`), which
+ * return `application/octet-stream`, not JSON. Reads the payload as an exact
+ * `Uint8Array` and the `x-crosswire-truncated-at` header (null when absent).
+ * Reuses the JSON client's error handling for a non-2xx response.
+ */
+export async function apiGetBytes(
+  path: string,
+): Promise<{ bytes: Uint8Array; truncatedAt: number | null }> {
+  const res = await fetch(path, {
+    method: 'GET',
+    credentials: 'same-origin',
+    headers: { 'Sec-Fetch-Site': 'same-origin' },
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw errorFromResponse(res.status, res.statusText, text);
+  }
+  const bytes = new Uint8Array(await res.arrayBuffer());
+  const raw = res.headers.get('x-crosswire-truncated-at');
+  const truncatedAt = raw === null || raw === '' ? null : Number(raw);
+  return { bytes, truncatedAt };
+}
+
 export function apiSend<T>(method: string, path: string, body?: unknown): Promise<T> {
   const headers = new Headers();
   const init: RequestInit = { method, headers };

@@ -3,9 +3,8 @@
   import { session } from './lib/stores/session.svelte';
   import Auth from './routes/Auth.svelte';
   import Shell from './lib/components/Shell.svelte';
-  import { createRouter } from './lib/router.svelte';
-
-  const router = createRouter();
+  import History from './routes/History.svelte';
+  import { router } from './lib/router.svelte';
 
   onMount(() => {
     // A bootstrap fragment wins; otherwise check for an existing cookie session.
@@ -19,8 +18,11 @@
     <p data-testid="loading">Loading…</p>
   {:else if session.status === 'authenticated'}
     <Shell>
-      <!-- Task 8 maps "/" to the History view; until then nothing is routed. -->
-      <p data-testid="route-path">{router.path}</p>
+      {#if router.path === '/'}
+        <History />
+      {:else}
+        <p data-testid="route-unknown">No view for {router.path}</p>
+      {/if}
     </Shell>
   {:else}
     <Auth />
