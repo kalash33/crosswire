@@ -16,6 +16,54 @@ browser-test:
 first-capture:
     scripts/first-capture.sh
 
+# Install-to-first-capture THROUGH THE UI (§12 DoD): builds and starts a real
+# `crosswire serve` (embedded production bundle), then drives the served SPA
+# with Playwright to prove the example.com capture appears in the history view
+# under 120 s. Needs network, a Chromium-based browser (CROSSWIRE_BROWSER or
+# PATH), and Playwright's chromium (`npx playwright install chromium`).
+first-capture-ui:
+    scripts/first-capture-ui.sh
+
+# Build the Svelte UI bundle and stage it into the server crate for embedding.
+# Run this after changing ui/src; `cargo build` stays Node-free because the
+# built bundle is committed under crates/crosswire-server/assets/ui/ and
+# rust-embed embeds it at compile time.
+ui-build:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd ui
+    npm ci
+    npm run build
+    dest=../crates/crosswire-server/assets/ui
+    rm -rf "$dest"
+    mkdir -p "$dest"
+    cp -R dist/. "$dest"/
+    # Keep the directory tracked even if the bundle is ever emptied.
+    touch "$dest/.gitkeep"
+
+# ESLint over ui/src. Assumes `npm ci` has already populated ui/node_modules
+# (CI runs it once before the ui-* recipes; locally `just ui-build` does too).
+ui-lint:
+    cd ui && npm run lint
+
+# Vitest unit tests only; Playwright e2e is wired separately. Assumes deps are
+# installed (see ui-lint).
+ui-test:
+    cd ui && npm run test
+
+# Drift check: rebuild ui/ from scratch and byte-compare ui/dist against the
+# committed bundle, like the openapi_snapshot_is_current test. .gitkeep is
+# excluded because ui-build adds it to the committed dir but it is not in dist.
+# Installs deps itself so it is correct standalone. Fix drift with `just ui-build`.
+ui-dist-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    (cd ui && npm ci && npm run build)
+    if ! diff -r --exclude=.gitkeep ui/dist crates/crosswire-server/assets/ui; then
+      echo "error: committed UI bundle is stale; run 'just ui-build' and commit" >&2
+      exit 1
+    fi
+
 serve *ARGS:
     cargo run --locked -p crosswire-server -- serve {{ARGS}}
 

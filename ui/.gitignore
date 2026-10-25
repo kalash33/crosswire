@@ -1,0 +1,12 @@
+# Build output. NOTE: dist/ is intentionally gitignored here — the committed,
+# drift-checked copy of the bundle lives in the server crate
+# (crates/crosswire-server/assets/ui/), not in ui/. See Task 1.
+dist/
+node_modules/
+
+# Test / tooling artifacts
+/coverage/
+/playwright-report/
+/test-results/
+/.svelte-kit/
+*.tsbuildinfo

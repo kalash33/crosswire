@@ -177,12 +177,13 @@ pub(crate) fn api_routes() -> OpenApiRouter<AppState> {
         .routes(routes!(crate::events::events_ws))
 }
 
-/// Builds the API router from the shared state.
+/// Applies the gate and the trace layer to a built route set, then supplies the
+/// state. The gate and trace layers wrap whatever routes (and fallback) are
+/// already present, so a fallback must be attached *before* this is called.
 ///
 /// The trace layer records method and path only, at debug level; it never
 /// records request or response bytes, tokens or cookies.
-pub fn router(state: AppState) -> Router {
-    let (router, _api) = api_routes().split_for_parts();
+fn finish(router: Router<AppState>, state: AppState) -> Router {
     router
         .layer(from_fn_with_state(state.clone(), gate))
         // Record method and path only (never the query string, which can
@@ -197,4 +198,35 @@ pub fn router(state: AppState) -> Router {
             }),
         )
         .with_state(state)
+}
+
+/// Builds the API router from the shared state. Unmatched routes fall through to
+/// the default `404`.
+pub fn router(state: AppState) -> Router {
+    let (router, _api) = api_routes().split_for_parts();
+    finish(router, state)
+}
+
+/// Builds the API router with `fallback` serving every unmatched route.
+///
+/// `crosswire-server` passes its embedded-UI service here so non-`/api/v1`
+/// paths reach the UI bundle. The fallback is attached to the route set
+/// *before* the gate layer, so the gate (Host check and the static-asset
+/// allowlist in [`crate::auth::is_unauthenticated`]) covers the fallback just as
+/// it covers the API routes: a non-loopback `Host` is still `421`, static assets
+/// pass without a credential, and `/api/v1` routes stay gated. This crate must
+/// not depend on `crosswire-server` (that would be circular), so the server
+/// injects the service rather than this crate constructing it.
+pub fn router_with_fallback<S>(state: AppState, fallback: S) -> Router
+where
+    S: tower::Service<axum::extract::Request, Error = std::convert::Infallible>
+        + Clone
+        + Send
+        + Sync
+        + 'static,
+    S::Response: axum::response::IntoResponse,
+    S::Future: Send + 'static,
+{
+    let (router, _api) = api_routes().split_for_parts();
+    finish(router.fallback_service(fallback), state)
 }

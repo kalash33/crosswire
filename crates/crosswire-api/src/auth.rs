@@ -167,9 +167,16 @@ const UNAUTHENTICATED: &[&str] = &[
 ];
 
 /// Whether `path` is served without a credential.
+///
+/// The listed `/api/v1` exceptions are unauthenticated, and so is any path that
+/// does not start with `/api/v1`: those are the static-asset class (the embedded
+/// UI bundle and its SPA deep-link fallback, served by `crosswire-server`). The
+/// Host check still runs first, so static assets are served only for a loopback
+/// `Host`. Every real API route starts with `/api/v1` and is not in the list, so
+/// it stays gated (for example `/api/v1/counts` → `401`).
 #[must_use]
 pub fn is_unauthenticated(path: &str) -> bool {
-    UNAUTHENTICATED.contains(&path)
+    UNAUTHENTICATED.contains(&path) || !path.starts_with("/api/v1")
 }
 
 /// Whether `host` (the `Host` header value) is an accepted loopback name.

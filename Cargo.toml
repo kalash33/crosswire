@@ -38,6 +38,7 @@ tracing-subscriber = { version = "0.3", default-features = false, features = ["f
 dirs = "6"
 base64 = "0.22"
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio", "ws", "macros"] }
+tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.6", features = ["trace"] }
 utoipa = { version = "6", features = ["axum_extras", "ulid"] }
 utoipa-axum = "0.3"

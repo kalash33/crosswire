@@ -8,6 +8,7 @@ mod error;
 mod paths;
 mod serve;
 mod token_cmd;
+mod ui;
 
 use std::process::ExitCode;
 

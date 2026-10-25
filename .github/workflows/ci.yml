@@ -33,6 +33,41 @@ jobs:
       # Install-to-first-capture against the real internet, under 120 s.
       - run: just first-capture
         if: matrix.os == 'ubuntu-latest'
+      # UI toolchain: ubuntu only, so cargo build and `just test` stay Node-free
+      # on every OS. Node 24 matches the version that built the committed
+      # bundle; ui-dist-check fails if assets/ui drifts from ui/ sources.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        if: matrix.os == 'ubuntu-latest'
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - run: npm ci
+        working-directory: ui
+        if: matrix.os == 'ubuntu-latest'
+      - run: just ui-lint
+        if: matrix.os == 'ubuntu-latest'
+      - run: just ui-test
+        if: matrix.os == 'ubuntu-latest'
+      - run: just ui-dist-check
+        if: matrix.os == 'ubuntu-latest'
+      # Playwright's Chromium for the UI e2e suites (ubuntu only, so every other
+      # OS stays Node-free). --with-deps adds the system libraries it needs on
+      # the CI image; npm's cache above already covers ui/node_modules.
+      - run: npx playwright install --with-deps chromium
+        working-directory: ui
+        if: matrix.os == 'ubuntu-latest'
+      # The vite-preview Playwright suite (auth/byte-editor/history/xss). Task 2
+      # wired Vitest only; the §12 DoD also requires Playwright green in CI. This
+      # config `testIgnore`s the first-capture-ui gate, which needs a real serve.
+      - run: npm --prefix ui run e2e
+        if: matrix.os == 'ubuntu-latest'
+      # Install-to-first-capture THROUGH THE UI (§12 DoD), after `just
+      # first-capture`: a real serve with the embedded bundle, driven by
+      # Playwright to prove the example.com capture reaches the history view
+      # under 120 s. Real network + the image's Chrome (CROSSWIRE_BROWSER/PATH).
+      - run: just first-capture-ui
+        if: matrix.os == 'ubuntu-latest'
       - run: just features
       - run: just bench
       # Runs rustdoc with RUSTDOCFLAGS=-D warnings.
