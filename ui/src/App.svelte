@@ -1,9 +1,26 @@
 <script lang="ts">
-  // Scaffold root component. Real routing and views arrive in later tasks.
+  import { onMount } from 'svelte';
+  import { session } from './lib/stores/session.svelte';
+  import Auth from './routes/Auth.svelte';
+
   const appName = 'Crosswire';
+
+  onMount(() => {
+    // A bootstrap fragment wins; otherwise check for an existing cookie session.
+    if (location.hash.includes('bootstrap=')) void session.bootstrapFromFragment();
+    else void session.probe();
+  });
 </script>
 
 <div data-testid="app-root" class="app-root">
-  <h1>{appName}</h1>
-  <p>Web UI foundation.</p>
+  {#if session.status === 'unknown'}
+    <p data-testid="loading">Loading…</p>
+  {:else if session.status === 'authenticated'}
+    <div data-testid="app-shell">
+      <h1>{appName}</h1>
+      <p>Web UI foundation.</p>
+    </div>
+  {:else}
+    <Auth />
+  {/if}
 </div>

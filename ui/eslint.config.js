@@ -72,6 +72,21 @@ export default tseslint.config(
     },
   },
 
+  // Rune modules (*.svelte.ts): svelte-eslint-parser needs the TS parser for
+  // type syntax. Same §11.1 sink bans as plain TS.
+  {
+    files: ['src/**/*.svelte.ts'],
+    languageOptions: {
+      parser: svelteParser,
+      parserOptions: { parser: tseslint.parser },
+      globals: { ...globals.browser },
+    },
+    rules: {
+      'no-script-url': 'error',
+      'no-restricted-properties': ['error', ...restrictedProperties],
+    },
+  },
+
   // Svelte components under ui/src.
   {
     files: ['src/**/*.svelte'],
