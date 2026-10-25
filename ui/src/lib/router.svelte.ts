@@ -24,3 +24,18 @@ export function createRouter() {
  * App.svelte share one reactive `path`; `navigate` is reachable app-wide.
  */
 export const router = createRouter();
+
+/** A top-level navigable view. The path->component mapping lives in App.svelte. */
+export interface RouteDef {
+  path: string;
+  label: string;
+}
+
+/**
+ * The primary-nav route registry, consumed by Shell (to render the nav) and
+ * App (to map `router.path` to a view). `/repeater` is Plan 5b's repeater view.
+ */
+export const routes: readonly RouteDef[] = [
+  { path: '/', label: 'History' },
+  { path: '/repeater', label: 'Repeater' },
+];

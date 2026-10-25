@@ -4,6 +4,7 @@
   import Auth from './routes/Auth.svelte';
   import Shell from './lib/components/Shell.svelte';
   import History from './routes/History.svelte';
+  import Repeater from './routes/Repeater.svelte';
   import { router } from './lib/router.svelte';
 
   onMount(() => {
@@ -20,6 +21,8 @@
     <Shell>
       {#if router.path === '/'}
         <History />
+      {:else if router.path === '/repeater'}
+        <Repeater />
       {:else}
         <p data-testid="route-unknown">No view for {router.path}</p>
       {/if}
