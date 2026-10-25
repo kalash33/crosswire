@@ -38,4 +38,5 @@ export interface RouteDef {
 export const routes: readonly RouteDef[] = [
   { path: '/', label: 'History' },
   { path: '/repeater', label: 'Repeater' },
+  { path: '/intercept', label: 'Intercept' },
 ];
