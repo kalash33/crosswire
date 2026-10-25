@@ -6,6 +6,9 @@
   import ExchangeDetail from '../lib/components/ExchangeDetail.svelte';
   import { scope } from '../lib/stores/scope.svelte';
   import { hostRule } from '../lib/components/scope-rows';
+  import { keymap } from '../lib/keymap';
+  import { repeater } from '../lib/stores/repeater.svelte';
+  import { router } from '../lib/router.svelte';
 
   // ---- Filter inputs (applied on submit; the store builds the query) --------
   let fHost = $state('');
@@ -84,9 +87,23 @@
 
   // ---- Detail selection ------------------------------------------------------
   let selectedId = $state<string | null>(null);
+  // The row that currently holds keyboard focus (focusin bubbles from the row's
+  // children). send-to-repeater acts on it, falling back to the opened row.
+  let focusedId = $state<string | null>(null);
+  let sendError = $state<string | null>(null);
 
   function openRow(id: string): void {
     selectedId = id;
+  }
+
+  // Enter/Space opens the focused row (keyboard-operable rows, §7.6/§11.1): the
+  // mouse-free loop selects an exchange without a click. Space is prevented so
+  // the page does not scroll.
+  function onRowKey(e: KeyboardEvent, id: string): void {
+    if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') {
+      e.preventDefault();
+      openRow(id);
+    }
   }
 
   const selectedRow = $derived(sortedRows.find((r) => r.id === selectedId) ?? null);
@@ -116,9 +133,26 @@
     return sortDir === 1 ? ' ▲' : ' ▼';
   }
 
+  // send-to-repeater (Ctrl+R): seed a repeater tab from the focused/opened row
+  // and navigate there. Registered while History is mounted; torn down on
+  // unmount so the chord is owned by whichever view is live.
+  async function sendFocusedToRepeater(): Promise<void> {
+    const id = focusedId ?? selectedId;
+    if (!id) return;
+    sendError = null;
+    try {
+      await repeater.sendFromExchange(id);
+      router.navigate('/repeater');
+    } catch (e) {
+      sendError = e instanceof Error ? e.message : String(e);
+    }
+  }
+
   onMount(() => {
     events.start();
     void history.applyFilter({});
+    const off = keymap.register('send-to-repeater', () => void sendFocusedToRepeater());
+    return off;
   });
 </script>
 
@@ -164,6 +198,9 @@
   {#if history.error}
     <p class="error" data-testid="history-error" role="alert">{history.error}</p>
   {/if}
+  {#if sendError}
+    <p class="error" data-testid="history-send-error" role="alert">{sendError}</p>
+  {/if}
 
   <div class="layout">
     <div class="list" data-testid="history-list">
@@ -192,12 +229,18 @@
         </thead>
         <tbody>
           {#each sortedRows as row, i (row.id)}
+            <!-- Keyboard-operable row (§7.6): focusable, Enter/Space opens it,
+                 focusin marks it as the send-to-repeater target. -->
             <tr
               class:uncommitted={row.uncommitted}
               class:selected={selectedId === row.id}
               data-testid="history-row"
               data-id={row.id}
               data-uncommitted={row.uncommitted}
+              tabindex="0"
+              aria-label={`exchange ${row.method ?? ''} ${row.host ?? ''}${row.path ?? ''}`}
+              onkeydown={(e) => onRowKey(e, row.id)}
+              onfocusin={() => (focusedId = row.id)}
             >
               <td class="sel">
                 <input

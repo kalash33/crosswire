@@ -20,6 +20,7 @@
         data-editable={h.editable}
         aria-current={h.id === selectedId ? 'true' : undefined}
         onclick={() => onselect(h.id)}
+        onfocus={() => onselect(h.id)}
       >
         <span class="method">{h.method}</span>
         <span class="host">{h.host}</span>

@@ -1,15 +1,35 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { repeater } from '../lib/stores/repeater.svelte';
+  import { keymap } from '../lib/keymap';
   import RepeaterTab from '../lib/components/RepeaterTab.svelte';
 
+  // Cycle the active tab by a signed step (wraps). Ctrl+Shift+] / [ in Burp.
+  function cycleTab(step: number): void {
+    const tabs = repeater.tabs;
+    if (tabs.length < 2) return;
+    const i = tabs.findIndex((t) => t.id === repeater.activeTabId);
+    const next = tabs[(((i < 0 ? 0 : i) + step) % tabs.length + tabs.length) % tabs.length];
+    if (next) repeater.selectTab(next.id);
+  }
+
   // Load persisted tab drafts on mount. If none survive, open a fresh tab so the
-  // view always presents at least one tab to work in.
+  // view always presents at least one tab to work in. The send / tab-cycle
+  // chords are owned by the repeater while it is mounted (Burp: Ctrl+Space sends
+  // even from inside the editor), and torn down on unmount.
   onMount(() => {
     void (async () => {
       await repeater.loadTabs();
       if (repeater.tabs.length === 0) repeater.newTab();
     })();
+    const offs = [
+      keymap.register('send', () => {
+        if (repeater.activeTabId) void repeater.send(repeater.activeTabId);
+      }),
+      keymap.register('tab-next', () => cycleTab(1)),
+      keymap.register('tab-prev', () => cycleTab(-1)),
+    ];
+    return () => offs.forEach((off) => off());
   });
 
   function tabLabel(host: string, i: number): string {

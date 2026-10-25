@@ -6,10 +6,21 @@
   import { intercept, splitRequest, concatBytes } from '../lib/stores/intercept.svelte';
   import { repeater } from '../lib/stores/repeater.svelte';
   import { router } from '../lib/router.svelte';
+  import { keymap } from '../lib/keymap';
 
   onMount(() => {
     intercept.start();
     void intercept.refresh(); // a revisit must not show a stale list
+    // Burp chords for the focused held item: forward (Ctrl+F), drop (Ctrl+D),
+    // send-to-repeater (Ctrl+R). Registered while mounted; torn down on unmount.
+    const offs = [
+      keymap.register('forward', () => void forward()),
+      keymap.register('drop', () => {
+        if (focus) void intercept.drop(focus.id);
+      }),
+      keymap.register('send-to-repeater', () => toRepeater()),
+    ];
+    return () => offs.forEach((off) => off());
   });
 
   // The oldest held request is the focus default; the user may pick another.

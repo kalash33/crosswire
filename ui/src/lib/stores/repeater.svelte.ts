@@ -293,14 +293,19 @@ export function createRepeater(opts: RepeaterOptions = {}) {
       loadError = messageOf(e);
       return;
     }
+    // Preserve any tab already in memory (e.g. a tab seeded by send-to-repeater
+    // just before this view mounted and hydrated). Its debounced draft PUT may
+    // not have landed yet, so it would be absent from the GET — merging by id
+    // keeps the seed instead of clobbering it.
+    const existing = tabs;
     const loaded: RepeaterTab[] = [];
     for (const d of [...drafts].sort((a, b) => a.updated_at - b.updated_at)) {
       const tab = fromJson(d.tab_id, d.json);
-      if (tab) loaded.push(tab);
+      if (tab && !existing.some((e) => e.id === tab.id)) loaded.push(tab);
     }
     // Hydration is not an edit: no autosave is scheduled.
-    tabs = loaded;
-    if (!activeTabId || !find(activeTabId)) activeTabId = loaded[0]?.id ?? null;
+    tabs = [...existing, ...loaded];
+    if (!activeTabId || !find(activeTabId)) activeTabId = tabs[0]?.id ?? null;
   }
 
   /**
