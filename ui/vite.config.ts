@@ -48,6 +48,13 @@ export default defineConfig({
     sourcemap: false,
     reportCompressedSize: false,
     rollupOptions: {
+      // The Playwright ByteEditor fixture is a SEPARATE entry that is built
+      // ONLY when E2E=1 (set by playwright.config.ts's webServer). The default
+      // production build (and `just ui-dist-check`) never sets E2E, so the
+      // committed bundle contains only `index.html` and is unaffected by it.
+      input: process.env.E2E
+        ? { index: 'index.html', 'byte-editor-fixture': 'e2e/fixture/index.html' }
+        : undefined,
       output: {
         entryFileNames: 'assets/[name]-[hash].js',
         chunkFileNames: 'assets/[name]-[hash].js',

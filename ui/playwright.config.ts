@@ -26,7 +26,11 @@ export default defineConfig({
     },
   ],
   webServer: {
+    // E2E=1 makes the build include the ByteEditor fixture entry (see
+    // vite.config.ts). preview then serves it at /e2e/fixture/index.html. This
+    // never touches the committed production bundle, which is built without E2E.
     command: `npm run build && npm run preview -- --host 127.0.0.1 --port ${PORT} --strictPort`,
+    env: { E2E: '1' },
     url: BASE_URL,
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,
