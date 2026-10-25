@@ -36,7 +36,8 @@ mod session;
 mod tokens;
 
 pub use app::{
-    bootstrap_token, router, ApiConfig, AppState, DEFAULT_BOOTSTRAP_TTL, DEFAULT_IDLE_TIMEOUT,
+    bootstrap_token, router, router_with_fallback, ApiConfig, AppState, DEFAULT_BOOTSTRAP_TTL,
+    DEFAULT_IDLE_TIMEOUT,
 };
 pub use auth::{Scope, Scopes};
 pub use error::{ApiError, ApiResult};

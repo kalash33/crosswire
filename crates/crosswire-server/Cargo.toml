@@ -27,12 +27,23 @@ crosswire-model = { path = "../crosswire-model", version = "0.0.0" }
 axum = { workspace = true }
 clap = { workspace = true }
 tokio = { workspace = true }
+tower = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 dirs = { workspace = true }
 thiserror = { workspace = true }
 serde_json = { workspace = true }
 ulid = { workspace = true }
+rand = { workspace = true }
+base64 = { workspace = true }
+# The UI bundle is embedded at compile time from the committed, drift-checked
+# copy under assets/ui/, so `cargo build` stays Node-free. `publish = false`
+# keeps these binary-only deps allowed. mime_guess derives the Content-Type
+# from each asset's extension.
+# debug-embed keeps the bundle embedded in debug builds too, so the binary is
+# self-contained (rust-embed otherwise reads from disk in debug).
+rust-embed = { version = "8.5.0", features = ["debug-embed"] }
+mime_guess = "2.0.5"
 
 [dev-dependencies]
 tempfile = { workspace = true }

@@ -7,7 +7,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 
 use crosswire_api::{
-    bootstrap_token, router, ApiConfig, AppState, DEFAULT_BOOTSTRAP_TTL, DEFAULT_IDLE_TIMEOUT,
+    bootstrap_token, router_with_fallback, ApiConfig, AppState, DEFAULT_BOOTSTRAP_TTL,
+    DEFAULT_IDLE_TIMEOUT,
 };
 use crosswire_ca::{IssuerLimits, LeafIssuer};
 use crosswire_client::{DestinationGate, RustlsBackend, Transport};
@@ -304,8 +305,12 @@ async fn serve_with_store(
     });
 
     // Serve the API with ConnectInfo (the auth reads the peer IP) under the
-    // same shutdown signal as the proxy, and run both concurrently.
-    let api_service = router(state).into_make_service_with_connect_info::<SocketAddr>();
+    // same shutdown signal as the proxy, and run both concurrently. The embedded
+    // UI bundle is the router's fallback: non-`/api/v1` paths are the
+    // static-asset class, served same-origin under the UI CSP, while every
+    // `/api/v1` route stays gated.
+    let api_service = router_with_fallback(state, crate::ui::service(api_port))
+        .into_make_service_with_connect_info::<SocketAddr>();
     let api_server = axum::serve(api_listener, api_service).with_graceful_shutdown(async move {
         let _ = rx_api.changed().await;
     });

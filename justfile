@@ -16,6 +16,23 @@ browser-test:
 first-capture:
     scripts/first-capture.sh
 
+# Build the Svelte UI bundle and stage it into the server crate for embedding.
+# Run this after changing ui/src; `cargo build` stays Node-free because the
+# built bundle is committed under crates/crosswire-server/assets/ui/ and
+# rust-embed embeds it at compile time.
+ui-build:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd ui
+    npm ci
+    npm run build
+    dest=../crates/crosswire-server/assets/ui
+    rm -rf "$dest"
+    mkdir -p "$dest"
+    cp -R dist/. "$dest"/
+    # Keep the directory tracked even if the bundle is ever emptied.
+    touch "$dest/.gitkeep"
+
 serve *ARGS:
     cargo run --locked -p crosswire-server -- serve {{ARGS}}
 
