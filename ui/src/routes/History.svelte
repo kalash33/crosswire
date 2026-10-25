@@ -4,6 +4,8 @@
   import { history, type ExchangeFilter, type Row } from '../lib/stores/history.svelte';
   import { events } from '../lib/stores/events.svelte';
   import ExchangeDetail from '../lib/components/ExchangeDetail.svelte';
+  import { scope } from '../lib/stores/scope.svelte';
+  import { hostRule } from '../lib/components/scope-rows';
 
   // ---- Filter inputs (applied on submit; the store builds the query) --------
   let fHost = $state('');
@@ -85,6 +87,20 @@
 
   function openRow(id: string): void {
     selectedId = id;
+  }
+
+  const selectedRow = $derived(sortedRows.find((r) => r.id === selectedId) ?? null);
+
+  // Add the selected row's host as an include rule (needs the admin cap; a
+  // failure surfaces the server message in `scope.error`).
+  async function addHostToScope(): Promise<void> {
+    const host = selectedRow?.host;
+    if (!host) return;
+    if (!scope.loaded) await scope.load();
+    await scope.save({
+      include: [...scope.scope.include, hostRule(host)],
+      exclude: scope.scope.exclude,
+    });
   }
 
   function fmtTime(ms: number): string {
@@ -219,6 +235,7 @@
         </tbody>
       </table>
 
+      {#if scope.error}<p class="error" role="alert" data-testid="scope-action-error">{scope.error}</p>{/if}
       <div class="foot">
         <span class="count">{sortedRows.length} loaded · {selected.size} selected</span>
         <button
@@ -233,6 +250,12 @@
 
       <!-- Beta-only row actions: disabled stubs, never faked (spec §7.0). -->
       <div class="actions" data-testid="row-actions" aria-label="row actions (beta)">
+        <button
+          type="button"
+          data-testid="add-host-to-scope"
+          disabled={!selectedRow?.host}
+          onclick={() => void addHostToScope()}>Add host to scope</button
+        >
         <button type="button" disabled title="Available in a later release"
           >Send to Repeater</button
         >

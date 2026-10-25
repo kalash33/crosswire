@@ -6,6 +6,7 @@
   import History from './routes/History.svelte';
   import Repeater from './routes/Repeater.svelte';
   import Intercept from './routes/Intercept.svelte';
+  import Scope from './routes/Scope.svelte';
   import { router } from './lib/router.svelte';
 
   onMount(() => {
@@ -26,6 +27,8 @@
         <Repeater />
       {:else if router.path === '/intercept'}
         <Intercept />
+      {:else if router.path === '/scope'}
+        <Scope />
       {:else}
         <p data-testid="route-unknown">No view for {router.path}</p>
       {/if}

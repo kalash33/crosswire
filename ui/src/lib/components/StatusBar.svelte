@@ -6,15 +6,9 @@
 
   import { intercept } from '../stores/intercept.svelte';
 
-  // Minimal local shape: only what the bar reads. GET /scope is untyped in
-  // openapi.json; its full type belongs to the scope task.
-  interface ScopeDoc {
-    include: unknown[];
-    exclude: unknown[];
-  }
+  import { scope } from '../stores/scope.svelte';
 
   let counts = $state<CountsDto | null>(null);
-  let scope = $state<ScopeDoc | null>(null);
   let failed = $state(false);
 
   async function refreshCounts() {
@@ -25,11 +19,8 @@
     }
   }
   async function refreshScope() {
-    try {
-      scope = await apiGet<ScopeDoc>('/api/v1/scope');
-    } catch {
-      failed = true;
-    }
+    await scope.load();
+    if (scope.error) failed = true;
   }
   function refreshAll() {
     failed = false;
@@ -52,11 +43,11 @@
   });
 
   const scopeLabel = $derived(
-    scope === null
+    !scope.loaded
       ? '…'
-      : scope.include.length + scope.exclude.length === 0
+      : scope.scope.include.length + scope.scope.exclude.length === 0
         ? 'none'
-        : `${scope.include.length} in / ${scope.exclude.length} out`,
+        : `${scope.scope.include.length} in / ${scope.scope.exclude.length} out`,
   );
 </script>
 
@@ -79,7 +70,7 @@
   >
     {intercept.enabled ? 'Turn intercept off' : 'Turn intercept on'}
   </button>
-  <span data-testid="status-scope">Scope {scopeLabel}</span>
+  <span data-testid="status-scope">Scope {scopeLabel}{#if scope.strictKnown} · strict {scope.enforceStrict ? 'ON' : 'OFF'}{/if}</span>
   <span data-testid="status-counts">
     {#if counts}History {counts.history} · Repeater {counts.repeater} · Intruder {counts.intruder}{:else}Counts …{/if}
   </span>
