@@ -40,7 +40,10 @@ export interface RepeaterTab {
   /** The full request bytes. */
   raw: Uint8Array;
   outcome?: SendOutcomeDto;
+  /** Last send failure (403 out-of-scope / 422 / 502). */
   error?: string;
+  /** Last draft-autosave failure; independent of `error`. */
+  saveError?: string;
   sending?: boolean;
 }
 
@@ -152,17 +155,26 @@ export function createRepeater(opts: RepeaterOptions = {}) {
     return tabs.find((t) => t.id === id);
   }
 
-  async function save(id: string): Promise<void> {
+  // Per-tab promise chain: a tab's PUTs run strictly in order, each reading the
+  // tab's CURRENT state when it runs, so an older in-flight PUT can never land
+  // after a newer one. A closed tab is gone from `tabs`, so queued PUTs skip.
+  const chains: Record<string, Promise<void> | undefined> = Object.create(null);
+
+  function save(id: string): Promise<void> {
     delete timers[id];
-    const tab = find(id);
-    if (!tab) return;
-    try {
-      await api.putTab(id, toJson(tab));
-    } catch (e) {
-      // The draft stays in memory; surface it and the next edit retries.
-      const t = find(id);
-      if (t) t.error = `draft not saved: ${messageOf(e)}`;
-    }
+    const run = (chains[id] ?? Promise.resolve()).then(async () => {
+      const tab = find(id);
+      if (!tab) return;
+      try {
+        await api.putTab(id, toJson(tab));
+        tab.saveError = undefined;
+      } catch (e) {
+        // The draft stays in memory; the next edit retries.
+        tab.saveError = `draft not saved: ${messageOf(e)}`;
+      }
+    });
+    chains[id] = run;
+    return run;
   }
 
   function schedule(id: string): void {
@@ -208,9 +220,12 @@ export function createRepeater(opts: RepeaterOptions = {}) {
     const timer = timers[id];
     if (timer !== undefined) clearTimeout(timer);
     delete timers[id];
-    tabs.splice(i, 1);
+    tabs.splice(i, 1); // queued PUTs now skip (tab not found)
     if (activeTabId === id) activeTabId = tabs[Math.min(i, tabs.length - 1)]?.id ?? null;
     try {
+      // Let any in-flight PUT land first, then DELETE last.
+      await chains[id];
+      delete chains[id];
       await api.deleteTab(id);
     } catch (e) {
       loadError = `could not delete draft: ${messageOf(e)}`;
@@ -240,7 +255,7 @@ export function createRepeater(opts: RepeaterOptions = {}) {
 
   async function send(id: string, o: { allowOutOfScope?: boolean } = {}): Promise<void> {
     const t = find(id);
-    if (!t) return;
+    if (!t || t.sending) return;
     const body: SendBody = {
       host: t.conn.host,
       port: t.conn.port,

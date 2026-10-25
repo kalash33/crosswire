@@ -122,6 +122,71 @@ describe('repeater store', () => {
     expect(r.tabs[0].sending).toBe(false);
   });
 
+  it('a 422 surfaces on the tab and keeps the draft', async () => {
+    const api = mockApi({
+      sendRequest: vi.fn().mockRejectedValue(new ApiError('bad_request', 'could not parse request', 422)),
+    });
+    const r = createRepeater({ api });
+    const id = r.newTab({ conn: { host: 'a.test' }, raw: RAW });
+    await r.send(id);
+    expect(r.tabs[0].error).toContain('could not parse');
+    expect(Array.from(r.tabs[0].raw)).toEqual(Array.from(RAW));
+  });
+
+  it('a draft-save failure uses saveError and does not mask a send error', async () => {
+    const api = mockApi({
+      sendRequest: vi.fn().mockRejectedValue(new ApiError('out_of_scope', 'out of scope', 403)),
+      putTab: vi.fn().mockRejectedValue(new ApiError('x', 'boom', 500)),
+    });
+    const r = createRepeater({ api });
+    const id = r.newTab({ conn: { host: 'a.test' }, raw: RAW });
+    await r.send(id);
+    await r.flushDrafts();
+    expect(r.tabs[0].error).toBe('out of scope');
+    expect(r.tabs[0].saveError).toContain('boom');
+    await r.send(id);
+    expect(r.tabs[0].saveError).toContain('boom'); // send does not clear saveError
+  });
+
+  it('send is ignored while the tab is already sending', async () => {
+    let release!: (o: SendOutcomeDto) => void;
+    const api = mockApi({ sendRequest: vi.fn().mockReturnValue(new Promise((res) => (release = res))) });
+    const r = createRepeater({ api });
+    const id = r.newTab({ conn: { host: 'a.test' } });
+    const p1 = r.send(id);
+    await r.send(id);
+    expect(api.sendRequest).toHaveBeenCalledTimes(1);
+    release(outcome());
+    await p1;
+  });
+
+  it('PUTs for one tab never overlap or reorder, and close DELETEs last', async () => {
+    const log: string[] = [];
+    let inflight = 0;
+    const api = mockApi({
+      putTab: vi.fn().mockImplementation(async (_id: string, json: { raw: string }) => {
+        inflight++;
+        expect(inflight).toBe(1);
+        await new Promise((res) => setTimeout(res, 300));
+        log.push('put:' + json.raw.length);
+        inflight--;
+      }),
+      deleteTab: vi.fn().mockImplementation(async () => {
+        log.push('delete');
+      }),
+    });
+    const r = createRepeater({ api, debounceMs: 100 });
+    const id = r.newTab();
+    r.setRaw(id, new Uint8Array(1));
+    await vi.advanceTimersByTimeAsync(150); // PUT #1 in flight
+    r.setRaw(id, new Uint8Array(2));
+    const flush = r.flushDrafts(); // queues PUT #2 behind #1
+    const close = r.closeTab(id); // queued PUT is skipped; DELETE after in-flight
+    await vi.advanceTimersByTimeAsync(2000);
+    await Promise.all([flush, close]);
+    expect(log).toEqual(['put:1', 'delete']);
+  });
+
   it('allowOutOfScope option is forwarded', async () => {
     const api = mockApi();
     const r = createRepeater({ api });

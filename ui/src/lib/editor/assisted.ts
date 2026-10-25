@@ -21,6 +21,7 @@ import type { ChangeDto } from '../api/types';
 import type { Chip } from './chips';
 
 export type { Chip } from './chips';
+export type { ChangeDto } from '../api/types';
 
 /** The assisted-mode toggles the user controls (both default on in the UI). */
 export interface AssistedToggles {
