@@ -185,6 +185,22 @@ async fn api_session(api: SocketAddr, token: &str) -> String {
         .expect("a Set-Cookie header")
 }
 
+/// The nonce inside a `style-src … 'nonce-<n>'` directive of a CSP header.
+fn nonce_from_style_src(csp: &str) -> String {
+    let after = csp.split("'nonce-").nth(1).expect("a 'nonce-' token");
+    after.split('\'').next().expect("a closing quote").to_string()
+}
+
+/// The `content` of the `<meta name="csp-nonce" content="<n>">` tag.
+fn nonce_from_meta(html: &str) -> String {
+    let after = html
+        .split("name=\"csp-nonce\"")
+        .nth(1)
+        .expect("a csp-nonce meta tag");
+    let after = after.split("content=\"").nth(1).expect("a content attribute");
+    after.split('"').next().expect("a closing quote").to_string()
+}
+
 /// A real file under the committed bundle's `assets/` directory (the hashed
 /// names change when the UI source changes, so the test discovers one).
 fn a_bundle_css() -> String {
@@ -221,11 +237,24 @@ async fn serves_ui_bundle_with_csp_and_keeps_api_gated() {
         "CSP lacks default-src 'self': {csp}"
     );
     assert!(csp.contains("style-src 'self' 'nonce-"), "CSP nonce: {csp}");
+    // The other required UI CSP directives must all be present.
+    for directive in ["object-src 'none'", "base-uri 'none'", "frame-ancestors 'none'"] {
+        assert!(csp.contains(directive), "CSP lacks {directive}: {csp}");
+    }
     assert_eq!(header(&hdrs, "x-content-type-options"), Some("nosniff"));
     // The per-response nonce is also exposed to the app in the HTML.
     assert!(
         text.contains("meta name=\"csp-nonce\""),
         "the nonce meta is missing: {text}"
+    );
+    // Lock the CodeMirror coupling: the nonce the browser enforces (the
+    // `style-src 'nonce-<n>'` of the CSP header) must be the exact nonce handed
+    // to the app (the `<meta name="csp-nonce" content="<n>">` in the body).
+    let csp_nonce = nonce_from_style_src(csp);
+    let meta_nonce = nonce_from_meta(&text);
+    assert_eq!(
+        meta_nonce, csp_nonce,
+        "the meta nonce must equal the CSP style-src nonce"
     );
 
     // The nonce is fresh per response: a second GET / differs.
