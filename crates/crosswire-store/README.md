@@ -137,7 +137,7 @@ store.close()?; // the only call that marks the project cleanly closed
 ## Status
 
 Pre-alpha, `publish = false`; the API is not frozen. The project format is
-version 2 and is documented in `docs/format.md`. The crate depends on the
+version 3 and is documented in `docs/format.md`. The crate depends on the
 unpublished `crosswire-model` (and through it `crosswire-core` and `crosswire-h1`),
 so it cannot be packaged yet.
 

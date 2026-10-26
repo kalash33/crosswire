@@ -32,6 +32,10 @@ bytes = "1"
 [dev-dependencies]
 tempfile = { workspace = true }
 tokio = { workspace = true }
+# Already a normal dependency (so this adds nothing to the dependency graph or
+# `cargo deny`); the index tests use it to drive raw SQL — simulate an older
+# project and read back `user_version`/`sqlite_master`.
+rusqlite = { workspace = true }
 crosswire-core = { path = "../crosswire-core", version = "0.0.0" }
 crosswire-h1 = { path = "../crosswire-h1", version = "0.0.0" }
 

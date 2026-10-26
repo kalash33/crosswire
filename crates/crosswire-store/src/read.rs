@@ -40,6 +40,10 @@ pub struct ExchangeFilter {
     pub state: Option<ExchangeState>,
     /// The scope classification (exact match on the stored `scope_state`).
     pub scope_state: Option<ScopeState>,
+    /// Smallest response body length to include, in bytes (inclusive): matches
+    /// rows whose `resp_len >= min_resp_len`. The "size over 1 MiB" query is
+    /// `Some(1_048_577)`. Served by the `resp_len` index.
+    pub min_resp_len: Option<u64>,
     /// A tag the exchange must carry. Matched exactly against the elements of
     /// the JSON `tags` array, so it scans rather than using an index.
     pub tag: Option<String>,
@@ -178,6 +182,11 @@ fn list_query(
     if let Some(ss) = filter.scope_state {
         conds.push("scope_state = ?");
         params.push(Sql::Text(to_wire(&ss)?));
+    }
+    if let Some(v) = filter.min_resp_len {
+        // `resp_len` is stored as i64 (saturated), so bind a saturated i64.
+        conds.push("resp_len >= ?");
+        params.push(Sql::Integer(i64::try_from(v).unwrap_or(i64::MAX)));
     }
     if let Some(t) = &filter.tag {
         // `tags` is a JSON array string, or '' when empty; guard json_each

@@ -35,7 +35,7 @@ fn create_then_open_roundtrip() {
     let v: i64 = r
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(v, 2);
+    assert_eq!(v, 3);
     let a: i64 = r
         .query_row("PRAGMA application_id", [], |r| r.get(0))
         .unwrap();
@@ -56,11 +56,12 @@ fn create_then_open_roundtrip() {
 }
 
 #[test]
-fn migrates_v1_project_to_v2_with_snapshot() {
+fn migrates_v1_project_with_snapshot() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path().join("p");
     // A fresh project is at the current version; downgrade it to a v1 fixture:
-    // drop the v2 tables and set user_version back to 1.
+    // drop the v2 tables and set user_version back to 1. (The v3 indexes may
+    // linger; the migration re-creates them `IF NOT EXISTS`, idempotently.)
     drop(Project::create(&dir).unwrap());
     {
         let c = raw(&dir);
@@ -69,7 +70,7 @@ fn migrates_v1_project_to_v2_with_snapshot() {
         c.pragma_update(None, "user_version", 1).unwrap();
     }
 
-    // Opening migrates 1 -> 2 and leaves a pre-migration snapshot.
+    // Opening migrates 1 -> 2 -> 3 (one snapshot, taken at the start version).
     let p = Project::open(&dir).unwrap();
     assert!(
         dir.join("project.db.v1.bak").is_file(),
@@ -79,7 +80,7 @@ fn migrates_v1_project_to_v2_with_snapshot() {
     let v: i64 = r
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(v, 2);
+    assert_eq!(v, 3);
     let n: i64 = r
         .query_row(
             "SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN \
@@ -113,7 +114,7 @@ fn migrates_v1_project_to_v2_with_snapshot() {
         .unwrap()
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(v, 2);
+    assert_eq!(v, 3);
 }
 
 #[test]
@@ -143,10 +144,10 @@ fn newer_format_refused() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path().join("p");
     drop(Project::create(&dir).unwrap());
-    raw(&dir).pragma_update(None, "user_version", 3).unwrap();
+    raw(&dir).pragma_update(None, "user_version", 4).unwrap();
     assert!(matches!(
         Project::open(&dir),
-        Err(StoreError::NewerFormat(3))
+        Err(StoreError::NewerFormat(4))
     ));
 }
 
@@ -279,7 +280,7 @@ fn open_or_create_recreates_a_zero_byte_db() {
         .unwrap()
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(v, 2);
+    assert_eq!(v, 3);
 }
 
 #[test]

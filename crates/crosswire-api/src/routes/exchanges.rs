@@ -226,6 +226,9 @@ pub async fn list_exchanges(
             .map(|s| parse_wire::<ScopeState>(s, "scope_state"))
             .transpose()?,
         tag: q.tag,
+        // The store supports a `resp_len >= ?` size filter; exposing it as a
+        // query parameter is a later (API-layer) task, so it is unset here.
+        min_resp_len: None,
     };
     let limit = q.limit.unwrap_or(100);
     let page = state
