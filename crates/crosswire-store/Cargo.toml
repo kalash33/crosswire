@@ -45,6 +45,17 @@ tokio = { workspace = true }
 rusqlite = { workspace = true }
 crosswire-core = { path = "../crosswire-core", version = "0.0.0" }
 crosswire-h1 = { path = "../crosswire-h1", version = "0.0.0" }
+criterion = { version = "0.5", default-features = false }
+
+# `phys_footprint` for the bench/test RSS probe (src/rss.rs). Linux reads
+# `RssAnon` from /proc itself, so nothing else compiles this.
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+memory-stats = "1.2"
+
+[[bench]]
+name = "history"
+harness = false
+required-features = ["synthetic"]
 
 # Spawned and SIGKILLed by tests/durability.rs.
 [[bin]]

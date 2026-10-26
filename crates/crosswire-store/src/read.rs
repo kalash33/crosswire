@@ -300,6 +300,16 @@ impl Store {
         out
     }
 
+    /// Drops the pooled idle reader connections, so the next read opens a
+    /// fresh one with an empty SQLite page cache (cold-query benchmarks).
+    #[doc(hidden)]
+    pub fn drop_idle_readers(&self) {
+        self.readers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
+    }
+
     /// Lists exchanges newest first (keyset on the ULID).
     ///
     /// `after` is the previous page's `next_cursor`. `limit` is clamped to

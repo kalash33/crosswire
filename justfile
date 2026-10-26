@@ -110,3 +110,4 @@ package:
 
 bench:
     cargo bench -p crosswire-h1 --locked --no-run
+    cargo bench -p crosswire-store --locked --features synthetic --no-run
