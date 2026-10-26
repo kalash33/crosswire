@@ -27,6 +27,8 @@ pub use error::StoreError;
 pub use events::EventStream;
 pub use packs::{BlobRef, PackWriter};
 pub use project::Project;
-pub use read::{Counts, ExchangeFilter, ExchangeRow, NamespaceCounts, Page, PAGE_LIMIT_MAX};
+pub use read::{
+    Counts, ExchangeFilter, ExchangeRow, NamespaceCounts, Page, PAGE_LIMIT_MAX, PATH_SCAN_CAP,
+};
 pub use store::{OpenReport, Store, StoreConfig};
 pub use sweep::{sweep, SweepReport};

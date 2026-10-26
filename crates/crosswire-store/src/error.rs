@@ -34,6 +34,10 @@ pub enum StoreError {
     /// An exchange or journal file could not be encoded or decoded as JSON.
     #[error("json error: {0}")]
     Json(#[from] serde_json::Error),
+    /// A `path_regex` filter is not a valid (or is too large a) regular
+    /// expression.
+    #[error("invalid path pattern: {0}")]
+    BadPattern(String),
     /// The writer thread stopped abnormally, or losses could not be recorded;
     /// the project is left marked unclean.
     #[error("writer failed: {0}")]

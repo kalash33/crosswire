@@ -679,6 +679,7 @@ dependencies = [
  "crosswire-h1",
  "crosswire-model",
  "rand 0.9.5",
+ "regex",
  "rusqlite",
  "rustix",
  "serde",

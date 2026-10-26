@@ -47,7 +47,26 @@ pub struct ExchangeFilter {
     /// A tag the exchange must carry. Matched exactly against the normalized
     /// `exchange_tags` side table, served by its `(tag, ulid)` primary key.
     pub tag: Option<String>,
+    /// Case-insensitive substring of the request path (`lower()` on both
+    /// sides). A substring cannot use a B-tree index, so this scans the
+    /// candidates the other predicates leave; combine it with an indexed
+    /// filter (host, status, tag) on large projects.
+    pub path_contains: Option<String>,
+    /// A regular expression the request path must match (unanchored, case
+    /// sensitive unless the pattern says `(?i)`). Compiled with the
+    /// linear-time `regex` crate, so a hostile pattern cannot hang; an invalid
+    /// one is [`StoreError::BadPattern`]. SQLite has no regex, so matching runs
+    /// in Rust over candidate rows, reading at most [`PATH_SCAN_CAP`] of them;
+    /// [`Page::capped`] reports when that cap cut the scan short.
+    pub path_regex: Option<String>,
 }
+
+/// Most candidate rows a `path_regex` listing reads before it stops and
+/// reports [`Page::capped`].
+pub const PATH_SCAN_CAP: usize = 10_000;
+
+/// Compiled-program size limit for a user regex, in bytes.
+const REGEX_SIZE_LIMIT: usize = 1 << 20;
 
 /// One page of results and where the next one starts.
 #[derive(Clone, Debug, PartialEq)]
@@ -56,6 +75,10 @@ pub struct Page<T> {
     pub items: Vec<T>,
     /// Pass as `after` to get the next page; `None` on the last page.
     pub next_cursor: Option<Ulid>,
+    /// `true` when a `path_regex` scan read its row cap before the page filled,
+    /// so matches may exist beyond it; `next_cursor` then resumes after the
+    /// last row scanned. Always `false` for indexed and unfiltered listings.
+    pub capped: bool,
 }
 
 /// A history row, built from the indexed columns without parsing the JSON.
@@ -197,6 +220,12 @@ fn list_query(
         conds.push("ulid IN (SELECT ulid FROM exchange_tags WHERE tag = ?)");
         params.push(Sql::Text(t.clone()));
     }
+    if let Some(p) = &filter.path_contains {
+        // Combined with the other (indexed) predicates, which narrow the
+        // candidates before this substring test runs.
+        conds.push("instr(lower(req_path), lower(?)) > 0");
+        params.push(Sql::Text(p.clone()));
+    }
     if !conds.is_empty() {
         sql.push_str(" WHERE ");
         sql.push_str(&conds.join(" AND "));
@@ -233,11 +262,16 @@ fn paginate<T>(mut items: Vec<T>, limit: usize, id: impl Fn(&T) -> Ulid) -> Page
     if items.len() > limit {
         items.truncate(limit);
         let next_cursor = items.last().map(id);
-        Page { items, next_cursor }
+        Page {
+            items,
+            next_cursor,
+            capped: false,
+        }
     } else {
         Page {
             items,
             next_cursor: None,
+            capped: false,
         }
     }
 }
@@ -287,18 +321,70 @@ impl Store {
         after: Option<Ulid>,
         limit: usize,
     ) -> Result<Page<ExchangeRow>, StoreError> {
+        self.list_with_scan_cap(filter, after, limit, PATH_SCAN_CAP)
+    }
+
+    /// [`Store::list`] with an explicit `path_regex` row cap (tests use a small
+    /// one; `list` uses [`PATH_SCAN_CAP`]).
+    #[doc(hidden)]
+    pub fn list_with_scan_cap(
+        &self,
+        filter: &ExchangeFilter,
+        after: Option<Ulid>,
+        limit: usize,
+        scan_cap: usize,
+    ) -> Result<Page<ExchangeRow>, StoreError> {
         let limit = limit.clamp(1, PAGE_LIMIT_MAX);
-        let (sql, params) = list_query(filter, after, limit)?;
-        let items = self.with_reader(|conn| {
+        let regex = filter
+            .path_regex
+            .as_deref()
+            .map(|p| {
+                regex::RegexBuilder::new(p)
+                    .size_limit(REGEX_SIZE_LIMIT)
+                    .build()
+                    .map_err(|e| StoreError::BadPattern(e.to_string()))
+            })
+            .transpose()?;
+        let Some(regex) = regex else {
+            let (sql, params) = list_query(filter, after, limit)?;
+            let items = self.with_reader(|conn| {
+                let mut stmt = conn.prepare(&sql)?;
+                let mut rows = stmt.query(rusqlite::params_from_iter(params.iter()))?;
+                let mut items = Vec::new();
+                while let Some(r) = rows.next()? {
+                    items.push(exchange_row(r)?);
+                }
+                Ok(items)
+            })?;
+            return Ok(paginate(items, limit, |r| r.id));
+        };
+        // Regex path: the SQL returns candidates (narrowed by the other
+        // predicates, newest first) bounded by the cap; matching is in Rust.
+        let (sql, params) = list_query(filter, after, scan_cap)?;
+        self.with_reader(|conn| {
             let mut stmt = conn.prepare(&sql)?;
             let mut rows = stmt.query(rusqlite::params_from_iter(params.iter()))?;
-            let mut items = Vec::new();
+            let (mut items, mut scanned) = (Vec::new(), 0usize);
+            let mut last_scanned = None;
             while let Some(r) = rows.next()? {
-                items.push(exchange_row(r)?);
+                if items.len() > limit {
+                    break;
+                }
+                if scanned >= scan_cap {
+                    let mut page = paginate(items, limit, |r: &ExchangeRow| r.id);
+                    page.capped = true;
+                    page.next_cursor = last_scanned.or(page.next_cursor);
+                    return Ok(page);
+                }
+                scanned += 1;
+                let row = exchange_row(r)?;
+                last_scanned = Some(row.id);
+                if row.path.as_deref().is_some_and(|p| regex.is_match(p)) {
+                    items.push(row);
+                }
             }
-            Ok(items)
-        })?;
-        Ok(paginate(items, limit, |r| r.id))
+            Ok(paginate(items, limit, |r| r.id))
+        })
     }
 
     /// The query plan of the statement [`Store::list`] would run for

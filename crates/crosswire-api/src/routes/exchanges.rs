@@ -229,6 +229,10 @@ pub async fn list_exchanges(
         // The store supports a `resp_len >= ?` size filter; exposing it as a
         // query parameter is a later (API-layer) task, so it is unset here.
         min_resp_len: None,
+        // Likewise the store's path substring/regex filters are not yet
+        // exposed as query parameters.
+        path_contains: None,
+        path_regex: None,
     };
     let limit = q.limit.unwrap_or(100);
     let page = state
