@@ -213,7 +213,7 @@ pub fn router(state: AppState) -> Router {
 /// `crosswire-server` passes its embedded-UI service here so non-`/api/v1`
 /// paths reach the UI bundle. The fallback is attached to the route set
 /// *before* the gate layer, so the gate (Host check and the static-asset
-/// allowlist in [`crate::auth::is_unauthenticated`]) covers the fallback just as
+/// allowlist in `is_unauthenticated`) covers the fallback just as
 /// it covers the API routes: a non-loopback `Host` is still `421`, static assets
 /// pass without a credential, and `/api/v1` routes stay gated. This crate must
 /// not depend on `crosswire-server` (that would be circular), so the server
