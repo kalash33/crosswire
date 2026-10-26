@@ -70,6 +70,11 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
       - run: just features
       - run: just bench
+      # Scaled perf guard, ubuntu only: EXPLAIN QUERY PLAN index-usage tests (the
+      # hardware-independent regression guard) plus a loose 100k-row sanity run.
+      # The 1M latency gate is maintainer-only (`just perf`), never asserted here.
+      - run: just perf-smoke
+        if: matrix.os == 'ubuntu-latest'
       # Runs rustdoc with RUSTDOCFLAGS=-D warnings.
       - run: just doc
       # Only crosswire-core is packaged in CI. crosswire-h1 depends on it by
