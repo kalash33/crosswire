@@ -86,7 +86,12 @@ test('toggle on from the status bar shows the held list; edit + forward posts ed
   const content = page.locator('.cm-content').first();
   await expect(content).toContainText('POST /a HTTP/1.1');
   await content.click();
-  await page.keyboard.press('ControlOrMeta+ArrowDown'); // doc end (the body)
+  // Move the caret to the end of the document (the body tail) deterministically
+  // across platforms: select-all, then collapse the selection to its right edge.
+  // A doc-end key chord (Mod-ArrowDown/End) is not honoured identically on
+  // headless-Linux Chromium, which would land the edit in the head.
+  await page.keyboard.press('ControlOrMeta+a');
+  await page.keyboard.press('ArrowRight');
   await page.keyboard.type('X');
 
   await page.getByTestId('forward').click();
