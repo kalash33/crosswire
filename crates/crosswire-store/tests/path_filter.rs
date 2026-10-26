@@ -216,3 +216,29 @@ fn plain_listing_is_never_capped() {
     let page = store.list(&ExchangeFilter::default(), None, 10).unwrap();
     assert!(!page.capped);
 }
+
+#[test]
+fn contains_scan_is_capped_and_flagged() {
+    let dir = tempfile::tempdir().unwrap();
+    let (store, mut ev) = open(dir.path());
+    let rows: Vec<(&str, String)> = (0..30).map(|i| ("h.example", format!("/p/{i}"))).collect();
+    let ids = seed(&store, &mut ev, &rows);
+    let none = ExchangeFilter {
+        path_contains: Some("nomatch".into()),
+        ..ExchangeFilter::default()
+    };
+    let page = store.list_with_scan_cap(&none, None, 100, 10).unwrap();
+    assert!(page.items.is_empty());
+    assert!(page.capped);
+    assert_eq!(page.next_cursor, Some(newest_first(ids)[9]));
+    let page = store.list_with_scan_cap(&none, None, 100, 30).unwrap();
+    assert!(!page.capped);
+    // Matches inside the cap are returned, at most cap rows scanned.
+    let some = ExchangeFilter {
+        path_contains: Some("/P/".into()),
+        ..ExchangeFilter::default()
+    };
+    let page = store.list_with_scan_cap(&some, None, 100, 10).unwrap();
+    assert_eq!(page.items.len(), 10);
+    assert!(page.capped);
+}

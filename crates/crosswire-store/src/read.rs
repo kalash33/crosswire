@@ -47,10 +47,12 @@ pub struct ExchangeFilter {
     /// A tag the exchange must carry. Matched exactly against the normalized
     /// `exchange_tags` side table, served by its `(tag, ulid)` primary key.
     pub tag: Option<String>,
-    /// Case-insensitive substring of the request path (`lower()` on both
-    /// sides). A substring cannot use a B-tree index, so this scans the
-    /// candidates the other predicates leave; combine it with an indexed
-    /// filter (host, status, tag) on large projects.
+    /// Case-insensitive (ASCII) substring of the request path. A substring
+    /// cannot use a B-tree index, so, like `path_regex`, it is matched in Rust
+    /// over the candidates the other predicates leave, reading at most
+    /// [`PATH_SCAN_CAP`] of them; [`Page::capped`] reports when that cap cut
+    /// the scan short. Combine it with an indexed filter (host, status, tag)
+    /// on large projects.
     pub path_contains: Option<String>,
     /// A regular expression the request path must match (unanchored, case
     /// sensitive unless the pattern says `(?i)`). Compiled with the
@@ -61,7 +63,7 @@ pub struct ExchangeFilter {
     pub path_regex: Option<String>,
 }
 
-/// Most candidate rows a `path_regex` listing reads before it stops and
+/// Most candidate rows a path (`path_contains`/`path_regex`) listing reads before it stops and
 /// reports [`Page::capped`].
 pub const PATH_SCAN_CAP: usize = 10_000;
 
@@ -75,7 +77,7 @@ pub struct Page<T> {
     pub items: Vec<T>,
     /// Pass as `after` to get the next page; `None` on the last page.
     pub next_cursor: Option<Ulid>,
-    /// `true` when a `path_regex` scan read its row cap before the page filled,
+    /// `true` when a `path_contains`/`path_regex` scan read its row cap before the page filled,
     /// so matches may exist beyond it; `next_cursor` then resumes after the
     /// last row scanned. Always `false` for indexed and unfiltered listings.
     pub capped: bool,
@@ -220,12 +222,8 @@ fn list_query(
         conds.push("ulid IN (SELECT ulid FROM exchange_tags WHERE tag = ?)");
         params.push(Sql::Text(t.clone()));
     }
-    if let Some(p) = &filter.path_contains {
-        // Combined with the other (indexed) predicates, which narrow the
-        // candidates before this substring test runs.
-        conds.push("instr(lower(req_path), lower(?)) > 0");
-        params.push(Sql::Text(p.clone()));
-    }
+    // `path_contains` / `path_regex` are not SQL predicates: they are applied
+    // by the bounded candidate scan in `Store::list_with_scan_cap`.
     if !conds.is_empty() {
         sql.push_str(" WHERE ");
         sql.push_str(&conds.join(" AND "));
@@ -324,7 +322,7 @@ impl Store {
         self.list_with_scan_cap(filter, after, limit, PATH_SCAN_CAP)
     }
 
-    /// [`Store::list`] with an explicit `path_regex` row cap (tests use a small
+    /// [`Store::list`] with an explicit path-scan row cap (tests use a small
     /// one; `list` uses [`PATH_SCAN_CAP`]).
     #[doc(hidden)]
     pub fn list_with_scan_cap(
@@ -345,7 +343,8 @@ impl Store {
                     .map_err(|e| StoreError::BadPattern(e.to_string()))
             })
             .transpose()?;
-        let Some(regex) = regex else {
+        let needle = filter.path_contains.as_deref().map(str::to_ascii_lowercase);
+        if regex.is_none() && needle.is_none() {
             let (sql, params) = list_query(filter, after, limit)?;
             let items = self.with_reader(|conn| {
                 let mut stmt = conn.prepare(&sql)?;
@@ -357,9 +356,10 @@ impl Store {
                 Ok(items)
             })?;
             return Ok(paginate(items, limit, |r| r.id));
-        };
-        // Regex path: the SQL returns candidates (narrowed by the other
+        }
+        // Path scan: the SQL returns candidates (narrowed by the other
         // predicates, newest first) bounded by the cap; matching is in Rust.
+        // Both matchers must accept a row.
         let (sql, params) = list_query(filter, after, scan_cap)?;
         self.with_reader(|conn| {
             let mut stmt = conn.prepare(&sql)?;
@@ -379,7 +379,13 @@ impl Store {
                 scanned += 1;
                 let row = exchange_row(r)?;
                 last_scanned = Some(row.id);
-                if row.path.as_deref().is_some_and(|p| regex.is_match(p)) {
+                let hit = row.path.as_deref().is_some_and(|p| {
+                    regex.as_ref().is_none_or(|re| re.is_match(p))
+                        && needle
+                            .as_ref()
+                            .is_none_or(|n| p.to_ascii_lowercase().contains(n.as_str()))
+                });
+                if hit {
                     items.push(row);
                 }
             }
