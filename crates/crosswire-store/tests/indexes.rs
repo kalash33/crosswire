@@ -379,7 +379,7 @@ fn migration_recreates_indexes_analyses_and_preserves_results() {
     let version: u32 = conn
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 3, "user_version advanced to 3");
+    assert_eq!(version, 4, "user_version advanced to current (4)");
     let mut stmt = conn
         .prepare("SELECT name FROM sqlite_master WHERE type='index' AND name LIKE 'idx_exchanges_%' ORDER BY name")
         .unwrap();

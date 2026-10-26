@@ -1,4 +1,4 @@
-# Crosswire project format, version 3
+# Crosswire project format, version 4
 
 A project is a directory. Everything Crosswire records lives in it. This document is the on-disk contract; `crosswire-store` is its implementation.
 
@@ -30,7 +30,7 @@ reset-profile` deletes it.
 ## Database
 
 - `PRAGMA application_id = 0x43575052` (`CWPR`). A database with another value is not a project.
-- `PRAGMA user_version = 3`. `0` means an uninitialised database (not a project). A value above 3 is refused as a newer format; a value of 1 or 2 is an older project, migrated up to 3 on open (see [Migrations](#migrations)).
+- `PRAGMA user_version = 4`. `0` means an uninitialised database (not a project). A value above 4 is refused as a newer format; a value of 1, 2 or 3 is an older project, migrated up to 4 on open (see [Migrations](#migrations)).
 - `PRAGMA journal_mode = WAL`, `synchronous = NORMAL`, `checkpoint_fullfsync = ON` (checkpoint syncs use `F_FULLFSYNC` on macOS; no effect elsewhere), `busy_timeout = 5000` on the writer connection. `Store::open` also sets `journal_size_limit` to 1 MiB so the WAL file does not stay at its high-water size.
 - The project is opened with `SQLITE_DBCONFIG_DEFENSIVE` on and `trusted_schema = OFF`, so a hostile project file cannot run SQL functions from its schema or write to shadow tables.
 - One writer connection (the store's writer thread) and any number of read-only connections (`query_only = ON`, `busy_timeout = 5000`, `cache_size = -16384` (16 MiB), `mmap_size = 268435456` (256 MiB)). There is also at most one *control* connection per [`Control`](#control-tables-0002_sidecarsql) handle: a second write connection, hardened and configured like the writer's (WAL, `synchronous = NORMAL`, `busy_timeout = 5000`), used only for the small, rare writes to the `settings`, `tokens` and `drafts` tables and for patching an exchange's `tags`/`notes`. It never writes bodies or packs, so it never contends with the writer for long; the 5 s busy timeout lets it wait out a batch commit.
@@ -43,6 +43,7 @@ A fresh project is created at the current `user_version` with every migration ap
 - `0001_init.sql` → `user_version` 1: `exchanges`, `bodies`, `blobs`, `packs`, `markers`, `meta`.
 - `0002_sidecar.sql` → `user_version` 2: `settings`, `tokens`, `drafts` (additive; see [Control tables](#control-tables-0002_sidecarsql)).
 - `0003_history_indexes.sql` → `user_version` 3: the four structured-query indexes (additive; see [Indexes](#indexes)). The upgrade step also runs `ANALYZE` so the planner has statistics for the new indexes on an existing (populated) project — without them an open-ended range such as `resp_len >= ?` is served by a primary-key scan rather than the index.
+- `0004_tag_index.sql` → `user_version` 4: the normalized `exchange_tags` side table (additive; see [Indexes](#indexes)). The upgrade step backfills it, in bounded chunks, from the `tags` JSON of every existing row — so a project created before version 4 answers the `tag = ?` query from the table immediately after open.
 
 ### Tables (`0001_init.sql`)
 
@@ -163,7 +164,7 @@ A token's secret is `cwt_` followed by 32 random bytes in base64url (no padding)
 
 #### Tags and notes
 
-An exchange's `tags` and `notes` can be edited after it is committed. The control connection updates both the denormalised column (`exchanges.tags`, a JSON array string or `''` when empty; `exchanges.notes`) and the matching field inside the `json` document, in one transaction, so the list filters and `Store::get` stay consistent. The tag list filter matches a tag exactly against the elements of the `tags` array (`EXISTS (SELECT 1 FROM json_each(tags) WHERE value = ?)`, guarded so the empty string is never parsed as JSON).
+An exchange's `tags` and `notes` can be edited after it is committed. The control connection updates both the denormalised column (`exchanges.tags`, a JSON array string or `''` when empty; `exchanges.notes`) and the matching field inside the `json` document, in one transaction, so the list filters and `Store::get` stay consistent. When the tags change it also replaces the exchange's `exchange_tags` rows (delete then insert) in the same transaction. The tag list filter matches a tag exactly against the normalized `exchange_tags` side table (`ulid IN (SELECT ulid FROM exchange_tags WHERE tag = ?)`); the `tags` JSON column is kept only for row display and `Store::get`.
 
 ### Indexes
 
@@ -180,6 +181,10 @@ From `0003_history_indexes.sql`, for the structured history queries (§13). Each
 - `idx_exchanges_method_status` on `exchanges (req_method, resp_status, ulid)` — method + status query.
 - `idx_exchanges_resp_len` on `exchanges (resp_len, ulid)` — response-size query.
 - `idx_exchanges_scope` on `exchanges (scope_state, ulid)` — scope query.
+
+From `0004_tag_index.sql`, the normalized tag index:
+
+- `exchange_tags` (`WITHOUT ROWID`), `(ulid TEXT, tag TEXT, PRIMARY KEY (tag, ulid))` — one row per `(exchange, tag)`. The `(tag, ulid)` primary key is a `tag → ulids` range already ordered for the newest-first keyset, so the tag query searches it by its primary key (`SEARCH exchange_tags USING PRIMARY KEY (tag=?)`) instead of scanning every row's `json_each`. The writer fills it in the ingest transaction and the control connection replaces an exchange's rows when its tags change, both in lockstep with the `tags` column.
 
 ## Lock file
 

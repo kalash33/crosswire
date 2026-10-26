@@ -293,7 +293,7 @@ impl Control {
         } else {
             serde_json::to_string(tags)?
         };
-        self.patch_exchange(id, "tags", serde_json::to_value(tags)?, &column)
+        self.patch_exchange(id, "tags", serde_json::to_value(tags)?, &column, Some(tags))
     }
 
     /// Replaces an exchange's notes. Returns `false` if there is no such
@@ -307,16 +307,22 @@ impl Control {
             "notes",
             serde_json::Value::String(notes.to_owned()),
             notes,
+            None,
         )
     }
 
     /// Patches one top-level JSON field and its denormalised column together.
+    ///
+    /// When `tag_rows` is `Some`, the exchange's `exchange_tags` rows are
+    /// replaced (delete-then-insert) with that list in the same transaction, so
+    /// the normalized tag index stays in lockstep with the `tags` column.
     fn patch_exchange(
         &self,
         id: Ulid,
         field: &str,
         json_value: serde_json::Value,
         column_value: &str,
+        tag_rows: Option<&[String]>,
     ) -> Result<bool, StoreError> {
         let tx = self.conn.unchecked_transaction()?;
         let json: Option<String> = tx
@@ -339,6 +345,18 @@ impl Control {
             &format!("UPDATE exchanges SET {field} = ?2, json = ?3 WHERE ulid = ?1"),
             rusqlite::params![id.to_string(), column_value, patched],
         )?;
+        if let Some(tags) = tag_rows {
+            tx.execute(
+                "DELETE FROM exchange_tags WHERE ulid = ?1",
+                [id.to_string()],
+            )?;
+            for tag in tags {
+                tx.execute(
+                    "INSERT OR IGNORE INTO exchange_tags (ulid, tag) VALUES (?1, ?2)",
+                    rusqlite::params![id.to_string(), tag],
+                )?;
+            }
+        }
         tx.commit()?;
         Ok(true)
     }

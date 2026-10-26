@@ -913,6 +913,15 @@ fn insert_exchange(
             wire_name(&state),
         ],
     )?;
+    // Normalized tag index, kept in lockstep with the `tags` JSON column in the
+    // same transaction so the `tag = ?` history query sees every new exchange.
+    // `OR IGNORE` tolerates a tag repeated within one exchange's tag list.
+    for tag in ex.tags() {
+        tx.execute(
+            "INSERT OR IGNORE INTO exchange_tags (ulid, tag) VALUES (?1, ?2)",
+            rusqlite::params![id.to_string(), tag],
+        )?;
+    }
     Ok(())
 }
 

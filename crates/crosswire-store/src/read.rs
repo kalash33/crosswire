@@ -44,8 +44,8 @@ pub struct ExchangeFilter {
     /// rows whose `resp_len >= min_resp_len`. The "size over 1 MiB" query is
     /// `Some(1_048_577)`. Served by the `resp_len` index.
     pub min_resp_len: Option<u64>,
-    /// A tag the exchange must carry. Matched exactly against the elements of
-    /// the JSON `tags` array, so it scans rather than using an index.
+    /// A tag the exchange must carry. Matched exactly against the normalized
+    /// `exchange_tags` side table, served by its `(tag, ulid)` primary key.
     pub tag: Option<String>,
 }
 
@@ -189,9 +189,12 @@ fn list_query(
         params.push(Sql::Integer(i64::try_from(v).unwrap_or(i64::MAX)));
     }
     if let Some(t) = &filter.tag {
-        // `tags` is a JSON array string, or '' when empty; guard json_each
-        // against the empty string so it is never handed malformed JSON.
-        conds.push("tags <> '' AND EXISTS (SELECT 1 FROM json_each(tags) WHERE value = ?)");
+        // The normalized `exchange_tags (tag, ulid)` side table replaces the
+        // per-row `json_each` scan: the subquery searches its primary key for
+        // `tag = ?`, and the outer `ORDER BY ulid DESC` keyset pages the
+        // matching ids straight from the exchanges primary key (EXPLAIN QUERY
+        // PLAN: SEARCH exchange_tags USING PRIMARY KEY (tag=?), no SCAN).
+        conds.push("ulid IN (SELECT ulid FROM exchange_tags WHERE tag = ?)");
         params.push(Sql::Text(t.clone()));
     }
     if !conds.is_empty() {
