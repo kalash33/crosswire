@@ -305,7 +305,12 @@ pub async fn get_held_bytes(
         "body" => held.body.ok_or_else(|| {
             ApiError::not_found("not_found", "the held request has no buffered body")
         })?,
-        _ => return Err(ApiError::bad_request("bad_part", "part must be head or body")),
+        _ => {
+            return Err(ApiError::bad_request(
+                "bad_part",
+                "part must be head or body",
+            ))
+        }
     };
     let mut headers = http::HeaderMap::new();
     headers.insert(CONTENT_TYPE, "application/octet-stream".parse().unwrap());

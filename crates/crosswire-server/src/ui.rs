@@ -66,7 +66,13 @@ fn respond(req: &Request, api_port: u16) -> Response {
     if !rel.is_empty() && rel != "index.html" {
         if let Some(file) = Assets::get(rel) {
             let mime = mime_guess::from_path(rel).first_or_octet_stream();
-            return build(StatusCode::OK, mime.as_ref(), file.data.into_owned(), api_port, &nonce);
+            return build(
+                StatusCode::OK,
+                mime.as_ref(),
+                file.data.into_owned(),
+                api_port,
+                &nonce,
+            );
         }
     }
 

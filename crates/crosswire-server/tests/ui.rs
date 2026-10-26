@@ -188,7 +188,11 @@ async fn api_session(api: SocketAddr, token: &str) -> String {
 /// The nonce inside a `style-src … 'nonce-<n>'` directive of a CSP header.
 fn nonce_from_style_src(csp: &str) -> String {
     let after = csp.split("'nonce-").nth(1).expect("a 'nonce-' token");
-    after.split('\'').next().expect("a closing quote").to_string()
+    after
+        .split('\'')
+        .next()
+        .expect("a closing quote")
+        .to_string()
 }
 
 /// The `content` of the `<meta name="csp-nonce" content="<n>">` tag.
@@ -197,8 +201,15 @@ fn nonce_from_meta(html: &str) -> String {
         .split("name=\"csp-nonce\"")
         .nth(1)
         .expect("a csp-nonce meta tag");
-    let after = after.split("content=\"").nth(1).expect("a content attribute");
-    after.split('"').next().expect("a closing quote").to_string()
+    let after = after
+        .split("content=\"")
+        .nth(1)
+        .expect("a content attribute");
+    after
+        .split('"')
+        .next()
+        .expect("a closing quote")
+        .to_string()
 }
 
 /// A real file under the committed bundle's `assets/` directory (the hashed
@@ -230,7 +241,10 @@ async fn serves_ui_bundle_with_csp_and_keeps_api_gated() {
     let ctype = header(&hdrs, "content-type").unwrap_or("");
     assert!(ctype.starts_with("text/html"), "content-type: {ctype}");
     let text = String::from_utf8_lossy(&body);
-    assert!(text.contains("<div id=\"app\">"), "not the SPA HTML: {text}");
+    assert!(
+        text.contains("<div id=\"app\">"),
+        "not the SPA HTML: {text}"
+    );
     let csp = header(&hdrs, "content-security-policy").expect("a CSP header");
     assert!(
         csp.contains("default-src 'self'"),
@@ -238,7 +252,11 @@ async fn serves_ui_bundle_with_csp_and_keeps_api_gated() {
     );
     assert!(csp.contains("style-src 'self' 'nonce-"), "CSP nonce: {csp}");
     // The other required UI CSP directives must all be present.
-    for directive in ["object-src 'none'", "base-uri 'none'", "frame-ancestors 'none'"] {
+    for directive in [
+        "object-src 'none'",
+        "base-uri 'none'",
+        "frame-ancestors 'none'",
+    ] {
         assert!(csp.contains(directive), "CSP lacks {directive}: {csp}");
     }
     assert_eq!(header(&hdrs, "x-content-type-options"), Some("nosniff"));
@@ -287,7 +305,9 @@ async fn serves_ui_bundle_with_csp_and_keeps_api_gated() {
     let (sn, hn, nb) = http(api, "GET", "/nope", &[], None).await;
     assert_eq!(sn, 200, "an unknown UI path falls back to the SPA shell");
     assert!(
-        header(&hn, "content-type").unwrap_or("").starts_with("text/html"),
+        header(&hn, "content-type")
+            .unwrap_or("")
+            .starts_with("text/html"),
         "fallback content-type"
     );
     assert!(

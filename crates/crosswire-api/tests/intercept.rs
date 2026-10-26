@@ -168,7 +168,10 @@ async fn held_bytes_route_serves_original_and_404s() {
 
     // An unknown id is a 404, even with a valid session.
     let unknown = app
-        .get("/api/v1/intercept/held/01ARZ3NDEKTSV4RRFFQ69G5FAV/head", &read)
+        .get(
+            "/api/v1/intercept/held/01ARZ3NDEKTSV4RRFFQ69G5FAV/head",
+            &read,
+        )
         .await;
     assert_eq!(unknown.status, 404, "{}", unknown.body_string());
 
