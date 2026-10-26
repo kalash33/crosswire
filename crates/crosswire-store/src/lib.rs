@@ -19,6 +19,8 @@ mod schema;
 mod sink;
 mod store;
 mod sweep;
+#[cfg(feature = "synthetic")]
+pub mod synthetic;
 mod writer;
 
 pub use bodies::{BodyLocator, BodySide, BodyStore};
@@ -32,3 +34,5 @@ pub use read::{
 };
 pub use store::{OpenReport, Store, StoreConfig};
 pub use sweep::{sweep, SweepReport};
+#[cfg(feature = "synthetic")]
+pub use synthetic::generate;
