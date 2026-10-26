@@ -276,9 +276,12 @@ async fn no_cors_headers_ever() {
 
 #[tokio::test]
 async fn session_idle_expiry_and_refresh() {
-    // A short idle window so the test is fast.
+    // A short idle window, but wide enough that CI scheduling/IO overhead
+    // between the sleeps and the request round-trip cannot push a request
+    // past the window on its own (the sleeps carry a ~400ms margin below the
+    // window; the expiry sleep a ~500ms margin above it).
     let app = TestApp::with(Opts {
-        idle_timeout: Duration::from_millis(200),
+        idle_timeout: Duration::from_millis(1000),
         ..Opts::default()
     })
     .await;
@@ -289,17 +292,17 @@ async fn session_idle_expiry_and_refresh() {
     ];
 
     // Two requests, each inside the window measured from the previous one.
-    // Without refresh the second (240ms after creation) would exceed 200ms;
+    // Without refresh the second (1200ms after creation) would exceed 1000ms;
     // it succeeds, which proves each request refreshes last-seen.
-    tokio::time::sleep(Duration::from_millis(120)).await;
+    tokio::time::sleep(Duration::from_millis(600)).await;
     let r1 = app.get("/api/v1/counts", &h).await;
     assert_eq!(r1.status, 200, "within the window");
-    tokio::time::sleep(Duration::from_millis(120)).await;
+    tokio::time::sleep(Duration::from_millis(600)).await;
     let r2 = app.get("/api/v1/counts", &h).await;
     assert_eq!(r2.status, 200, "refreshed, so still within the window");
 
     // Now idle past the window: the session expires.
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    tokio::time::sleep(Duration::from_millis(1500)).await;
     let r3 = app.get("/api/v1/counts", &h).await;
     assert_eq!(r3.status, 401, "an idle session expires");
     assert_eq!(r3.json()["error"]["code"], "session_invalid");
