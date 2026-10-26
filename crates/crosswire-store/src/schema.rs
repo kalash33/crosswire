@@ -6,7 +6,7 @@ use rusqlite::Connection;
 /// The `application_id` of a Crosswire project (`CWPR`).
 pub(crate) const APPLICATION_ID: i64 = 0x4357_5052;
 /// The schema version this build reads and writes.
-pub(crate) const USER_VERSION: u32 = 4;
+pub(crate) const USER_VERSION: u32 = 5;
 
 /// Rows backfilled into `exchange_tags` per statement during the v3→v4
 /// migration, so a million-row project is not one unbounded insert.
@@ -16,6 +16,7 @@ const INIT: &str = include_str!("../migrations/0001_init.sql");
 const SIDECAR: &str = include_str!("../migrations/0002_sidecar.sql");
 const HISTORY_INDEXES: &str = include_str!("../migrations/0003_history_indexes.sql");
 const TAG_INDEX: &str = include_str!("../migrations/0004_tag_index.sql");
+const METHOD_STATUS_ORDER: &str = include_str!("../migrations/0005_method_status_order.sql");
 
 /// Creates a fresh project at [`USER_VERSION`]: applies every migration and
 /// stamps `application_id` and `user_version`, in one transaction.
@@ -25,6 +26,7 @@ pub(crate) fn init(conn: &mut Connection) -> Result<(), StoreError> {
     tx.execute_batch(SIDECAR)?;
     tx.execute_batch(HISTORY_INDEXES)?;
     tx.execute_batch(TAG_INDEX)?;
+    tx.execute_batch(METHOD_STATUS_ORDER)?;
     tx.pragma_update(None, "application_id", APPLICATION_ID)?;
     tx.pragma_update(None, "user_version", USER_VERSION)?;
     tx.commit()?;
@@ -92,6 +94,16 @@ pub(crate) fn migrate(conn: &mut Connection, from: u32) -> Result<(), StoreError
         tx.pragma_update(None, "user_version", 4)?;
         tx.commit()?;
         version = 4;
+    }
+    if version == 4 {
+        let tx = conn.transaction()?;
+        tx.execute_batch(METHOD_STATUS_ORDER)?;
+        // Statistics for the rebuilt index, so the planner picks it over a
+        // primary-key scan on an existing, populated project.
+        tx.execute_batch("ANALYZE;")?;
+        tx.pragma_update(None, "user_version", 5)?;
+        tx.commit()?;
+        version = 5;
     }
     if version != USER_VERSION {
         return Err(StoreError::Corrupt(format!(

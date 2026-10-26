@@ -204,7 +204,8 @@ fn list_all(store: &Store, filter: &ExchangeFilter) -> Vec<Ulid> {
 fn assert_uses(store: &Store, filter: &ExchangeFilter, index: &str) {
     let plan = store.explain_list(filter).unwrap().join(" | ");
     assert!(
-        plan.contains(&format!("USING INDEX {index}")),
+        plan.contains(&format!("USING INDEX {index}"))
+            || plan.contains(&format!("USING COVERING INDEX {index}")),
         "expected {index}; plan: {plan}"
     );
     assert!(!plan.contains("SCAN exchanges"), "full scan; plan: {plan}");
@@ -259,6 +260,10 @@ fn method_status_query_is_indexed() {
     assert!(!want.is_empty());
     assert_eq!(list_all(&store, &filter), want, "status>=500 & POST");
     assert_uses(&store, &filter, "idx_exchanges_method_status");
+    // The v5 shape `(req_method, ulid, resp_status)` yields ulid order, so the
+    // status range must not need a temp sort (the 12 s regression at 1M rows).
+    let plan = store.explain_list(&filter).unwrap().join("\n");
+    assert!(!plan.contains("TEMP B-TREE"), "no temp sort: {plan}");
 }
 
 #[test]
@@ -379,7 +384,7 @@ fn migration_recreates_indexes_analyses_and_preserves_results() {
     let version: u32 = conn
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 4, "user_version advanced to current (4)");
+    assert_eq!(version, 5, "user_version advanced to current (5)");
     let mut stmt = conn
         .prepare("SELECT name FROM sqlite_master WHERE type='index' AND name LIKE 'idx_exchanges_%' ORDER BY name")
         .unwrap();

@@ -35,7 +35,7 @@ fn create_then_open_roundtrip() {
     let v: i64 = r
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(v, 4);
+    assert_eq!(v, 5);
     let a: i64 = r
         .query_row("PRAGMA application_id", [], |r| r.get(0))
         .unwrap();
@@ -70,7 +70,7 @@ fn migrates_v1_project_with_snapshot() {
         c.pragma_update(None, "user_version", 1).unwrap();
     }
 
-    // Opening migrates 1 -> 2 -> 3 -> 4 (one snapshot, taken at the start version).
+    // Opening migrates 1 -> 2 -> 3 -> 4 -> 5 (one snapshot, taken at the start version).
     let p = Project::open(&dir).unwrap();
     assert!(
         dir.join("project.db.v1.bak").is_file(),
@@ -80,7 +80,7 @@ fn migrates_v1_project_with_snapshot() {
     let v: i64 = r
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(v, 4);
+    assert_eq!(v, 5);
     let n: i64 = r
         .query_row(
             "SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN \
@@ -114,7 +114,7 @@ fn migrates_v1_project_with_snapshot() {
         .unwrap()
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(v, 4);
+    assert_eq!(v, 5);
 }
 
 #[test]
@@ -144,10 +144,10 @@ fn newer_format_refused() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path().join("p");
     drop(Project::create(&dir).unwrap());
-    raw(&dir).pragma_update(None, "user_version", 5).unwrap();
+    raw(&dir).pragma_update(None, "user_version", 6).unwrap();
     assert!(matches!(
         Project::open(&dir),
-        Err(StoreError::NewerFormat(5))
+        Err(StoreError::NewerFormat(6))
     ));
 }
 
@@ -280,7 +280,7 @@ fn open_or_create_recreates_a_zero_byte_db() {
         .unwrap()
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(v, 4);
+    assert_eq!(v, 5);
 }
 
 #[test]

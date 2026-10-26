@@ -209,6 +209,10 @@ fn list_query(
         params.push(Sql::Text(to_wire(&ss)?));
     }
     if let Some(v) = filter.min_resp_len {
+        // Pin the covering `resp_len` index (v5). At a million rows the planner
+        // otherwise prefers a primary-key scan in ulid order, which wades
+        // through ~5 KB rows to find the ~1 % that match (26 ms vs 0.9 ms).
+        sql.push_str(" INDEXED BY idx_exchanges_resp_len");
         // `resp_len` is stored as i64 (saturated), so bind a saturated i64.
         conds.push("resp_len >= ?");
         params.push(Sql::Integer(i64::try_from(v).unwrap_or(i64::MAX)));

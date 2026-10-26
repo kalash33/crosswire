@@ -225,7 +225,7 @@ fn migration_backfills_tags_for_a_preexisting_project() {
         .unwrap()
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 4, "user_version advanced to 4");
+    assert_eq!(version, 5, "user_version advanced to current (5)");
 
     // ids[0] = {red, blue}, ids[2] = {red}, ids[4] = {red, green}, ids[5] = {green}.
     // ULIDs minted in the same millisecond are not monotonic, so order the
