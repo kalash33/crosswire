@@ -67,6 +67,11 @@ ui-dist-check:
 serve *ARGS:
     cargo run --locked -p crosswire-server -- serve {{ARGS}}
 
+# Pairing, schema and per-DiagnosticCode coverage of the golden corpus
+# (stdlib-only; -I keeps the interpreter isolated from the cwd).
+corpus-check:
+    python3 -I scripts/corpus-check.py corpus/h1
+
 lint:
     cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
     cargo fmt --check

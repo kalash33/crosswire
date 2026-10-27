@@ -121,6 +121,7 @@ impl Project {
         if version > USER_VERSION {
             return Err(StoreError::NewerFormat(version));
         }
+        refuse_hostile_schema(&db)?;
         if lock.previous_unclean() {
             #[cfg(test)]
             INTEGRITY_CHECKS.with(|c| c.set(c.get() + 1));
@@ -283,6 +284,30 @@ fn migrate_with_snapshot(
     let mut db = open_writer(db_path).map_err(classify)?;
     schema::migrate(&mut db, from)?;
     Ok(db)
+}
+
+/// Refuses a project whose schema carries a trigger or view.
+///
+/// Crosswire's own schema (see `migrations/`) is only tables and indexes, so a
+/// trigger or view can only have been planted in a hostile project file. A
+/// trigger on one of our tables runs attacker SQL the first time we write to it
+/// (a journal replay, a gap marker) and a view can smuggle a non-innocuous
+/// function call; `trusted_schema=OFF` blocks the function but not the trigger,
+/// so the open refuses either outright rather than execute foreign schema.
+fn refuse_hostile_schema(conn: &Connection) -> Result<(), StoreError> {
+    let hostile: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type IN ('trigger', 'view')",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(classify_sqlite)?;
+    if hostile != 0 {
+        return Err(StoreError::Corrupt(
+            "project schema contains a trigger or view".into(),
+        ));
+    }
+    Ok(())
 }
 
 /// Maps `SQLITE_CORRUPT` and `SQLITE_NOTADB` to their store errors.

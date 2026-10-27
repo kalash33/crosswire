@@ -245,3 +245,31 @@ fn corpus_golden() {
     );
     println!("corpus: {ran} cases run");
 }
+
+/// Every `DiagnosticCode` is exercised by at least one golden case. The
+/// expected set comes from `DiagnosticCode::ALL`, so a new code without a case
+/// fails here (independently of `scripts/corpus-check.py`). Mirrors that
+/// script: a case marked `known_bug` does not count as coverage, and a parse
+/// error that shares a code's name counts for that code.
+#[test]
+fn every_diagnostic_code_has_a_corpus_case() {
+    use crosswire_core::DiagnosticCode;
+    use std::collections::BTreeSet;
+    let mut covered: BTreeSet<String> = BTreeSet::new();
+    for case in load_cases() {
+        if case.expect.known_bug.is_some() {
+            continue;
+        }
+        covered.extend(case.expect.diagnostics.iter().cloned());
+        covered.extend(case.expect.error.iter().cloned());
+    }
+    let missing: Vec<&str> = DiagnosticCode::ALL
+        .iter()
+        .map(DiagnosticCode::as_str)
+        .filter(|c| !covered.contains(*c))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "DiagnosticCodes with no corpus case in corpus/h1/cases: {missing:?}"
+    );
+}

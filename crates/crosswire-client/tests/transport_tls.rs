@@ -4,6 +4,7 @@ mod common;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use crosswire_ca::Ca;
 use crosswire_client::{
     ClientError, DestinationGate, GateRefusal, RustlsBackend, Target, Transport, VerifyMode,
 };
@@ -57,6 +58,59 @@ async fn verifies_ca_issued_leaf_and_refuses_unknown_chain() {
         .await
         .unwrap_err();
     assert!(matches!(err, ClientError::Tls(_)), "{err:?}");
+}
+
+// Gate #15, chained-upstream half (§11.9): an upstream leaf signed by a
+// private CA that is not in the webpki default roots must be REFUSED under the
+// default roots and ACCEPTED only when that CA is supplied as an extra trust
+// anchor. Both legs use the *same* CA and leaf, so the sole difference is the
+// trust anchor — the accept must not come from a weakened trust path.
+#[tokio::test]
+async fn private_ca_leaf_refused_without_anchor_accepted_with_it() {
+    let ca = Ca::generate("anchor-gate").unwrap();
+
+    // Refuse leg: the default webpki roots do not trust this private CA, so a
+    // well-formed, in-name leaf it signed is a certificate-validation error.
+    let refuse_addr = common::spawn_tls_echo_from_ca(&ca, "example.test").await;
+    let t = Transport::new(
+        Arc::new(RustlsBackend::webpki_roots()),
+        gate_allowing(refuse_addr),
+    );
+    let err = t
+        .connect(&Target::tls(
+            &host(refuse_addr),
+            refuse_addr.port(),
+            "example.test",
+            VerifyMode::WebPki,
+        ))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, ClientError::Tls(_)),
+        "the private-CA leaf must be refused as a TLS error without the anchor: {err:?}"
+    );
+
+    // Accept leg: the same CA supplied as an extra trust anchor validates the
+    // same leaf and the negotiated chain is reported valid.
+    let accept_addr = common::spawn_tls_echo_from_ca(&ca, "example.test").await;
+    let t = Transport::new(
+        Arc::new(RustlsBackend::with_extra_roots(vec![ca.cert_der()])),
+        gate_allowing(accept_addr),
+    );
+    let c = t
+        .connect(&Target::tls(
+            &host(accept_addr),
+            accept_addr.port(),
+            "example.test",
+            VerifyMode::WebPki,
+        ))
+        .await
+        .unwrap();
+    assert!(matches!(
+        c.info().upstream_chain_result(),
+        ChainResult::Valid
+    ));
+    assert!(!c.info().cert_override());
 }
 
 #[tokio::test]

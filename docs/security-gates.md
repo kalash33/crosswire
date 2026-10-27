@@ -17,7 +17,7 @@ citation is being tightened and the status is conservative until then.
 | 2 | `read`-token-cannot-mutate: every send/admin route refuses a read token with `403` | `crosswire-api/tests/auth.rs::read_token_cannot_mutate` | proven |
 | 3 | XSS corpus: loaded into history/repeater/intercept, nothing executes | `ui/e2e/xss-corpus.spec.ts` (history text-render surfaces + the detector self-test), `ui/e2e/xss-repeater-intercept.spec.ts` (repeater and intercept surfaces) | **PARTIAL** — UI e2e specs exist and drive the corpus into the rendered fields, but they run under Playwright (`just ui-e2e`), not the Rust `just test`, and the preview surface (Plan 5/6) is not yet covered |
 | 4 | preview zero-egress: the preview corpus makes no outbound request | — | **Plan 5/6** (UI previews) |
-| 5 | idle-egress: an idle sidecar (API open, event stream connected) makes zero upstream connections and zero DNS lookups | `crosswire-api/tests/gates.rs::idle_egress_zero_connections` | proven |
+| 5 | idle-egress: an idle sidecar (API open, event stream connected) makes zero upstream connections and zero DNS lookups | `crosswire-api/tests/gates.rs::idle_egress_zero_connections` (in-process); `crosswire-server/tests/gates.rs::real_serve_makes_no_outbound_connection_while_idle` (real binary, Linux `/proc` socket probe) | proven |
 | 6 | CA-key-leakage: the CA private key appears in no API body, no project-dir file and not in the OpenAPI document | `crosswire-server/tests/gates.rs::ca_key_never_leaves` | proven |
 | 7 | loopback-spelling relay refusal: addresses resolving to loopback/link-local/metadata ranges are refused, in every spelling | `crosswire-client/tests/gate.rs::spellings_that_resolve_to_refused_ranges_are_refused`, `::gate_refuses_after_resolution`, `::own_ports_are_refused_on_loopback_even_when_allowlisted` | proven |
 | 8 | proxy origin-form refusal: an origin-form request to an unknown host is refused `400` | `crosswire-proxy/tests/front.rs::origin_form_to_unknown_host_is_refused_400` | proven |
@@ -27,8 +27,8 @@ citation is being tightened and the status is conservative until then.
 | 12 | non-loopback proxy-auth: a non-loopback proxy bind requires `--allow-non-loopback` and proxy auth | `crosswire-proxy/tests/config.rs::config_refuses_non_loopback_without_flag`, `::config_requires_auth_on_non_loopback`; `crosswire-proxy/tests/front.rs::non_loopback_bind_without_flag_fails`, `::proxy_auth_required_then_accepted` | proven |
 | 13 | scope matrix incl. empty scope (§4.6): In/Out/Empty/HostMismatch verdicts drive history recording and the repeater's four cases | `crosswire-api/tests/gates.rs::scope_matrix_including_empty_scope` (repeater: empty/in/out + strict refusal); `crosswire-proxy/tests/intercept.rs::scope_state_is_recorded_on_history_exchanges` (history In/Out/Empty/HostMismatch); `crosswire-tools/tests/repeater.rs` (repeater verdicts and out-of-scope audit) | proven |
 | 14 | redaction golden (§11.4): copy-as-curl (redacted), copy-raw and logs of a seeded project contain no seeded secret | `crosswire-server/tests/gates.rs::redaction_golden` | proven |
-| 15 | bad-chain refusal and chained-upstream anchor (§11.9) | `crosswire-client/tests/transport_tls.rs`, `crosswire-proxy/tests/failures.rs` | **PARTIAL** (prior plan) — cited at file level, not yet enumerated to the named test(s) that prove each clause (bad-chain refusal vs. chained-upstream anchor) |
-| 16 | hostile-project corpus (torn pack, zstd bomb, hostile SQLite and journal) | `crosswire-store/tests/packs.rs::decompression_bomb_refused` (+ torn-pack cases), `::durability.rs`, `::project.rs::symlinked_journal_directory_is_refused` | **PARTIAL** (prior plan) — the zstd-bomb and journal clauses map to named tests, but the torn-pack and hostile-SQLite clauses are cited at file level, not yet enumerated per clause |
+| 15 | bad-chain refusal and chained-upstream anchor (§11.9) | bad-chain refusal: `crosswire-client/tests/transport_tls.rs::verifies_ca_issued_leaf_and_refuses_unknown_chain` (unknown chain → `ClientError::Tls`), `::wrong_name_is_refused_under_webpki`; chained-upstream anchor: `crosswire-client/tests/transport_tls.rs::private_ca_leaf_refused_without_anchor_accepted_with_it` (same private-CA leaf refused under `webpki_roots()`, accepted under `with_extra_roots([that CA])`) | proven |
+| 16 | hostile-project corpus (torn pack, zstd bomb, hostile SQLite and journal) | torn pack: `crosswire-store/tests/packs.rs::torn_tail_recovery`, `::frame_without_content_size_refused`, `::flipped_payload_byte_is_corrupt`, `::sweep_repairs_index_after_crash_between_truncate_and_cleanup`; zstd bomb: `::decompression_bomb_refused`; hostile SQLite: `crosswire-store/tests/hostile.rs::hostile_sqlite_schema_does_not_execute_on_open` (a planted trigger/view is refused on open with no code run); malformed journal: `::malformed_journal_is_skipped_without_panic_or_unbounded_alloc` (good record replays, bad records quarantined, an over-cap file size drives no allocation) and `crosswire-store/tests/project.rs::symlinked_journal_directory_is_refused` | proven |
 | 17 | audit-completeness: every §9.4 audited action produces a row | `crosswire-server/tests/gates.rs::audit_completeness` | proven |
 | 18 | one hostile fixture per `Limits` row with flat RSS | `crosswire-proxy/tests/limits_rss.rs::rss_flat_under_large_until_close_response`, `::limits.rs` | **PARTIAL** (prior plan) — `limits.rs` enforces each `Limits` row, but the flat-RSS proof is a single fixture, not one per row as the clause requires |
 
@@ -39,6 +39,15 @@ authentication failures per peer per minute trip a `429`, and every failure is
 audited. Proven end to end, including the WebSocket first-frame path (closed in
 Task 6), by `crosswire-api/tests/gates.rs::auth_failures_rate_limited_and_audited`
 and, for the bootstrap path, `crosswire-api/tests/auth.rs::bootstrap_rate_limited_after_10_failures_and_audited`.
+
+## Supporting gate: corpus coverage
+
+Every `DiagnosticCode` must be exercised by at least one golden case in
+`corpus/h1/cases`. Two independent checks enforce it:
+`crosswire-h1/tests/corpus.rs::every_diagnostic_code_has_a_corpus_case` (Rust,
+derives the expected set from `DiagnosticCode::ALL`, so a new code without a case
+fails under `just test`) and `scripts/corpus-check.py` (pairing, schema and
+coverage), run in CI on the ubuntu `check` job as `just corpus-check`.
 
 ## Audited actions (used by audit-completeness)
 
@@ -63,7 +72,12 @@ above, so `audit_completeness` does not assert it.
 - The `idle-egress` gate is scoped to the in-process repeater `Transport`, the
   single primitive every upstream dial and DNS lookup goes through. The test
   builds the API over that transport and watches its counters; it does not run
-  the full `crosswire serve` binary. The test idles for about 10 seconds.
+  the full `crosswire serve` binary. The test idles for about 10 seconds. The
+  real-binary counterpart spawns `crosswire serve`, opens a session and the event
+  stream, and asserts via `/proc/<pid>/{fd,net/*}` that the process holds no
+  established non-loopback TCP connection (and no connected non-loopback UDP
+  socket) over a 6 second idle window. It skips on non-Linux hosts; the probe's
+  row parser is unit-tested on every host.
 - The route-auth, cookie-isolation and host-421 gates walk the committed
   OpenAPI document (`crosswire_api::document()`), so a new route cannot escape
   the walk without also appearing in the document the snapshot test guards.
