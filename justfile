@@ -110,3 +110,21 @@ package:
 
 bench:
     cargo bench -p crosswire-h1 --locked --no-run
+    cargo bench -p crosswire-store --locked --features synthetic --no-run
+
+# Maintainer-only full gate (spec §13): 1 000 000 rows, structured p95 < 50 ms
+# warm / < 500 ms cold, peak anonymous RSS < 500 MB. Takes minutes (the load
+# alone is ~3 min) and the numbers depend on the machine, so CI never runs it;
+# compare the output with the committed baseline in bench/README.md.
+perf:
+    scripts/perf-gate.sh 1000000 50 500 500
+    @echo "Compare the SUMMARY above with the committed baseline: bench/README.md"
+
+# CI regression guard, hardware-independent. (1) The EXPLAIN QUERY PLAN tests
+# fail if any named history query stops using its index (or the status query
+# regains a temp sort): a dropped index flips the plan to SCAN, on any machine.
+# (2) A 100k-row run with bounds ~4x/2x looser than the 1M gate, a sanity check
+# for gross regressions that CI hardware noise cannot trip.
+perf-smoke:
+    cargo test --locked -p crosswire-store --features synthetic --test indexes --test tags_index --test path_filter
+    scripts/perf-gate.sh 100000 200 1000 250

@@ -19,6 +19,8 @@ mod schema;
 mod sink;
 mod store;
 mod sweep;
+#[cfg(feature = "synthetic")]
+pub mod synthetic;
 mod writer;
 
 pub use bodies::{BodyLocator, BodySide, BodyStore};
@@ -27,6 +29,10 @@ pub use error::StoreError;
 pub use events::EventStream;
 pub use packs::{BlobRef, PackWriter};
 pub use project::Project;
-pub use read::{Counts, ExchangeFilter, ExchangeRow, NamespaceCounts, Page, PAGE_LIMIT_MAX};
+pub use read::{
+    Counts, ExchangeFilter, ExchangeRow, NamespaceCounts, Page, PAGE_LIMIT_MAX, PATH_SCAN_CAP,
+};
 pub use store::{OpenReport, Store, StoreConfig};
 pub use sweep::{sweep, SweepReport};
+#[cfg(feature = "synthetic")]
+pub use synthetic::generate;

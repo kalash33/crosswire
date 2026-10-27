@@ -319,7 +319,10 @@ fn exact_host_filter_uses_host_header_is_indexed_and_case_insensitive() {
         ..ExchangeFilter::default()
     };
     let lines = store.explain_list(&exact).unwrap();
-    assert_searches(&lines, "exchanges_req_host");
+    // The composite `(req_host, ulid)` index serves both the equality and the
+    // `ORDER BY ulid DESC` keyset, so the planner prefers it over the older
+    // single-column `exchanges_req_host` (which would need a separate sort).
+    assert_searches(&lines, "idx_exchanges_host");
     let plan = lines.join(" | ");
     println!("exact host plan: {plan}");
     let page = store.list(&exact, None, 10).unwrap();
