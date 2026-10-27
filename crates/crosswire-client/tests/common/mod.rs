@@ -61,6 +61,13 @@ pub async fn spawn_tls_echo_with_ca() -> (Ca, SocketAddr) {
     (ca, addr)
 }
 
+/// TLS echo server whose leaf for `name` is issued by `ca`. Lets a single
+/// private CA stand up more than one server (each server accepts exactly one
+/// connection), so the same CA/leaf can be driven down two trust paths.
+pub async fn spawn_tls_echo_from_ca(ca: &Ca, name: &str) -> SocketAddr {
+    spawn_tls(ca, name).await
+}
+
 /// TLS echo server whose leaf for `bad.test` comes from an unrelated CA.
 pub async fn spawn_tls_echo_self_signed() -> SocketAddr {
     let other = Ca::generate("untrusted").unwrap();
