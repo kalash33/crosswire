@@ -11,10 +11,12 @@
 //! [scope]: crosswire_scope
 //! [`ExchangeSink`]: crosswire_model::ExchangeSink
 
+mod copy;
 pub mod record;
 mod redirect;
 mod repeater;
 
+pub use copy::{body_is_blob, quote, to_curl, to_raw, Shell};
 pub use record::{record_exchange, RecordError, Recorded};
 pub use redirect::Url;
 pub use repeater::{FollowRedirects, Mode, Repeater, SendError, SendOutcome, SendRequest};
