@@ -30,7 +30,50 @@ citation is being tightened and the status is conservative until then.
 | 15 | bad-chain refusal and chained-upstream anchor (§11.9) | bad-chain refusal: `crosswire-client/tests/transport_tls.rs::verifies_ca_issued_leaf_and_refuses_unknown_chain` (unknown chain → `ClientError::Tls`), `::wrong_name_is_refused_under_webpki`; chained-upstream anchor: `crosswire-client/tests/transport_tls.rs::private_ca_leaf_refused_without_anchor_accepted_with_it` (same private-CA leaf refused under `webpki_roots()`, accepted under `with_extra_roots([that CA])`) | proven |
 | 16 | hostile-project corpus (torn pack, zstd bomb, hostile SQLite and journal) | torn pack: `crosswire-store/tests/packs.rs::torn_tail_recovery`, `::frame_without_content_size_refused`, `::flipped_payload_byte_is_corrupt`, `::sweep_repairs_index_after_crash_between_truncate_and_cleanup`; zstd bomb: `::decompression_bomb_refused`; hostile SQLite: `crosswire-store/tests/hostile.rs::hostile_sqlite_schema_does_not_execute_on_open` (a planted trigger/view is refused on open with no code run); malformed journal: `::malformed_journal_is_skipped_without_panic_or_unbounded_alloc` (good record replays, bad records quarantined, an over-cap file size drives no allocation) and `crosswire-store/tests/project.rs::symlinked_journal_directory_is_refused` | proven |
 | 17 | audit-completeness: every §9.4 audited action produces a row | `crosswire-server/tests/gates.rs::audit_completeness` | proven |
-| 18 | one hostile fixture per `Limits` row with flat RSS | `crosswire-proxy/tests/limits_rss.rs::rss_flat_under_large_until_close_response`, `::limits.rs` | **PARTIAL** (prior plan) — `limits.rs` enforces each `Limits` row, but the flat-RSS proof is a single fixture, not one per row as the clause requires. **2b Task 1:** the six proxy parse-limit rows (head size, header count, line length, max chunks, chunk-size line, trailer size) now have flat-RSS coverage in `crosswire-proxy/tests/limits_rss_parse.rs`. **2b Task 2:** capture_cap and the in-flight body budget now have flat-RSS coverage in `crosswire-proxy/tests/limits_rss_body.rs` (the decompression row lives in the store, not the proxy) |
+| 18 | one hostile fixture per `Limits` row with flat RSS | `crosswire-proxy/tests/limits_rss*.rs`, `crosswire-store/tests/limits_rss_store.rs` (per-row ledger below) | **proven** — every memory-relevant row has a flat-RSS fixture with the hostile input far over its cap; every counter/timeout row is bounded by a refusal, not a buffer (see "Gate 18 ledger") |
+
+## Gate 18 ledger: flat RSS per Limits row
+
+Each memory-relevant row drives hostile input far over its cap and asserts both
+the observable refusal and that anonymous RSS stays flat (`RssAnon` on Linux,
+`phys_footprint` on macOS; the RSS leg SKIPs where no probe exists, and CI-Linux
+is the gate). Every flat-RSS test is `multi_thread` (or samples on its own
+thread) so the sampler really runs, and none holds the attacker volume itself.
+
+| Row | Flat-RSS test |
+|---|---|
+| Parse rows: head size, header count, line length, max chunks, chunk-size line, trailer size | `crosswire-proxy/tests/limits_rss_parse.rs` |
+| `capture_cap` | `crosswire-proxy/tests/limits_rss_body.rs::capture_cap_flat_rss` |
+| In-flight `body_budget` | `crosswire-proxy/tests/limits_rss_body.rs::inflight_budget_flat_rss` |
+| Until-close response | `crosswire-proxy/tests/limits_rss.rs::rss_flat_under_large_until_close_response` |
+| Pack-body decompression (64 MiB bound) | `crosswire-store/tests/limits_rss_store.rs::pack_decompression_flat_rss` |
+| Store write queue (spill, journal cap, gap) | `crosswire-store/tests/limits_rss_store.rs::store_queue_flat_rss` |
+| `intercept_hold` | `crosswire-proxy/tests/limits_rss_intercept.rs::intercept_hold_flat_rss` |
+
+Rows bounded by a counter or refusal, not a buffer (no per-row RSS fixture; an
+attacker cannot make these grow memory because they hold no attacker bytes or
+cap their state by count):
+
+| Row | Why it is not a memory-growth surface |
+|---|---|
+| Pending CONNECT | a counter; past `max_pending_connect` the connection is refused before any buffer exists |
+| Per-IP connections | a counter per client IP; past `max_per_client_ip` the accept is refused |
+| Max connections | a semaphore on `max_connections`; excess accepts are refused or wait unbuffered |
+| SNI length | a length check on a fixed-size parsed field; over-long names are rejected, never stored |
+| DNS timeout | a deadline on the lookup; holds one pending future, no attacker bytes |
+| TLS-handshake timeout | a deadline per handshake; a stalled peer is dropped at the timeout |
+| Handshake rejection | a windowed counter (`rejections_per_window`); past it the peer is refused without work |
+| Leaf-cert LRU / mint | a fixed-capacity LRU keyed by host; the mint rate is bounded by the handshake counters |
+| Redirect-follow | a hop counter on the repeater; the chain stops at the limit and each response is capture-capped |
+| WS per-subscriber buffer | a bounded broadcast channel per subscriber; a laggard is dropped with a `Lagged` event |
+| `audit.jsonl` cap | rotates to one prior generation at `audit_rotate_bytes`; disk, not memory |
+| Journal disk cap | `journal_cap` bounds spilled bytes on disk; past it exchanges are dropped with a gap marker (exercised in `store_queue_flat_rss`) |
+
+Deferred: the Content-Encoding decode-view row (the 100:1 ratio bound of
+spec 11.6, a derived view with a banner) is deferred. The decode view is a v0.2a
+feature and is not yet implemented; its flat-RSS test lands when it ships. The
+store-side pack decompression bound is covered by `pack_decompression_flat_rss`.
+
 
 ## Supporting gate: authentication-failure rate limiting
 
