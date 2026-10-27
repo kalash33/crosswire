@@ -40,6 +40,15 @@ audited. Proven end to end, including the WebSocket first-frame path (closed in
 Task 6), by `crosswire-api/tests/gates.rs::auth_failures_rate_limited_and_audited`
 and, for the bootstrap path, `crosswire-api/tests/auth.rs::bootstrap_rate_limited_after_10_failures_and_audited`.
 
+## Supporting gate: corpus coverage
+
+Every `DiagnosticCode` must be exercised by at least one golden case in
+`corpus/h1/cases`. Two independent checks enforce it:
+`crosswire-h1/tests/corpus.rs::every_diagnostic_code_has_a_corpus_case` (Rust,
+derives the expected set from `DiagnosticCode::ALL`, so a new code without a case
+fails under `just test`) and `scripts/corpus-check.py` (pairing, schema and
+coverage), run in CI on the ubuntu `check` job as `just corpus-check`.
+
 ## Audited actions (used by audit-completeness)
 
 The exact action strings the code emits, each produced once by
