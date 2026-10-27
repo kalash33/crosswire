@@ -93,6 +93,179 @@ async fn ca_key_never_leaves() {
     sigint_and_wait(&mut child.0);
 }
 
+// -- idle_egress (real binary) ---------------------------------------------
+
+/// Gate #5 over the real `crosswire serve` binary: with the API open, a session
+/// established and the event stream connected, the process makes no outbound
+/// (non-loopback) connection while idle. Linux only: the probe reads
+/// `/proc/<pid>/{fd,net/*}`; elsewhere the test skips with a notice.
+#[tokio::test(flavor = "multi_thread")]
+async fn real_serve_makes_no_outbound_connection_while_idle() {
+    if !Path::new("/proc/self/net/tcp").exists() {
+        eprintln!("SKIP real_serve_makes_no_outbound_connection_while_idle: no /proc (non-Linux)");
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let project = tmp.path().join("proj");
+    let ca_dir = tmp.path().join("ca");
+
+    let mut child = Reap(spawn_serve(&project, &ca_dir, &[]));
+    let startup = tokio::task::block_in_place(|| wait_serve_startup(&mut child.0));
+    let api = startup.api;
+    let pid = child.0.id();
+    let cookie = api_session(api, &token_from_bootstrap_line(&startup.bootstrap_line)).await;
+
+    // Connect the event stream (a raw WebSocket upgrade) and keep it open.
+    let mut ws = TcpStream::connect(api).await.unwrap();
+    let req = format!(
+        "GET /api/v1/events HTTP/1.1\r\nHost: localhost:{}\r\nConnection: Upgrade\r\n\
+         Upgrade: websocket\r\nSec-WebSocket-Version: 13\r\n\
+         Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nCookie: {cookie}\r\n\
+         Sec-Fetch-Site: same-origin\r\nOrigin: http://localhost:{}\r\n\r\n",
+        api.port(),
+        api.port()
+    );
+    ws.write_all(req.as_bytes()).await.unwrap();
+    let mut buf = [0u8; 1024];
+    let n = tokio::time::timeout(Duration::from_secs(10), ws.read(&mut buf))
+        .await
+        .expect("the upgrade response in time")
+        .unwrap();
+    let head = String::from_utf8_lossy(&buf[..n]).into_owned();
+    assert!(
+        head.starts_with("HTTP/1.1 101"),
+        "event stream upgrade: {head}"
+    );
+
+    let before = outbound_connections(pid).expect("the serve child's /proc entry");
+    tokio::time::sleep(Duration::from_secs(6)).await;
+    let after = outbound_connections(pid).expect("the serve child's /proc entry");
+    assert!(
+        before.is_empty() && after.is_empty(),
+        "idle serve made outbound connections: before={before:?} after={after:?}"
+    );
+
+    drop(ws);
+    sigint_and_wait(&mut child.0);
+}
+
+/// The process's outbound sockets: established non-loopback TCP connections and
+/// connected non-loopback UDP sockets, found by matching the socket inodes in
+/// `/proc/<pid>/fd` against the namespace's `/proc/<pid>/net/{tcp,tcp6,udp,udp6}`
+/// rows. `None` when the process's `/proc` entry cannot be read.
+fn outbound_connections(pid: u32) -> Option<Vec<String>> {
+    let mut inodes = std::collections::HashSet::new();
+    for entry in std::fs::read_dir(format!("/proc/{pid}/fd")).ok()? {
+        let Ok(entry) = entry else { continue };
+        let Ok(target) = std::fs::read_link(entry.path()) else {
+            continue;
+        };
+        let target = target.to_string_lossy().into_owned();
+        if let Some(i) = target
+            .strip_prefix("socket:[")
+            .and_then(|t| t.strip_suffix(']'))
+        {
+            inodes.insert(i.to_string());
+        }
+    }
+    let mut out = Vec::new();
+    for (table, is_tcp) in [
+        ("tcp", true),
+        ("tcp6", true),
+        ("udp", false),
+        ("udp6", false),
+    ] {
+        let text = std::fs::read_to_string(format!("/proc/{pid}/net/{table}")).ok()?;
+        out.extend(outbound_rows(&text, is_tcp, &inodes));
+    }
+    Some(out)
+}
+
+/// Parse one `/proc/net/{tcp,udp}[6]` table, keeping rows owned by `inodes`
+/// whose remote is non-loopback and connected (TCP `st` 01; UDP a non-zero
+/// remote address).
+fn outbound_rows(
+    text: &str,
+    is_tcp: bool,
+    inodes: &std::collections::HashSet<String>,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    for row in text.lines().skip(1) {
+        let f: Vec<&str> = row.split_whitespace().collect();
+        // sl local rem st tx:rx tr:when retrnsmt uid timeout inode ...
+        if f.len() < 10 || !inodes.contains(f[9]) {
+            continue;
+        }
+        let Some(remote) = parse_proc_addr(f[2]) else {
+            continue;
+        };
+        let connected = if is_tcp {
+            f[3] == "01"
+        } else {
+            !remote.0.is_unspecified()
+        };
+        if connected && !remote.0.is_loopback() {
+            out.push(format!("{} -> {}:{}", f[1], remote.0, remote.1));
+        }
+    }
+    out
+}
+
+/// `HEXIP:HEXPORT` as printed by the kernel: the address is a sequence of
+/// native-endian (little-endian on every CI target) 32-bit words.
+fn parse_proc_addr(s: &str) -> Option<(std::net::IpAddr, u16)> {
+    let (ip, port) = s.split_once(':')?;
+    let port = u16::from_str_radix(port, 16).ok()?;
+    let mut bytes = Vec::new();
+    for word in 0..ip.len() / 8 {
+        let w = u32::from_str_radix(ip.get(word * 8..word * 8 + 8)?, 16).ok()?;
+        bytes.extend_from_slice(&w.to_le_bytes());
+    }
+    let addr = match bytes.len() {
+        4 => std::net::IpAddr::from(<[u8; 4]>::try_from(bytes).ok()?),
+        16 => {
+            let v6 = std::net::Ipv6Addr::from(<[u8; 16]>::try_from(bytes).ok()?);
+            match v6.to_ipv4_mapped() {
+                Some(v4) => std::net::IpAddr::V4(v4),
+                None => std::net::IpAddr::V6(v6),
+            }
+        }
+        _ => return None,
+    };
+    Some((addr, port))
+}
+
+/// The probe's parser is platform-independent; pin it against kernel-format
+/// rows so the counting path is exercised on every host, not only Linux.
+#[test]
+fn outbound_probe_parses_kernel_rows() {
+    let inodes: std::collections::HashSet<String> =
+        ["111", "222", "333", "444"].map(String::from).into();
+    let tcp = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n\
+ 0: 0100007F:1F90 0100007F:C350 01 00000000:00000000 00:00000000 00000000  1000        0 111 1 0 100 0 0 10 0\n\
+ 1: 0F02000A:C351 2201A8C0:01BB 01 00000000:00000000 00:00000000 00000000  1000        0 222 1 0 100 0 0 10 0\n\
+ 2: 0F02000A:C352 2201A8C0:01BB 06 00000000:00000000 00:00000000 00000000  1000        0 333 1 0 100 0 0 10 0\n\
+ 3: 0F02000A:C353 2201A8C0:01BB 01 00000000:00000000 00:00000000 00000000  1000        0 999 1 0 100 0 0 10 0\n";
+    let rows = outbound_rows(tcp, true, &inodes);
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert!(rows[0].contains("192.168.1.34:443"), "{rows:?}");
+
+    let tcp6 = "  sl  local_address rem_address st tx_queue rx_queue tr tm->when retrnsmt uid timeout inode\n\
+ 0: 00000000000000000000000001000000:1F90 00000000000000000000000001000000:C350 01 0:0 0:0 0 1000 0 111 1\n\
+ 1: 0000000000000000FFFF00000100007F:1F90 0000000000000000FFFF00000100007F:C350 01 0:0 0:0 0 1000 0 222 1\n\
+ 2: 00000000000000000000000001000000:C351 B80D0120000000000000000001000000:01BB 01 0:0 0:0 0 1000 0 333 1\n";
+    let rows = outbound_rows(tcp6, true, &inodes);
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert!(rows[0].contains("2001:db8::1:443"), "{rows:?}");
+
+    let udp = "  sl  local_address rem_address st tx_queue rx_queue tr tm->when retrnsmt uid timeout inode\n\
+ 0: 0F02000A:C351 00000000:0000 07 0:0 0:0 0 1000 0 111 2\n\
+ 1: 0F02000A:C352 08080808:0035 01 0:0 0:0 0 1000 0 444 2\n";
+    let rows = outbound_rows(udp, false, &inodes);
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert!(rows[0].contains("8.8.8.8:53"), "{rows:?}");
+}
+
 /// The base64 body of a single-object PEM, with all whitespace removed.
 fn pem_body(pem: &[u8]) -> String {
     String::from_utf8_lossy(pem)
