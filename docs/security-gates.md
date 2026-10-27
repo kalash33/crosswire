@@ -56,16 +56,16 @@ cap their state by count):
 
 | Row | Why it is not a memory-growth surface |
 |---|---|
-| Pending CONNECT | a counter; past `max_pending_connect` the connection is refused before any buffer exists |
-| Per-IP connections | a counter per client IP; past `max_per_client_ip` the accept is refused |
-| Max connections | a semaphore on `max_connections`; excess accepts are refused or wait unbuffered |
+| Pending CONNECT | an atomic counter; past `max_pending_connect` the connection is refused at accept before any buffer exists |
+| Per-IP connections | a per-peer-IP count (non-loopback only); past `max_per_client_ip` the accept is refused |
+| Max connections | an `AtomicUsize` counter (`active`) checked at accept; past `max_connections` the accept is refused and the socket closed, never buffered or queued |
 | SNI length | a length check on a fixed-size parsed field; over-long names are rejected, never stored |
 | DNS timeout | a deadline on the lookup; holds one pending future, no attacker bytes |
 | TLS-handshake timeout | a deadline per handshake; a stalled peer is dropped at the timeout |
-| Handshake rejection | a windowed counter (`rejections_per_window`); past it the peer is refused without work |
-| Leaf-cert LRU / mint | a fixed-capacity LRU keyed by host; the mint rate is bounded by the handshake counters |
+| Handshake rejection | a per-host sliding-window counter in a bounded LRU (1,024 hosts, at most `rejections_per_window` timestamps each); reaching the threshold reports once per window and holds no attacker bytes |
+| Leaf-cert LRU / mint | a fixed-capacity LRU of issued leaf certs, so the cache cannot grow past its capacity |
 | Redirect-follow | a hop counter on the repeater; the chain stops at the limit and each response is capture-capped |
-| WS per-subscriber buffer | a bounded broadcast channel per subscriber; a laggard is dropped with a `Lagged` event |
+| WS event buffer | one bounded `broadcast` ring shared by all receivers; a receiver that falls behind gets `RecvError::Lagged`, surfaced as `Event::Lagged`, rather than growing the ring |
 | `audit.jsonl` cap | rotates to one prior generation at `audit_rotate_bytes`; disk, not memory |
 | Journal disk cap | `journal_cap` bounds spilled bytes on disk; past it exchanges are dropped with a gap marker (exercised in `store_queue_flat_rss`) |
 
