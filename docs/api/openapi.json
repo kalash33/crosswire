@@ -290,6 +290,90 @@
         }
       }
     },
+    "/api/v1/exchanges/{id}/curl": {
+      "get": {
+        "summary": "Renders the request as a curl command, optionally redacted. Audited.",
+        "operationId": "get_curl",
+        "parameters": [
+          {
+            "name": "shell",
+            "in": "query",
+            "description": "sh (default) or pwsh",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "redacted",
+            "in": "query",
+            "description": "Redact secrets (default false)",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The curl command",
+            "content": {
+              "text/plain": {}
+            }
+          },
+          "400": {
+            "description": "Bad shell"
+          },
+          "404": {
+            "description": "No such exchange"
+          }
+        }
+      }
+    },
+    "/api/v1/exchanges/{id}/raw": {
+      "get": {
+        "summary": "Renders the request as raw wire bytes, optionally redacted. Audited.",
+        "operationId": "get_raw",
+        "parameters": [
+          {
+            "name": "redacted",
+            "in": "query",
+            "description": "Redact secrets (default false)",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The raw request bytes",
+            "content": {
+              "application/octet-stream": {}
+            }
+          },
+          "404": {
+            "description": "No such exchange"
+          }
+        }
+      }
+    },
     "/api/v1/health": {
       "get": {
         "summary": "Liveness probe.",
