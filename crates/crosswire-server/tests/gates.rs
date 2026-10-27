@@ -9,7 +9,7 @@ use std::io::{BufRead, BufReader};
 use std::net::SocketAddr;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
-use std::sync::mpsc;
+use std::sync::{mpsc, PoisonError};
 use std::time::{Duration, Instant};
 
 use base64::Engine as _;
@@ -309,6 +309,342 @@ async fn audit_completeness() {
             "audit action {action} should appear exactly once (got {count})\n{log}"
         );
     }
+}
+
+// -- redaction_golden -------------------------------------------------------
+
+/// §13 gate #14 / §11.4: over a real seeded `serve`, the REDACTED copy-as-curl
+/// (both shells), the REDACTED copy-raw, the process stdout+stderr and
+/// `audit.jsonl` contain NONE of a seeded exchange's secrets, while the
+/// UNREDACTED copies DO carry them (so the redaction switch is proven real, not
+/// a no-op). A seeded exchange carries secrets in its HEADERS (whole-value
+/// header-name redaction) and in its INLINE BODY (value-pattern redaction,
+/// including a `Bearer ` token in the body to prove the body matcher catches
+/// it). Finally, the shell-quoting routine round-trips hostile bytes to exactly
+/// one argument for both shells (structural, never executed).
+#[tokio::test(flavor = "multi_thread")]
+async fn redaction_golden() {
+    let tmp = tempfile::tempdir().unwrap();
+    let project = tmp.path().join("proj");
+    let ca_dir = tmp.path().join("ca");
+    let upstream = spawn_upstream().await;
+
+    // Unique high-entropy sentinels. No sentinel is a substring of another, none
+    // collides with the `[REDACTED]` placeholder, and none contains a token
+    // delimiter (space, tab, `;`, `,`, `&`, quote, CR or LF) that would truncate
+    // a value-pattern match before the sentinel bytes.
+    let jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJaUTd4U0VOVEpXVCJ9.c2lnWlE3eFNFTlRKV1RzaWduYXR1cmV4";
+    let cookie_secret = "SENTxCOOKIExZq7xK2mNp9vB3";
+    let api_key = "SENTxKEYxRt4wV8bXc1dH6jL";
+    let body_at = "SENTxATxHy6nL3dQe5fU8wA2";
+    let body_ak = "SENTxAKxJu2sF7gWz0kP4yN9";
+    let body_bearer = "SENTxBODYxBEARERxMk9pT1rYx4qD";
+    let sentinels = [jwt, cookie_secret, api_key, body_at, body_ak, body_bearer];
+
+    // Headers carry secrets caught by header-NAME redaction (Authorization,
+    // Cookie, X-API-Key); the inline body carries secrets caught by VALUE
+    // patterns (`access_token=`, `api_key=`, and a `Bearer ` token — the
+    // carry-forward from Task 0's review: prove the body matcher catches a
+    // Bearer/JWT in a body, not only the two `=` patterns).
+    let body = format!("access_token={body_at}&api_key={body_ak}&auth=Bearer {body_bearer}");
+    let req = format!(
+        "POST /submit HTTP/1.1\r\n\
+         Host: 127.0.0.1\r\n\
+         Authorization: Bearer {jwt}\r\n\
+         Cookie: session={cookie_secret}\r\n\
+         X-API-Key: {api_key}\r\n\
+         Content-Type: application/x-www-form-urlencoded\r\n\
+         Content-Length: {len}\r\n\
+         Connection: close\r\n\
+         \r\n\
+         {body}",
+        len = body.len(),
+    );
+
+    // A fresh ca-dir + --allow the upstream mirror audit_completeness.
+    let allow = format!("127.0.0.1:{}", upstream.port());
+    let (mut child, cap) = spawn_serve_capturing(
+        &project,
+        &ca_dir,
+        &["--allow", &allow, "--accept-invalid-cert", "127.0.0.1"],
+    );
+    let api = cap.startup.api;
+    let cookie = api_session(api, &token_from_bootstrap_line(&cap.startup.bootstrap_line)).await;
+    let admin = [
+        ("Cookie", cookie.as_str()),
+        ("Sec-Fetch-Site", "same-origin"),
+        ("Content-Type", "application/json"),
+    ];
+
+    // Seed the exchange by relaying the crafted request through the repeater
+    // (raw mode sends and records the bytes verbatim); the response carries the
+    // recorded exchange id directly, so no history walk is needed.
+    let raw_b64 = base64::engine::general_purpose::STANDARD.encode(req.as_bytes());
+    let send = format!(
+        "{{\"host\":\"127.0.0.1\",\"port\":{},\"tls\":false,\"raw\":\"{raw_b64}\",\"allow_out_of_scope\":true}}",
+        upstream.port()
+    );
+    let (st, _, sbody) = http(
+        api,
+        "POST",
+        "/api/v1/repeater/send",
+        &admin,
+        Some(send.as_bytes()),
+    )
+    .await;
+    assert_eq!(
+        st,
+        200,
+        "repeater send: {}",
+        String::from_utf8_lossy(&sbody)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&sbody).unwrap();
+    let id = v["exchange_id"]
+        .as_str()
+        .expect("an exchange id")
+        .to_string();
+
+    let read = [
+        ("Cookie", cookie.as_str()),
+        ("Sec-Fetch-Site", "same-origin"),
+    ];
+
+    // The exchange sink is a bounded async queue (committed on a later batch),
+    // so the recorded exchange may not be queryable the instant `send` returns.
+    // Poll the copy route until the exchange has committed.
+    let curl_path = format!("/api/v1/exchanges/{id}/curl?shell=sh");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let (st, _, _) = http(api, "GET", &curl_path, &read, None).await;
+        if st == 200 {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the seeded exchange {id} never became queryable (last status {st})"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    // The REDACTED copies carry NONE of the sentinels: curl (sh), curl (pwsh)
+    // and raw.
+    for path in [
+        format!("/api/v1/exchanges/{id}/curl?shell=sh&redacted=true"),
+        format!("/api/v1/exchanges/{id}/curl?shell=pwsh&redacted=true"),
+        format!("/api/v1/exchanges/{id}/raw?redacted=true"),
+    ] {
+        let (st, _, out) = http(api, "GET", &path, &read, None).await;
+        assert_eq!(st, 200, "{path}");
+        assert_no_sentinels(&out, &sentinels, &format!("redacted {path}"));
+    }
+
+    // The UNREDACTED copies DO carry EVERY sentinel: the switch is real, not a
+    // no-op that happens to drop bytes either way.
+    for path in [
+        format!("/api/v1/exchanges/{id}/curl?shell=sh"),
+        format!("/api/v1/exchanges/{id}/raw"),
+    ] {
+        let (st, _, out) = http(api, "GET", &path, &read, None).await;
+        assert_eq!(st, 200, "{path}");
+        let text = String::from_utf8_lossy(&out);
+        for s in sentinels {
+            assert!(
+                text.contains(s),
+                "the UNREDACTED copy {path} should carry the sentinel {s} \
+                 (if not, the fixture or the copy route is wrong, not redaction)"
+            );
+        }
+    }
+
+    // Clean shutdown flushes `listener.stop` and closes the captured pipes.
+    sigint_and_wait(&mut child.0);
+    let output = cap.finish();
+
+    // §11.4: the logs never contain captured bytes.
+    assert_no_sentinels(output.as_bytes(), &sentinels, "process stdout+stderr");
+
+    // The audit log records targets (exchange ids) and variant tags, never the
+    // captured bytes.
+    let audit = std::fs::read(project.join("audit.jsonl")).unwrap();
+    assert_no_sentinels(&audit, &sentinels, "audit.jsonl");
+
+    // The shell-quoting routine round-trips hostile bytes to exactly those bytes
+    // as ONE argument for both shells. Structural: the quoted output is parsed
+    // back the way each shell would, never executed.
+    let hostile: &[u8] = b"x'y $(id) \x60tick\x60\nz;w";
+    assert_eq!(
+        posix_unquote(crosswire_tools::quote(hostile, crosswire_tools::Shell::Posix).as_bytes()),
+        hostile,
+        "POSIX quote must round-trip to one literal argument",
+    );
+    assert_eq!(
+        pwsh_unquote(
+            crosswire_tools::quote(hostile, crosswire_tools::Shell::PowerShell).as_bytes()
+        ),
+        hostile,
+        "PowerShell quote must round-trip to one literal argument",
+    );
+}
+
+/// Fails if any sentinel appears in `haystack` (as UTF-8 text).
+fn assert_no_sentinels(haystack: &[u8], sentinels: &[&str], where_: &str) {
+    let text = String::from_utf8_lossy(haystack);
+    for s in sentinels {
+        assert!(!text.contains(s), "the secret {s} leaked into {where_}");
+    }
+}
+
+/// Parses a POSIX-shell single-quoted word back to its literal bytes, modelling
+/// how `sh` resolves the quoting that [`crosswire_tools::quote`] emits: inside
+/// `'...'` every byte is literal; a `\` outside quotes escapes the next byte
+/// (this is the `'\''` idiom). The input is one word, so there is no splitting.
+fn posix_unquote(s: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    let mut in_single = false;
+    while i < s.len() {
+        let b = s[i];
+        if in_single {
+            if b == b'\'' {
+                in_single = false;
+            } else {
+                out.push(b);
+            }
+            i += 1;
+        } else {
+            match b {
+                b'\'' => {
+                    in_single = true;
+                    i += 1;
+                }
+                b'\\' if i + 1 < s.len() => {
+                    out.push(s[i + 1]);
+                    i += 2;
+                }
+                _ => {
+                    out.push(b);
+                    i += 1;
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Parses a PowerShell single-quoted string back to its literal bytes: the whole
+/// argument is wrapped in `'...'` and an embedded `'` is doubled (`''`).
+fn pwsh_unquote(s: &[u8]) -> Vec<u8> {
+    assert!(
+        s.len() >= 2 && s[0] == b'\'' && s[s.len() - 1] == b'\'',
+        "a PowerShell-quoted argument is wrapped in single quotes"
+    );
+    let inner = &s[1..s.len() - 1];
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < inner.len() {
+        if inner[i] == b'\'' && inner.get(i + 1) == Some(&b'\'') {
+            out.push(b'\'');
+            i += 2;
+        } else {
+            out.push(inner[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Captured process output plus the threads draining the pipes.
+struct CapturedServe {
+    startup: Startup,
+    captured: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    joins: Vec<std::thread::JoinHandle<()>>,
+}
+
+impl CapturedServe {
+    /// Joins the drain threads (the pipes have closed after the child exits) and
+    /// returns all captured lines, newline-joined.
+    fn finish(self) -> String {
+        for h in self.joins {
+            let _ = h.join();
+        }
+        let lines = self.captured.lock().unwrap_or_else(PoisonError::into_inner);
+        lines.join("\n")
+    }
+}
+
+/// Like [`spawn_serve`] but pipes BOTH stdout and stderr and accumulates every
+/// line, so the gate can prove the captured logs carry no secret. Startup is
+/// detected from the same stdout lines `wait_serve_startup` watches.
+fn spawn_serve_capturing(project: &Path, ca_dir: &Path, extra: &[&str]) -> (Reap, CapturedServe) {
+    let mut args = vec![
+        "serve",
+        "--project",
+        project.to_str().unwrap(),
+        "--ca-dir",
+        ca_dir.to_str().unwrap(),
+        "--proxy-bind",
+        "127.0.0.1:0",
+        "--api-bind",
+        "127.0.0.1:0",
+    ];
+    args.extend_from_slice(extra);
+    let mut child = Command::new(BIN)
+        .args(&args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    let captured = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let (tx, rx) = mpsc::channel();
+
+    let stdout = child.stdout.take().unwrap();
+    let cap = std::sync::Arc::clone(&captured);
+    let h_out = std::thread::spawn(move || {
+        for line in BufReader::new(stdout).lines() {
+            let Ok(line) = line else { return };
+            cap.lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(line.clone());
+            let _ = tx.send(line);
+        }
+    });
+
+    let stderr = child.stderr.take().unwrap();
+    let cap = std::sync::Arc::clone(&captured);
+    let h_err = std::thread::spawn(move || {
+        for line in BufReader::new(stderr).lines() {
+            let Ok(line) = line else { return };
+            cap.lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(line);
+        }
+    });
+
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let (mut api, mut bootstrap) = (None, None);
+    while api.is_none() || bootstrap.is_none() {
+        let left = deadline.saturating_duration_since(Instant::now());
+        let line = rx.recv_timeout(left).expect("a serve startup line in time");
+        if let Some(a) = line.strip_prefix("api listening on ") {
+            api = Some(a.trim().parse().unwrap());
+        } else if line.starts_with("open http://localhost")
+            || line.starts_with("bootstrap url written to")
+        {
+            bootstrap = Some(line);
+        }
+    }
+    (
+        Reap(child),
+        CapturedServe {
+            startup: Startup {
+                api: api.unwrap(),
+                bootstrap_line: bootstrap.unwrap(),
+            },
+            captured,
+            joins: vec![h_out, h_err],
+        },
+    )
 }
 
 // -- shared helpers (a self-contained raw HTTP/1 client and process driver) --

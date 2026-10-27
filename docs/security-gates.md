@@ -6,13 +6,16 @@ in CI") is listed here with the executable test that proves it, as
 `cargo test --workspace`); there is no separate CI job.
 
 Gates that can only be proven with the UI (Plan 5) or export tooling (Plan 6)
-are marked and carry no backend test yet.
+are marked and carry no Rust `just test` coverage yet. Rows marked **PARTIAL**
+are proven in substance by prior-plan tests but are cited at file level (not
+enumerated to the named test per clause) or cover the clause only in part; the
+citation is being tightened and the status is conservative until then.
 
 | # | §13 gate | Proven by | Status |
 |---|----------|-----------|--------|
 | 1 | route-auth: every route except the five unauthenticated ones is `401` without a credential | `crosswire-api/tests/gates.rs::route_auth_every_route_except_the_five_is_401` | proven |
 | 2 | `read`-token-cannot-mutate: every send/admin route refuses a read token with `403` | `crosswire-api/tests/auth.rs::read_token_cannot_mutate` | proven |
-| 3 | XSS corpus: loaded into history/repeater/intercept, nothing executes | — | **Plan 5** (UI) |
+| 3 | XSS corpus: loaded into history/repeater/intercept, nothing executes | `ui/e2e/xss-corpus.spec.ts` (history text-render surfaces + the detector self-test), `ui/e2e/xss-repeater-intercept.spec.ts` (repeater and intercept surfaces) | **PARTIAL** — UI e2e specs exist and drive the corpus into the rendered fields, but they run under Playwright (`just ui-e2e`), not the Rust `just test`, and the preview surface (Plan 5/6) is not yet covered |
 | 4 | preview zero-egress: the preview corpus makes no outbound request | — | **Plan 5/6** (UI previews) |
 | 5 | idle-egress: an idle sidecar (API open, event stream connected) makes zero upstream connections and zero DNS lookups | `crosswire-api/tests/gates.rs::idle_egress_zero_connections` | proven |
 | 6 | CA-key-leakage: the CA private key appears in no API body, no project-dir file and not in the OpenAPI document | `crosswire-server/tests/gates.rs::ca_key_never_leaves` | proven |
@@ -23,11 +26,11 @@ are marked and carry no backend test yet.
 | 11 | bootstrap single-use: a bootstrap token works once, then fails; it expires | `crosswire-api/tests/auth.rs::bootstrap_is_single_use_and_expires` | proven |
 | 12 | non-loopback proxy-auth: a non-loopback proxy bind requires `--allow-non-loopback` and proxy auth | `crosswire-proxy/tests/config.rs::config_refuses_non_loopback_without_flag`, `::config_requires_auth_on_non_loopback`; `crosswire-proxy/tests/front.rs::non_loopback_bind_without_flag_fails`, `::proxy_auth_required_then_accepted` | proven |
 | 13 | scope matrix incl. empty scope (§4.6): In/Out/Empty/HostMismatch verdicts drive history recording and the repeater's four cases | `crosswire-api/tests/gates.rs::scope_matrix_including_empty_scope` (repeater: empty/in/out + strict refusal); `crosswire-proxy/tests/intercept.rs::scope_state_is_recorded_on_history_exchanges` (history In/Out/Empty/HostMismatch); `crosswire-tools/tests/repeater.rs` (repeater verdicts and out-of-scope audit) | proven |
-| 14 | redaction golden (§11.4): copy-as-curl (redacted), copy-raw and logs of a seeded project contain no seeded secret | — | **Plan 5/6** (copy-as-curl / export tooling) |
-| 15 | bad-chain refusal and chained-upstream anchor (§11.9) | `crosswire-client/tests/transport_tls.rs`, `crosswire-proxy/tests/failures.rs` | proven (prior plan) |
-| 16 | hostile-project corpus (torn pack, zstd bomb, hostile SQLite and journal) | `crosswire-store/tests/packs.rs`, `::durability.rs`, `::project.rs` | proven (prior plan) |
+| 14 | redaction golden (§11.4): copy-as-curl (redacted), copy-raw and logs of a seeded project contain no seeded secret | `crosswire-server/tests/gates.rs::redaction_golden` | proven |
+| 15 | bad-chain refusal and chained-upstream anchor (§11.9) | `crosswire-client/tests/transport_tls.rs`, `crosswire-proxy/tests/failures.rs` | **PARTIAL** (prior plan) — cited at file level, not yet enumerated to the named test(s) that prove each clause (bad-chain refusal vs. chained-upstream anchor) |
+| 16 | hostile-project corpus (torn pack, zstd bomb, hostile SQLite and journal) | `crosswire-store/tests/packs.rs::decompression_bomb_refused` (+ torn-pack cases), `::durability.rs`, `::project.rs::symlinked_journal_directory_is_refused` | **PARTIAL** (prior plan) — the zstd-bomb and journal clauses map to named tests, but the torn-pack and hostile-SQLite clauses are cited at file level, not yet enumerated per clause |
 | 17 | audit-completeness: every §9.4 audited action produces a row | `crosswire-server/tests/gates.rs::audit_completeness` | proven |
-| 18 | one hostile fixture per `Limits` row with flat RSS | `crosswire-proxy/tests/limits_rss.rs`, `::limits.rs` | proven (prior plan) |
+| 18 | one hostile fixture per `Limits` row with flat RSS | `crosswire-proxy/tests/limits_rss.rs::rss_flat_under_large_until_close_response`, `::limits.rs` | **PARTIAL** (prior plan) — `limits.rs` enforces each `Limits` row, but the flat-RSS proof is a single fixture, not one per row as the clause requires |
 
 ## Supporting gate: authentication-failure rate limiting
 
