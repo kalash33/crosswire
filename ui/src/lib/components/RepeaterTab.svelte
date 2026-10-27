@@ -1,6 +1,7 @@
 <script lang="ts">
   import ByteEditor from '../editor/ByteEditor.svelte';
   import ConnSettings from './ConnSettings.svelte';
+  import CopyMenu from './CopyMenu.svelte';
   import ResultHeader from './ResultHeader.svelte';
   import { repeater, type RepeaterTab } from '../stores/repeater.svelte';
   import { assistedChips, type AssistedToggles } from '../editor/assisted';
@@ -156,6 +157,7 @@
   <!-- RESULT -->
   {#if tab.outcome}
     <ResultHeader outcome={tab.outcome} />
+    <CopyMenu id={tab.outcome.exchange_id} />
 
     <div class="pane" data-testid="repeater-response">
       <h4>Response</h4>

@@ -9,6 +9,8 @@ describe('keymap defaults (Burp-consistent)', () => {
   it('binds exactly the named actions to the chosen chords', () => {
     expect([...ACTIONS].sort()).toEqual(
       [
+        'copy-as-curl',
+        'copy-raw',
         'decode-selection',
         'drop',
         'forward',
@@ -28,6 +30,8 @@ describe('keymap defaults (Burp-consistent)', () => {
       'decode-selection': 'ctrl+shift+d',
       'tab-next': 'ctrl+shift+]',
       'tab-prev': 'ctrl+shift+[',
+      'copy-as-curl': 'ctrl+shift+c',
+      'copy-raw': 'ctrl+shift+s',
     });
   });
 

@@ -219,3 +219,105 @@ async fn counts_and_markers() {
     assert_eq!(markers.status, 200);
     assert!(markers.json()["items"].is_array());
 }
+
+// -- copy routes ------------------------------------------------------------
+
+async fn seeded_secret() -> (TestApp, String, String) {
+    let app = TestApp::new().await;
+    let cookie = app.session_cookie().await;
+    let e =
+        req("GET /s HTTP/1.1\r\nHost: a.test\r\nAuthorization: Bearer hunter2secretvalue\r\nX-Q: it's\r\n\r\n");
+    let id = e.id().to_string();
+    app.submit(e);
+    app.wait_count(1).await;
+    (app, cookie, id)
+}
+
+#[tokio::test]
+async fn curl_route_redacted_vs_plain() {
+    let (app, cookie, id) = seeded_secret().await;
+    let h = auth(&cookie);
+    let plain = app.get(&format!("/api/v1/exchanges/{id}/curl"), &h).await;
+    assert_eq!(plain.status, 200);
+    assert!(plain
+        .header("content-type")
+        .unwrap()
+        .starts_with("text/plain"));
+    assert!(plain.body_string().contains("hunter2secretvalue"));
+    let red = app
+        .get(&format!("/api/v1/exchanges/{id}/curl?redacted=true"), &h)
+        .await;
+    assert_eq!(red.status, 200);
+    assert!(!red.body_string().contains("hunter2secretvalue"));
+    let ps = app
+        .get(&format!("/api/v1/exchanges/{id}/curl?shell=pwsh"), &h)
+        .await;
+    assert_eq!(ps.status, 200);
+    assert_ne!(ps.body_string(), plain.body_string());
+}
+
+#[tokio::test]
+async fn raw_route_redacted_vs_plain() {
+    let (app, cookie, id) = seeded_secret().await;
+    let h = auth(&cookie);
+    let plain = app.get(&format!("/api/v1/exchanges/{id}/raw"), &h).await;
+    assert_eq!(plain.status, 200);
+    assert_eq!(
+        plain.header("content-type"),
+        Some("application/octet-stream")
+    );
+    assert!(plain.body_string().contains("hunter2secretvalue"));
+    let red = app
+        .get(&format!("/api/v1/exchanges/{id}/raw?redacted=true"), &h)
+        .await;
+    assert_eq!(red.status, 200);
+    assert!(!red.body_string().contains("hunter2secretvalue"));
+}
+
+#[tokio::test]
+async fn copy_is_audited_with_variant() {
+    let (app, cookie, id) = seeded_secret().await;
+    let h = auth(&cookie);
+    app.get(&format!("/api/v1/exchanges/{id}/curl?redacted=true"), &h)
+        .await;
+    app.get(&format!("/api/v1/exchanges/{id}/raw"), &h).await;
+    let log = std::fs::read_to_string(app.store.dir().join("audit.jsonl")).unwrap();
+    let rows: Vec<serde_json::Value> = log
+        .lines()
+        .filter_map(|l| serde_json::from_str(l).ok())
+        .collect();
+    let has = |action: &str, result: &str| {
+        rows.iter().any(|r| {
+            let s = r.to_string();
+            s.contains(&format!("\"{action}\""))
+                && s.contains(&format!("\"{result}\""))
+                && s.contains(&id)
+        })
+    };
+    assert!(has("copy.curl", "redacted:sh"), "{log}");
+    assert!(has("copy.raw", "unredacted"), "{log}");
+}
+
+#[tokio::test]
+async fn curl_bad_shell_is_400_and_unknown_id_is_404() {
+    let (app, cookie, id) = seeded_secret().await;
+    let h = auth(&cookie);
+    let bad = app
+        .get(&format!("/api/v1/exchanges/{id}/curl?shell=fish"), &h)
+        .await;
+    assert_eq!(bad.status, 400);
+    assert_eq!(bad.json()["error"]["code"], "bad_shell");
+    let missing = app
+        .get("/api/v1/exchanges/01ARZ3NDEKTSV4RRFFQ69G5FAV/curl", &h)
+        .await;
+    assert_eq!(missing.status, 404);
+}
+
+#[tokio::test]
+async fn copy_requires_read_scope() {
+    let (app, _cookie, id) = seeded_secret().await;
+    let curl = app.get(&format!("/api/v1/exchanges/{id}/curl"), &[]).await;
+    assert_eq!(curl.status, 401);
+    let raw = app.get(&format!("/api/v1/exchanges/{id}/raw"), &[]).await;
+    assert_eq!(raw.status, 401);
+}

@@ -153,6 +153,8 @@ pub(crate) fn api_routes() -> OpenApiRouter<AppState> {
         .routes(routes!(exchanges::list_exchanges))
         .routes(routes!(exchanges::get_exchange, exchanges::patch_exchange))
         .routes(routes!(exchanges::get_body))
+        .routes(routes!(exchanges::get_curl))
+        .routes(routes!(exchanges::get_raw))
         .routes(routes!(exchanges::list_markers))
         .routes(routes!(exchanges::get_counts))
         .routes(routes!(scope::get_scope, scope::put_scope))

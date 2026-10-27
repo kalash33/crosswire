@@ -7,7 +7,7 @@ use core::ops::Range;
 use crosswire_h1::{Parser, ParserConfig, Progress, ResponseContext};
 use serde::{Deserialize, Serialize};
 
-use crate::message::{HeadSpans, HeaderSpanRecord, StartLineSpans};
+use crate::message::{Body, HeadSpans, HeaderSpanRecord, StartLineSpans};
 use crate::{Diff, Fidelity, Head, Message};
 
 const REDACTED: &[u8] = b"[REDACTED]";
@@ -32,8 +32,9 @@ const REDACTED: &[u8] = b"[REDACTED]";
 /// as opaque byte strings: value patterns match anywhere, and a line of the
 /// form `Name: value` whose name is in `header_names` has its value
 /// replaced (a bare value with no header context cannot be recognised).
-/// Inline bodies are **not** redacted yet (a later task); blob bodies are
-/// untouched.
+/// An inline body is scrubbed with the value patterns only (header names do
+/// not apply to a body, which has no header context); a blob body is a pack
+/// reference with no in-process bytes and is left untouched.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RedactionPolicy {
     #[serde(default)]
@@ -95,17 +96,45 @@ impl RedactionPolicy {
     /// labelled [`Fidelity::Normalized`]: it is no longer what was on the
     /// wire. A normalized head is redacted per pair. A tunnel head has
     /// nothing to redact and the message is returned unchanged. Diffs are
-    /// redacted; the body is not (see the type docs). Interim (1xx) heads
+    /// redacted; an inline body is scrubbed with the value patterns and a blob
+    /// body is left untouched (see the type docs). Interim (1xx) heads
     /// are redacted with the same header policy, each rebuilt the way an
     /// HTTP/1 head is; one that does not parse is scrubbed like a diff.
     #[must_use]
     pub fn redact_message(&self, m: &Message) -> Message {
-        let out = self.redact_head(m);
+        let out = self.redact_body(self.redact_head(m));
         if m.interim().is_empty() {
             return out;
         }
         let interim = m.interim().iter().map(|h| self.redact_interim(h)).collect();
         out.with_interim(interim)
+    }
+
+    /// Scrubs an inline body with the value patterns only; a `Body::Blob`
+    /// holds no in-process bytes and is returned unchanged. Header names do
+    /// not apply: a body has no header context, so `find_matches` (value
+    /// patterns) is used rather than the full `scrub`.
+    fn redact_body(&self, m: Message) -> Message {
+        let Body::Inline {
+            bytes,
+            truncated_at,
+            capture_dropped,
+            relay,
+        } = m.body()
+        else {
+            return m;
+        };
+        let matches = self.find_matches(bytes);
+        if matches.is_empty() {
+            return m;
+        }
+        let body = Body::Inline {
+            bytes: Bytes::from(replace_ranges(bytes, &matches)),
+            truncated_at: *truncated_at,
+            capture_dropped: *capture_dropped,
+            relay: *relay,
+        };
+        m.with_body(body)
     }
 
     /// One interim head: parsed for spans and rebuilt by span; bytes that do

@@ -6,8 +6,9 @@ use crate::extract::{Json, Path, Query};
 use axum::extract::State;
 use axum::response::IntoResponse;
 use axum::Extension;
-use crosswire_model::{Body, ExchangeState, Marker, NamespaceKind, ScopeState};
+use crosswire_model::{Body, ExchangeState, Marker, NamespaceKind, RedactionPolicy, ScopeState};
 use crosswire_store::{BodySide, Counts, ExchangeFilter, ExchangeRow, Page};
+use crosswire_tools::{to_curl, to_raw, Shell};
 use http::header::CONTENT_TYPE;
 use http::StatusCode;
 use serde::de::DeserializeOwned;
@@ -320,6 +321,116 @@ pub async fn get_body(
     if let Some(at) = truncated_at {
         headers.insert("x-crosswire-truncated-at", at.to_string().parse().unwrap());
     }
+    Ok((StatusCode::OK, headers, bytes))
+}
+
+/// Query parameters for `GET /exchanges/{id}/curl`.
+#[derive(Debug, Default, Deserialize)]
+pub struct CurlQuery {
+    /// `sh` (default) or `pwsh`.
+    pub shell: Option<String>,
+    /// Redact secrets before rendering (default false).
+    pub redacted: Option<bool>,
+}
+
+/// Query parameters for `GET /exchanges/{id}/raw`.
+#[derive(Debug, Default, Deserialize)]
+pub struct RawQuery {
+    /// Redact secrets before rendering (default false).
+    pub redacted: Option<bool>,
+}
+
+/// Looks up an exchange's request, redacting it when asked.
+fn copy_request(
+    state: &AppState,
+    id: &str,
+    redacted: bool,
+) -> Result<(String, crosswire_model::Message), ApiError> {
+    let ulid = parse_ulid(id)?;
+    let exchange = state
+        .store
+        .get(ulid)
+        .map_err(|e| ApiError::internal(format!("get failed: {e}")))?
+        .ok_or_else(|| ApiError::not_found("not_found", "no such exchange"))?;
+    let req = exchange.request();
+    let msg = if redacted {
+        RedactionPolicy::default_policy().redact_message(req)
+    } else {
+        req.clone()
+    };
+    Ok((ulid.to_string(), msg))
+}
+
+/// Renders the request as a curl command, optionally redacted. Audited.
+#[utoipa::path(
+    get,
+    path = "/api/v1/exchanges/{id}/curl",
+    params(
+        ("shell" = Option<String>, Query, description = "sh (default) or pwsh"),
+        ("redacted" = Option<bool>, Query, description = "Redact secrets (default false)")
+    ),
+    responses(
+        (status = 200, description = "The curl command", content_type = "text/plain"),
+        (status = 400, description = "Bad shell"),
+        (status = 404, description = "No such exchange")
+    )
+)]
+pub async fn get_curl(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path(id): Path<String>,
+    Query(q): Query<CurlQuery>,
+) -> ApiResult<impl IntoResponse> {
+    ctx.scopes.require(Scope::Read)?;
+    let (shell, shell_name) = match q.shell.as_deref() {
+        None | Some("sh") => (Shell::Posix, "sh"),
+        Some("pwsh") => (Shell::PowerShell, "pwsh"),
+        Some(_) => {
+            return Err(ApiError::bad_request(
+                "bad_shell",
+                "shell must be sh or pwsh",
+            ))
+        }
+    };
+    let redacted = q.redacted.unwrap_or(false);
+    let (target, msg) = copy_request(&state, &id, redacted)?;
+    let text = to_curl(&msg, shell);
+    let variant = if redacted { "redacted" } else { "unredacted" };
+    let _ = state.store.audit(
+        &ctx.actor,
+        "copy.curl",
+        &target,
+        &format!("{variant}:{shell_name}"),
+    );
+    let mut headers = http::HeaderMap::new();
+    headers.insert(CONTENT_TYPE, "text/plain; charset=utf-8".parse().unwrap());
+    Ok((StatusCode::OK, headers, text))
+}
+
+/// Renders the request as raw wire bytes, optionally redacted. Audited.
+#[utoipa::path(
+    get,
+    path = "/api/v1/exchanges/{id}/raw",
+    params(("redacted" = Option<bool>, Query, description = "Redact secrets (default false)")),
+    responses(
+        (status = 200, description = "The raw request bytes", content_type = "application/octet-stream"),
+        (status = 404, description = "No such exchange")
+    )
+)]
+pub async fn get_raw(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path(id): Path<String>,
+    Query(q): Query<RawQuery>,
+) -> ApiResult<impl IntoResponse> {
+    ctx.scopes.require(Scope::Read)?;
+    let redacted = q.redacted.unwrap_or(false);
+    let (target, msg) = copy_request(&state, &id, redacted)?;
+    let bytes = to_raw(&msg);
+    let variant = if redacted { "redacted" } else { "unredacted" };
+    let _ = state.store.audit(&ctx.actor, "copy.raw", &target, variant);
+    let mut headers = http::HeaderMap::new();
+    headers.insert(CONTENT_TYPE, "application/octet-stream".parse().unwrap());
     Ok((StatusCode::OK, headers, bytes))
 }
 
