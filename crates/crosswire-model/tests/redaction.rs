@@ -206,6 +206,62 @@ fn overlapping_and_out_of_order_spans_do_not_panic() {
     assert!(contains(&b, b"Cookie: [REDACTED]\r\n"));
 }
 
+fn inline_bytes(m: &Message) -> Vec<u8> {
+    let Body::Inline { bytes, .. } = m.body() else {
+        panic!("expected inline body")
+    };
+    bytes.to_vec()
+}
+
+#[test]
+fn inline_body_value_patterns_are_redacted() {
+    let raw = parse_req(b"POST / HTTP/1.1\r\nHost: x\r\n\r\n");
+    let body = Body::inline(bytes::Bytes::from_static(
+        b"access_token=SENTINEL1&api_key=SENTINEL2",
+    ));
+    let m = Message::http1_raw(&raw, body, conn("x", 80));
+    let r = RedactionPolicy::default_policy().redact_message(&m);
+    let b = inline_bytes(&r);
+    assert!(!contains(&b, b"SENTINEL1"));
+    assert!(!contains(&b, b"SENTINEL2"));
+}
+
+#[test]
+fn inline_body_pattern_at_end_of_buffer() {
+    let raw = parse_req(b"POST / HTTP/1.1\r\nHost: x\r\n\r\n");
+    let body = Body::inline(bytes::Bytes::from_static(b"api_key=SENTINEL"));
+    let m = Message::http1_raw(&raw, body, conn("x", 80));
+    let r = RedactionPolicy::default_policy().redact_message(&m);
+    let b = inline_bytes(&r);
+    assert!(!contains(&b, b"SENTINEL"));
+    assert!(contains(&b, b"[REDACTED]"));
+}
+
+#[test]
+fn blob_body_is_unchanged() {
+    let raw = parse_req(b"POST / HTTP/1.1\r\nHost: x\r\n\r\n");
+    let blob = Body::Blob {
+        hash: [7; 32],
+        len: 42,
+        truncated_at: None,
+        capture_dropped: false,
+        relay: None,
+    };
+    let m = Message::http1_raw(&raw, blob.clone(), conn("x", 80));
+    let r = RedactionPolicy::default_policy().redact_message(&m);
+    assert_eq!(r.body(), &blob);
+}
+
+#[test]
+fn header_names_do_not_apply_to_body() {
+    let raw = parse_req(b"POST / HTTP/1.1\r\nHost: x\r\n\r\n");
+    let body = Body::inline(bytes::Bytes::from_static(b"Cookie: x"));
+    let m = Message::http1_raw(&raw, body, conn("x", 80));
+    let r = RedactionPolicy::default_policy().redact_message(&m);
+    let b = inline_bytes(&r);
+    assert_eq!(b.as_slice(), b"Cookie: x");
+}
+
 #[test]
 fn interim_heads_are_redacted_like_the_head() {
     let raw = parse_resp(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");

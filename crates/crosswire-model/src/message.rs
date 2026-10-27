@@ -730,6 +730,12 @@ impl Message {
         self
     }
 
+    /// Replaces the body (used by redaction, which scrubs inline body bytes).
+    pub(crate) fn with_body(mut self, body: Body) -> Message {
+        self.body = body;
+        self
+    }
+
     /// The head representation.
     #[must_use]
     pub fn kind(&self) -> MessageKind {
