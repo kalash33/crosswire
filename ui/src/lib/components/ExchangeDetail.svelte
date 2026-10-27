@@ -1,4 +1,5 @@
 <script lang="ts">
+  import CopyMenu from './CopyMenu.svelte';
   import ByteEditor from '../editor/ByteEditor.svelte';
   import { bytesToLatin1 } from '../editor/encoding';
   import { apiGet, apiGetBytes } from '../api/client';
@@ -127,6 +128,7 @@
     <!-- Request -->
     <div class="pane" data-testid="detail-request">
       <h3>Request</h3>
+      <CopyMenu id={exchange.id} />
       <p class="note" data-testid="detail-req-fidelity">{fidelityNote(exchange.request)}</p>
       {#if exchange.request.diagnostics && exchange.request.diagnostics.length > 0}
         <ul class="diags" data-testid="detail-req-diagnostics">

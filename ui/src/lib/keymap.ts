@@ -17,6 +17,8 @@ export const ACTIONS = [
   'decode-selection',
   'tab-next',
   'tab-prev',
+  'copy-as-curl',
+  'copy-raw',
 ] as const;
 
 export type Action = (typeof ACTIONS)[number];
@@ -37,6 +39,10 @@ export const DEFAULT_BINDINGS: Readonly<Record<Action, string>> = {
   'decode-selection': 'ctrl+shift+d',
   'tab-next': 'ctrl+shift+]',
   'tab-prev': 'ctrl+shift+[',
+  // Burp's "Copy as curl command" is Ctrl+Shift+C; both copy UNREDACTED (for
+  // replay). The redacted (share-safe) variants are menu-only.
+  'copy-as-curl': 'ctrl+shift+c',
+  'copy-raw': 'ctrl+shift+s',
 };
 
 const CODE_KEYS: Record<string, string> = {
