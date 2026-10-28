@@ -23,7 +23,11 @@ async fn harness_measures_direct_latency_and_throughput() {
     .await;
 
     assert!(stats.reqs > 0, "no requests completed");
-    assert!(stats.p50_us > 0, "p50 must be positive, got {}", stats.p50_us);
+    assert!(
+        stats.p50_us > 0,
+        "p50 must be positive, got {}",
+        stats.p50_us
+    );
     assert!(
         stats.p99_us >= stats.p50_us,
         "p99 ({}) must be >= p50 ({})",

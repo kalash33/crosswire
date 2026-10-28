@@ -69,3 +69,51 @@ pinned with `INDEXED BY` (0.95 ms).
 
 The 1 000 000 numbers are a single local quick-mode run on the reference
 machine; the maintainer's full-gate run replaces them.
+
+# Proxy added-latency gate (spec §13)
+
+The proxy's steady-state **added** latency on the realistic HTTPS hot path
+(MITM TLS on, recording on), measured by
+`crates/crosswire-proxy/tests/perf_added_latency.rs` with the in-process load
+harness (`crates/crosswire-proxy/tests/load/mod.rs`, `drive_mitm`):
+
+```sh
+# Report-only (CI smoke): runs, prints the SUMMARY line, never asserts.
+cargo test --release -p crosswire-proxy --test perf_added_latency -- --nocapture
+# Maintainer gate: additionally asserts delta < 2000 us.
+CROSSWIRE_PERF_ASSERT=1 \
+  cargo test --release -p crosswire-proxy --test perf_added_latency -- --nocapture
+```
+
+The gate drives 64 keep-alive connections issuing back-to-back origin-form
+`GET /` for a 16 KiB response body over client TLS, once straight to a TLS echo
+upstream (`p99_direct`) and once through a real MITM proxy that mints a leaf,
+relays and records (`p99_proxy`); the per-connection TLS handshake and
+`CONNECT` setup (plus a 32-request warmup) are excluded from the samples. The
+gate value is `p99_proxy − p99_direct`; target `< 2 ms`. Always built
+**`--release`** — debug rustls/ring crypto is ~20x slower and meaningless here.
+
+## Reference machine: MacBook Air (Mac14,2), Apple M2, 8 cores, 8 GiB, macOS
+
+Measured 2026-10-28, release profile, 2 s per path. **OVER the 2 ms target at
+p99** (see the caveat below); recorded here as the measured baseline, not an
+accepted pass.
+
+| metric | direct | via MITM proxy | added (proxy − direct) |
+|---|---|---|---|
+| p50 | ~0.73 ms | ~2.55 ms | **~1.8 ms** |
+| p99 | ~1.1–3.4 ms | ~4.3–5.9 ms | **~2.5–4.6 ms** |
+| throughput | ~55–87k rps | ~20–24k rps | — |
+
+Four back-to-back runs gave p99 deltas of 2.48 / 3.24 / 4.57 / 3.10 ms. The
+**median** added latency is a stable ~1.8 ms (under target); the p99 delta is
+repeatably over 2 ms with high run-to-run variance.
+
+Caveat — this is an *in-process, closed-loop* measurement: the load generator,
+the proxy and the TLS upstream all share one 4-worker Tokio runtime on an
+8-core box, and the drive is back-to-back (max-rate), so the proxy path (≈2x
+TLS crypto + synchronous mutex-guarded recording of full 16 KiB bodies)
+saturates the machine and the p99 reflects queueing under saturation, not the
+proxy's intrinsic per-request service time. Whether the p99 overage is a
+genuine product cost or a harness artifact is unresolved; the maintainer gate
+asserts the reference number so a future run can pin it down.
