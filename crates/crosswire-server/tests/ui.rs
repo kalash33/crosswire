@@ -253,6 +253,7 @@ async fn serves_ui_bundle_with_csp_and_keeps_api_gated() {
     assert!(csp.contains("style-src 'self' 'nonce-"), "CSP nonce: {csp}");
     // The other required UI CSP directives must all be present.
     for directive in [
+        "frame-src http://127.0.0.1:",
         "object-src 'none'",
         "base-uri 'none'",
         "frame-ancestors 'none'",
