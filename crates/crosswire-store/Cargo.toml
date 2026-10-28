@@ -57,6 +57,11 @@ name = "history"
 harness = false
 required-features = ["synthetic"]
 
+# Builds the synthetic project the UI perf trace serves (scripts/ui-perf.sh).
+[[example]]
+name = "seed_project"
+required-features = ["synthetic"]
+
 # Spawned and SIGKILLed by tests/durability.rs.
 [[bin]]
 name = "killtest-child"

@@ -11,10 +11,10 @@ const BASE_URL = `http://127.0.0.1:${PORT}`;
 
 export default defineConfig({
   testDir: './e2e',
-  // The install-to-first-capture gate needs a real `crosswire serve`, not this
+  // The install-to-first-capture and perf-scroll gates need a real `crosswire serve`, not this
   // vite-preview webServer. It runs only under playwright.first-capture.config.ts
   // (via `just first-capture-ui`), so keep it out of the default suite.
-  testIgnore: /first-capture-ui\.spec\.ts$/,
+  testIgnore: /(first-capture-ui|perf-scroll)\.spec\.ts$/,
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,

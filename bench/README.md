@@ -211,3 +211,42 @@ append, `fsync`). The same harness with bodies capped at 65 KiB commits ~2,400
 exchanges/s. The disk is not the limit (300 MB written with a full fsync
 sustains ~350 MB/s here). The authoritative figure is the maintainer run on
 the reference machines.
+
+# UI frame-time and filter-latency trace (spec §13)
+
+The history view must stay smooth at 1M rows: **no animation frame > 32 ms**
+during a 10 s scroll, and a filter applied in **< 300 ms**. Measured by
+`ui/e2e/perf-scroll.spec.ts` against a REAL `crosswire serve` on a seeded
+synthetic project (`scripts/ui-perf.sh` builds, seeds via the
+`crosswire-store` `seed_project` example behind the `synthetic` feature,
+serves, and runs Playwright). The spec scrolls for 10 s, paging in the next
+keyset page whenever "Load more" is enabled, collecting
+`requestAnimationFrame` deltas in-page; then it applies `host = api.example.com`
+and times the click until every rendered row is that host.
+
+```sh
+# Report-only (CI smoke, default 100,000 rows): prints the SUMMARY ui_perf line.
+just ui-perf
+# Maintainer gate: 1M rows (seeding takes ~6 min, serve opens it in ~2 min, the
+# project.db is ~5 GB) and asserts max frame <= 32 ms and filter < 300 ms.
+CROSSWIRE_UI_PERF_ROWS=1000000 CROSSWIRE_PERF_ASSERT=1 just ui-perf
+```
+
+**Status: FAILS the target (real finding, not weakened).** The list is not
+virtualized: every loaded row stays in the DOM, so the scroll tail renders
+~4,500-4,800 rows (~56-59k nodes) and frames blow the budget at any row count.
+
+## Reference machine: MacBook Air (Mac14,2), Apple M2, 8 cores, 8 GiB, macOS
+
+Measured 2026-10-29, headless Chromium (Playwright 1.64), release server.
+
+| rows | max frame | p99 frame | frames > 32 ms | filter | DOM rows after scroll |
+|---|---|---|---|---|---|
+| 100,000 | 283 ms | 150 ms | 77 / 348 | 453 ms | 4,800 |
+| 1,000,000 | 283 ms | 200 ms | 74 / 317 | 163 ms | 4,500 |
+
+Targets (32 ms / 300 ms) not met on max frame at either size; the filter was
+over 300 ms in the 100k run (cold first query) and under it at 1M. The scroll
+loop reads layout every frame, which adds to the cost, but the DOM growth is
+the driver. Candidate fixes (UI change, out of scope here): virtualize or
+window the list, and/or cap the rendered rows.

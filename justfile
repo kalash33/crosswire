@@ -24,6 +24,14 @@ first-capture:
 first-capture-ui:
     scripts/first-capture-ui.sh
 
+# UI frame-time / filter-latency trace (§13) against a real `serve` on a seeded
+# synthetic project. CROSSWIRE_UI_PERF_ROWS sets the size (default 100000; the
+# maintainer run is 1000000 and takes minutes to seed). Report-only unless
+# CROSSWIRE_PERF_ASSERT=1 (max frame <= 32 ms, filter < 300 ms). Needs
+# Playwright's chromium (`npx playwright install chromium`).
+ui-perf:
+    scripts/ui-perf.sh
+
 # Build the Svelte UI bundle and stage it into the server crate for embedding.
 # Run this after changing ui/src; `cargo build` stays Node-free because the
 # built bundle is committed under crates/crosswire-server/assets/ui/ and
