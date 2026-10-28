@@ -129,15 +129,41 @@ bench:
 # warm / < 500 ms cold, peak anonymous RSS < 500 MB. Takes minutes (the load
 # alone is ~3 min) and the numbers depend on the machine, so CI never runs it;
 # compare the output with the committed baseline in bench/README.md.
+#
+# Also runs the proxy gates ASSERTING (CROSSWIRE_PERF_ASSERT=1, --release):
+# added-latency p50 < 2 ms and MITM throughput >= 5000 req/s. The store ingest
+# and UI frame/filter gates run REPORT-ONLY (known gaps vs the spec §13
+# targets, tracked in the pre-0.1.0 backlog); read their SUMMARY lines against
+# bench/README.md. The UI step needs Playwright's chromium and defaults to
+# 100k rows (CROSSWIRE_UI_PERF_ROWS=1000000 for the full size).
 perf:
     scripts/perf-gate.sh 1000000 50 500 500
-    @echo "Compare the SUMMARY above with the committed baseline: bench/README.md"
+    CROSSWIRE_PERF_ASSERT=1 cargo test --locked --release -p crosswire-proxy --test perf_added_latency -- --nocapture
+    CROSSWIRE_PERF_ASSERT=1 cargo test --locked --release -p crosswire-proxy --test perf_throughput -- --nocapture --test-threads=1
+    cargo test --locked --release -p crosswire-store --test perf_ingest -- --nocapture
+    scripts/ui-perf.sh
+    @echo "Compare the SUMMARY lines above with the committed baselines and ledger: bench/README.md"
+
+# Authoritative added-latency p99 / throughput cross-check with `oha` (a
+# separate process, so no in-process harness contention). Maintainer-only:
+# `cargo install oha` yourself; it is not a repo or CI dependency. See the
+# "oha cross-check" section of bench/README.md for the full recipe.
+perf-oha:
+    @echo "See bench/README.md, section 'oha cross-check (authoritative p99 and throughput)'."
 
 # CI regression guard, hardware-independent. (1) The EXPLAIN QUERY PLAN tests
 # fail if any named history query stops using its index (or the status query
 # regains a temp sort): a dropped index flips the plan to SCAN, on any machine.
 # (2) A 100k-row run with bounds ~4x/2x looser than the 1M gate, a sanity check
 # for gross regressions that CI hardware noise cannot trip.
+#
+# (3) The proxy perf tests (added-latency, throughput) in --release and
+# REPORT-ONLY (no CROSSWIRE_PERF_ASSERT): proves they build and run and that
+# their hard invariants hold; the tight numbers are hardware-sensitive and are
+# asserted maintainer-side by `just perf`. The 1M ingest and UI runs are
+# maintainer-only (slow, GBs of disk).
 perf-smoke:
     cargo test --locked -p crosswire-store --features synthetic --test indexes --test tags_index --test path_filter
     scripts/perf-gate.sh 100000 200 1000 250
+    cargo test --locked --release -p crosswire-proxy --test perf_added_latency -- --nocapture
+    cargo test --locked --release -p crosswire-proxy --test perf_throughput -- --nocapture --test-threads=1

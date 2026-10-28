@@ -1,3 +1,25 @@
+# Performance ledger (spec §13)
+
+Which harness covers which §13 gate, and how each is wired. **`just perf`** is
+the maintainer reference run (full scale, asserting where marked, run on the
+reference machines). **`just perf-smoke`** is what CI runs on the ubuntu `check`
+job: it proves everything builds and runs and that the gross floors and hard
+invariants hold, and it asserts none of the hardware-sensitive reference
+numbers. The 1M ingest/UI runs are maintainer-only (slow, several GB of disk).
+
+| §13 gate | harness | target | `just perf` (maintainer) | `just perf-smoke` (CI) |
+|---|---|---|---|---|
+| Added latency | `crates/crosswire-proxy/tests/perf_added_latency.rs` | p50 delta < 2 ms | ASSERTED (p50); p99 reported (contention-dominated in-process, `oha` is authoritative) | report-only |
+| Throughput | `crates/crosswire-proxy/tests/perf_throughput.rs` | >= 5,000 req/s (+ SNI-tunnel row) | ASSERTED | report-only |
+| History queries / RSS | `crates/crosswire-store/benches/history.rs` via `scripts/perf-gate.sh` (Plan 6) | p95 < 50 ms warm / < 500 ms cold; RSS < 500 MB at 1M | ASSERTED at 1M | asserted at 100k with loose bounds, plus EXPLAIN QUERY PLAN tests |
+| Ingest | `crates/crosswire-store/tests/perf_ingest.rs` | >= 2,000 exchanges/s | REPORT-ONLY: ~700/s, below target (known gap, backlogged); only a 300/s gross floor and the body-mix check assert | not run |
+| UI frame / filter | `ui/e2e/perf-scroll.spec.ts` via `just ui-perf` | frame <= 32 ms, filter < 300 ms | REPORT-ONLY: ~117 ms frame, above target (history list not virtualized, known gap, backlogged); filter met; only generous floors assert | not run |
+
+`oha` (run as a separate process, see the last section) is the authoritative
+cross-check for the added-latency p99 and for throughput; the in-process
+harness numbers are the regression guard. `oha` is documented only: it is not a
+repo or CI dependency.
+
 # History benchmark baseline
 
 The named history queries (spec §13) over a deterministic synthetic project,
@@ -255,3 +277,31 @@ passive sampling.
 
 (The earlier forced-layout harness read 283 ms max frame; passive sampling
 roughly halves it but the target is still missed by ~3.6x.)
+
+# oha cross-check (authoritative p99 and throughput)
+
+The in-process harness shares cores between load generator, proxy and
+upstream, so its p99 is contention-dominated. For the authoritative added-latency
+p99 and throughput on the reference machines, drive a standalone
+`crosswire serve` from a separate process with [`oha`](https://github.com/hatoo/oha).
+Maintainer-only and optional: `cargo install oha` yourself; it is not in
+`Cargo.toml` or CI.
+
+```sh
+cargo build --release -p crosswire-server
+BIN=target/release/crosswire
+# Start the proxy (see scripts/ui-perf.sh for the full serve lifecycle; the CA
+# dir must live outside the project). Note the printed proxy address.
+$BIN serve --project /tmp/oha/proj --ca-dir /tmp/oha/ca \
+  --api-bind 127.0.0.1:0 --proxy-bind 127.0.0.1:0 --bootstrap-file /tmp/oha/boot
+# Any local HTTPS origin serving a 16 KiB body at / (the harness's shape).
+# Baseline: straight to the origin, no proxy.
+oha -z 10s -c 64 --no-tui --insecure https://127.0.0.1:8443/
+# Through the proxy (MITM on, recording on); --insecure because the minted
+# leaf chains to the Crosswire CA, not a system root.
+oha -z 10s -c 64 --no-tui --insecure -x http://127.0.0.1:<proxy-port> https://127.0.0.1:8443/
+```
+
+Added latency is the difference of the two runs' p99 (and p50) latency columns;
+throughput is the proxied run's requests/sec (target >= 5,000). Record the
+reference-machine numbers next to the matching harness section above.
