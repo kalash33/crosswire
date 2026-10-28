@@ -121,3 +121,40 @@ intrinsic per-request latency. The **authoritative §13 p99 < 2 ms added-latency
 figure is a maintainer-run `oha`-vs-direct measurement against a standalone
 `crosswire serve` (separate-process load generator, real async writer) on the
 reference machines, wired in a later task (Task 5).
+
+# Proxy throughput gate (spec §13)
+
+The proxy must sustain **>= 5,000 req/s** with MITM TLS on and recording on,
+measured by `crates/crosswire-proxy/tests/perf_throughput.rs` with the same
+in-process harness (`drive_mitm`): 64 keep-alive client-TLS connections issuing
+back-to-back `GET /` for a 16 KiB body through a `CONNECT` tunnel for 3 s, which
+saturates the proxy. Always run **`--release`** (debug TLS crypto is ~20x
+slower). Run the two tests serially (`--test-threads=1`) so they do not contend
+for the same cores:
+
+```sh
+# Report-only (CI smoke): prints the SUMMARY rows, never asserts throughput.
+cargo test --release -p crosswire-proxy --test perf_throughput -- --nocapture --test-threads=1
+# Maintainer gate: additionally asserts MITM >= 5000 req/s.
+CROSSWIRE_PERF_ASSERT=1 \
+  cargo test --release -p crosswire-proxy --test perf_throughput -- --nocapture --test-threads=1
+```
+
+| row | what | asserted |
+|---|---|---|
+| `throughput_mitm_at_least_5k` | MITM + recording on (`recorded > 0` always asserted) | `>= 5000 req/s` under `CROSSWIRE_PERF_ASSERT=1` |
+| `throughput_sni_tunnel` | SNI passthrough tunnel, no cert minted (reference) | no |
+
+## Reference machine: MacBook Air (Mac14,2), Apple M2, 8 cores, 8 GiB, macOS
+
+Measured 2026-10-28, release profile, 64 connections, 3 s.
+
+| row | req/s | p50 | p99 |
+|---|---|---|---|
+| MITM + recording | ~25,200 | ~2.4 ms | ~3.7 ms |
+| SNI passthrough tunnel (reference) | ~43,200 | ~1.4 ms | ~2.1 ms |
+
+Caveat: load generator, proxy and upstream share one 4-worker runtime and the
+`TestSink` records synchronously, so these in-process figures are a
+conservative floor; the authoritative throughput is the maintainer `oha` run
+against a standalone `crosswire serve` (Task 5).
