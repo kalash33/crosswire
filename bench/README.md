@@ -158,3 +158,47 @@ Caveat: load generator, proxy and upstream share one 4-worker runtime and the
 `TestSink` records synchronously, so these in-process figures are a
 conservative floor; the authoritative throughput is the maintainer `oha` run
 against a standalone `crosswire serve` (Task 5).
+
+# Store ingest gate (spec §13)
+
+The store must sustain **>= 2,000 exchanges/s** committed through the real
+writer path at the §13 body mix, measured by
+`crates/crosswire-store/tests/perf_ingest.rs`. It submits through the same
+`ExchangeSink::submit` the proxy uses (bounded queue, then the OS writer
+thread, default config: `BEGIN IMMEDIATE`, commit every 250 ms / 1,000
+exchanges), not the synthetic bulk insert. Bodies follow the Plan 6 mix
+(60 % < 4 KiB, 30 % 4-64 KiB, 9 % 64 KiB-1 MiB, 1 % 1-8 MiB), unique and
+incompressible; the test asserts the submitted proportions are within
+tolerance. The rate counts **committed** exchanges only: `Event::Committed`
+ids are counted by a subscriber (also used as flow control so the queue never
+overruns into the journal-spill path: at most 9,000 exchanges / 56 MiB in
+flight), the writer is drained, the total is cross-checked against
+`count(*) ... state = 'committed'` in the database, and the rate is committed
+over the wall time from the first submit to the last commit (3 s submit
+window plus the final drain). Always **`--release`**:
+
+```sh
+# Report-only (CI smoke): prints the SUMMARY line, never asserts the rate.
+cargo test --release -p crosswire-store --test perf_ingest -- --nocapture
+# Maintainer gate: additionally asserts >= 2000 exchanges/s.
+CROSSWIRE_PERF_ASSERT=1 \
+  cargo test --release -p crosswire-store --test perf_ingest -- --nocapture
+```
+
+## Reference machine: MacBook Air (Mac14,2), Apple M2, 8 cores, 8 GiB, macOS
+
+Measured 2026-10-29, release profile, three runs.
+
+| metric | value |
+|---|---|
+| committed exchanges / s | ~700 (698 / 708 / 722) |
+| body bytes ingested | ~65 MB/s |
+| §13 target | 2,000 / s (**not met at this mix on this machine**) |
+
+The rate is body-volume bound, not per-exchange bound: the mean exchange at
+this mix carries ~100 KB (the 9 % and 1 % buckets dominate), so 2,000/s would
+need ~200 MB/s through the single writer thread (SHA-256, zstd level 3, pack
+append, `fsync`). The same harness with bodies capped at 65 KiB commits ~2,400
+exchanges/s. The disk is not the limit (300 MB written with a full fsync
+sustains ~350 MB/s here). The authoritative figure is the maintainer run on
+the reference machines.
