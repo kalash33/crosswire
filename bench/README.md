@@ -180,10 +180,19 @@ window plus the final drain). Always **`--release`**:
 ```sh
 # Report-only (CI smoke): prints the SUMMARY line, never asserts the rate.
 cargo test --release -p crosswire-store --test perf_ingest -- --nocapture
-# Maintainer gate: additionally asserts >= 2000 exchanges/s.
-CROSSWIRE_PERF_ASSERT=1 \
-  cargo test --release -p crosswire-store --test perf_ingest -- --nocapture
+# CROSSWIRE_PERF_ASSERT=1 changes nothing here: the rate is never asserted
+# against 2,000/s. Only the body mix and a gross-regression floor are asserted.
 ```
+
+**Status: REPORT-ONLY.** The measured ingest rate (about 700 exchanges/s,
+about 65 MB/s of body bytes, on the M2 below) is **below the §13 target of
+2,000 exchanges/s**. The test prints the `SUMMARY ingest` line (committed,
+secs, rate, mb_per_s, mix) and asserts only the submitted body mix and a
+generous gross-regression floor of 300 exchanges/s (release builds), which is
+not the §13 target. The gap is tracked in the pre-0.1.0 backlog pending a
+maintainer decision: optimise the writer (parallel hash/compress, blake3, or a
+lower zstd level), OR redefine the §13 ingest metric as MB/s or a lighter mix,
+OR confirm on the reference 4-vCPU Linux VM.
 
 ## Reference machine: MacBook Air (Mac14,2), Apple M2, 8 cores, 8 GiB, macOS
 
@@ -193,7 +202,7 @@ Measured 2026-10-29, release profile, three runs.
 |---|---|
 | committed exchanges / s | ~700 (698 / 708 / 722) |
 | body bytes ingested | ~65 MB/s |
-| §13 target | 2,000 / s (**not met at this mix on this machine**) |
+| §13 target | 2,000 / s (**not met at this mix on this machine; report-only**) |
 
 The rate is body-volume bound, not per-exchange bound: the mean exchange at
 this mix carries ~100 KB (the 9 % and 1 % buckets dominate), so 2,000/s would
