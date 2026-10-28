@@ -194,6 +194,16 @@ pub(crate) fn api_routes() -> OpenApiRouter<AppState> {
 /// records request or response bytes, tokens or cookies.
 fn finish(router: Router<AppState>, state: AppState) -> Router {
     router
+        // The sandboxed preview route (§11.1). It is NOT an `/api/v1` route and
+        // is deliberately absent from the OpenAPI document: it is served only on
+        // the isolated `127.0.0.1`/`[::1]` origin (enforced by the gate) and
+        // authenticated by the capability token in its query string, not a
+        // cookie. Registered before the gate layer so the gate wraps it, and as
+        // an explicit route so it takes precedence over any UI fallback.
+        .route(
+            "/preview/{id}",
+            axum::routing::get(crate::routes::preview::preview),
+        )
         .layer(from_fn_with_state(state.clone(), gate))
         // Record method and path only (never the query string, which can
         // carry filters, and never bodies, tokens or cookies).

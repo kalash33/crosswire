@@ -186,6 +186,29 @@ pub fn host_is_loopback(host: &str) -> bool {
     name.eq_ignore_ascii_case("localhost") || name == "127.0.0.1"
 }
 
+/// Whether `host` (the `Host` header value) is the isolated preview origin:
+/// the IP literals `127.0.0.1` or `[::1]`/`::1`, never `localhost` (spec §11.1).
+///
+/// The preview layer serves captured bodies only on this origin, so a previewed
+/// page lands on a DIFFERENT browser origin than the UI (`localhost`) and can
+/// never read the UI's cookies or storage. `localhost` is deliberately excluded:
+/// accepting it would collapse the two origins and defeat the isolation.
+#[must_use]
+pub fn host_is_preview_origin(host: &str) -> bool {
+    // The bare IPv6 literals carry no port to strip.
+    if host == "::1" || host == "[::1]" {
+        return true;
+    }
+    // A bracketed IPv6 host puts the optional port after `]`; every other form
+    // puts it after the last `:`.
+    let name = if let Some(rest) = host.strip_prefix('[') {
+        rest.split_once(']').map_or(host, |(inner, _)| inner)
+    } else {
+        host.rsplit_once(':').map_or(host, |(h, _)| h)
+    };
+    name == "127.0.0.1" || name == "::1" || name == "[::1]"
+}
+
 /// The `Origin` values that count as same-origin for cookie-authenticated
 /// requests on this port.
 #[must_use]
@@ -306,13 +329,37 @@ pub fn authenticate_token(state: &AppState, token: &str) -> Result<AuthCtx, ApiE
 /// The top-level gate: Host check, route allowlist, then the credential and
 /// idle-refresh step for authenticated routes.
 pub async fn gate(State(state): State<AppState>, mut req: Request, next: Next) -> Response {
-    // 1. Host check.
-    let host_ok = req
+    let path = req.uri().path().to_string();
+    // The `Host` is read once; the two verdicts are computed before `req` is
+    // moved so the header borrow ends here.
+    let host = req
         .headers()
         .get(http::header::HOST)
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(host_is_loopback);
-    if !host_ok {
+        .and_then(|v| v.to_str().ok());
+    let host_is_preview = host.is_some_and(host_is_preview_origin);
+    let host_is_loop = host.is_some_and(host_is_loopback);
+
+    // 0. The preview layer (§11.1) is served ONLY on the isolated
+    //    `127.0.0.1`/`[::1]` origin, never on `localhost`, so a previewed page
+    //    lands on a different browser origin than the UI and can never read its
+    //    cookies. The capability token in the query string is the credential, so
+    //    the gate runs no cookie/session check here — the handler's HMAC
+    //    verification is the gate. A `/preview/` request on any other `Host`
+    //    (including `localhost`) is a bare `404`: there is no such resource on
+    //    that origin, so the body is never served and the probe cannot tell the
+    //    origin apart from one that simply has no preview route.
+    if path.starts_with("/preview/") {
+        if host_is_preview {
+            return next.run(req).await;
+        }
+        return ApiError::not_found("not_found", "not found").into_response();
+    }
+
+    // 1. Host check (every non-preview route serves loopback hosts only). The
+    //    preview origin is NOT widened here: the browser scopes the session
+    //    cookie to the `localhost` origin, so it never reaches `127.0.0.1`, and
+    //    the API on `127.0.0.1` therefore sees no cookie and stays unauthenticated.
+    if !host_is_loop {
         return ApiError::misdirected("bad_host", "the API serves loopback hosts only")
             .into_response();
     }
@@ -320,7 +367,6 @@ pub async fn gate(State(state): State<AppState>, mut req: Request, next: Next) -
     // 2. Route allowlist. The WebSocket route authenticates inside the
     //    handler (it may use a first-frame bearer), so it bypasses the gate
     //    credential step here.
-    let path = req.uri().path().to_string();
     if is_unauthenticated(&path) || path == "/api/v1/events" {
         return next.run(req).await;
     }
