@@ -338,6 +338,30 @@
         }
       }
     },
+    "/api/v1/exchanges/{id}/preview-token": {
+      "get": {
+        "summary": "Mints a short-lived capability token to preview one exchange's response body\non the isolated preview origin (spec §11.1). The token is bound to the\nexchange id and the exact body bytes and carries no cookie. Audited\n`preview.mint`.",
+        "operationId": "get_preview_token",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A preview capability token"
+          },
+          "404": {
+            "description": "No such exchange or response body"
+          }
+        }
+      }
+    },
     "/api/v1/exchanges/{id}/raw": {
       "get": {
         "summary": "Renders the request as raw wire bytes, optionally redacted. Audited.",

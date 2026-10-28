@@ -1,6 +1,9 @@
 //! Read and patch routes over recorded exchanges, markers and counts.
 
 use std::sync::PoisonError;
+use std::time::{Duration, SystemTime};
+
+use sha2::{Digest, Sha256};
 
 use crate::extract::{Json, Path, Query};
 use axum::extract::State;
@@ -322,6 +325,63 @@ pub async fn get_body(
         headers.insert("x-crosswire-truncated-at", at.to_string().parse().unwrap());
     }
     Ok((StatusCode::OK, headers, bytes))
+}
+
+/// How long a preview capability token stays valid.
+const PREVIEW_TTL: Duration = Duration::from_secs(60);
+
+/// A minted preview capability token and where to use it.
+#[derive(Serialize)]
+pub struct PreviewTokenDto {
+    /// The capability token (base64url; carried in the URL, not a cookie).
+    pub token: String,
+    /// The preview path, carrying the token in its query string.
+    pub path: String,
+    /// Seconds until the token expires.
+    pub expires_in: u64,
+}
+
+/// Mints a short-lived capability token to preview one exchange's response body
+/// on the isolated preview origin (spec §11.1). The token is bound to the
+/// exchange id and the exact body bytes and carries no cookie. Audited
+/// `preview.mint`.
+#[utoipa::path(
+    get,
+    path = "/api/v1/exchanges/{id}/preview-token",
+    responses(
+        (status = 200, description = "A preview capability token"),
+        (status = 404, description = "No such exchange or response body")
+    )
+)]
+pub async fn get_preview_token(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<PreviewTokenDto>> {
+    ctx.scopes.require(Scope::Read)?;
+    let ulid = parse_ulid(&id)?;
+    let body = state
+        .store
+        .get_body(ulid, BodySide::Resp)
+        .map_err(|e| ApiError::internal(format!("body read failed: {e}")))?
+        .ok_or_else(|| ApiError::not_found("not_found", "no such body"))?;
+    let body_hash: [u8; 32] = Sha256::digest(&body).into();
+    let token = crate::preview_token::mint(
+        &state.preview_key,
+        ulid,
+        &body_hash,
+        SystemTime::now(),
+        PREVIEW_TTL,
+    );
+    let path = format!("/preview/{ulid}?token={token}");
+    let _ = state
+        .store
+        .audit(&ctx.actor, "preview.mint", &ulid.to_string(), "ok");
+    Ok(Json(PreviewTokenDto {
+        token,
+        path,
+        expires_in: PREVIEW_TTL.as_secs(),
+    }))
 }
 
 /// Query parameters for `GET /exchanges/{id}/curl`.

@@ -17,6 +17,7 @@ use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 
 use crate::auth::{gate, RateLimiter};
+use crate::preview_token::PreviewKey;
 use crate::session::SessionStore;
 use crate::tokens::BootstrapStore;
 
@@ -82,6 +83,9 @@ pub struct AppState {
     pub bootstrap_ttl: Duration,
     /// Per-peer authentication-failure rate limiter.
     pub auth_limiter: RateLimiter,
+    /// The per-serve secret that signs preview capability tokens (§11.1).
+    /// Generated once at serve start; never serialized or logged.
+    pub preview_key: Arc<PreviewKey>,
 }
 
 impl std::fmt::Debug for AppState {
@@ -126,6 +130,7 @@ impl AppState {
             idle_timeout: config.idle_timeout,
             bootstrap_ttl: config.bootstrap_ttl,
             auth_limiter: RateLimiter::new(),
+            preview_key: Arc::new(PreviewKey::random()),
         })
     }
 }
@@ -153,6 +158,7 @@ pub(crate) fn api_routes() -> OpenApiRouter<AppState> {
         .routes(routes!(exchanges::list_exchanges))
         .routes(routes!(exchanges::get_exchange, exchanges::patch_exchange))
         .routes(routes!(exchanges::get_body))
+        .routes(routes!(exchanges::get_preview_token))
         .routes(routes!(exchanges::get_curl))
         .routes(routes!(exchanges::get_raw))
         .routes(routes!(exchanges::list_markers))

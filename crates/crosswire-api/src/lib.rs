@@ -31,6 +31,7 @@ mod error;
 mod events;
 mod extract;
 mod openapi;
+mod preview_token;
 mod routes;
 mod session;
 mod tokens;
@@ -42,5 +43,6 @@ pub use app::{
 pub use auth::{Scope, Scopes};
 pub use error::{ApiError, ApiResult};
 pub use openapi::document;
+pub use preview_token::{mint, verify, PreviewKey, PreviewTokenError};
 pub use session::SessionStore;
 pub use tokens::{token_hash, BootstrapStore};
