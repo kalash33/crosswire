@@ -26,8 +26,8 @@ first-capture-ui:
 
 # UI frame-time / filter-latency trace (§13) against a real `serve` on a seeded
 # synthetic project. CROSSWIRE_UI_PERF_ROWS sets the size (default 100000; the
-# maintainer run is 1000000 and takes minutes to seed). Report-only unless
-# CROSSWIRE_PERF_ASSERT=1 (max frame <= 32 ms, filter < 300 ms). Needs
+# maintainer run is 1000000 and takes minutes to seed). REPORT-ONLY (gross
+# floors only; the 32 ms / 300 ms targets are a known gap). Needs
 # Playwright's chromium (`npx playwright install chromium`).
 ui-perf:
     scripts/ui-perf.sh

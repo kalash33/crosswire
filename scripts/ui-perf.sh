@@ -2,8 +2,9 @@
 # UI frame-time / filter-latency trace (spec §13): seed a synthetic project of
 # CROSSWIRE_UI_PERF_ROWS rows (default 100000; the maintainer run is 1000000),
 # serve it with the real `crosswire serve` (embedded production bundle), and
-# drive the history view with Playwright. Report-only unless
-# CROSSWIRE_PERF_ASSERT=1 (then max frame <= 32 ms and filter < 300 ms).
+# drive the history view with Playwright. REPORT-ONLY: prints the SUMMARY
+# ui_perf line and asserts only gross-regression floors (the 32 ms / 300 ms
+# targets are a known gap, see bench/README.md).
 # Mirrors scripts/first-capture-ui.sh's serve lifecycle; no network egress.
 set -euo pipefail
 
