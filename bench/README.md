@@ -1,3 +1,25 @@
+# Performance ledger (spec §13)
+
+Which harness covers which §13 gate, and how each is wired. **`just perf`** is
+the maintainer reference run (full scale, asserting where marked, run on the
+reference machines). **`just perf-smoke`** is what CI runs on the ubuntu `check`
+job: it proves everything builds and runs and that the gross floors and hard
+invariants hold, and it asserts none of the hardware-sensitive reference
+numbers. The 1M ingest/UI runs are maintainer-only (slow, several GB of disk).
+
+| §13 gate | harness | target | `just perf` (maintainer) | `just perf-smoke` (CI) |
+|---|---|---|---|---|
+| Added latency | `crates/crosswire-proxy/tests/perf_added_latency.rs` | p50 delta < 2 ms | ASSERTED (p50); p99 reported (contention-dominated in-process, `oha` is authoritative) | report-only |
+| Throughput | `crates/crosswire-proxy/tests/perf_throughput.rs` | >= 5,000 req/s (+ SNI-tunnel row) | ASSERTED | report-only |
+| History queries / RSS | `crates/crosswire-store/benches/history.rs` via `scripts/perf-gate.sh` (Plan 6) | p95 < 50 ms warm / < 500 ms cold; RSS < 500 MB at 1M | ASSERTED at 1M | asserted at 100k with loose bounds, plus EXPLAIN QUERY PLAN tests |
+| Ingest | `crates/crosswire-store/tests/perf_ingest.rs` | >= 2,000 exchanges/s | REPORT-ONLY: ~700/s, below target (known gap, backlogged); only a 300/s gross floor and the body-mix check assert | not run |
+| UI frame / filter | `ui/e2e/perf-scroll.spec.ts` via `just ui-perf` | frame <= 32 ms, filter < 300 ms | REPORT-ONLY: ~117 ms frame, above target (history list not virtualized, known gap, backlogged); filter met; only generous floors assert | not run |
+
+`oha` (run as a separate process, see the last section) is the authoritative
+cross-check for the added-latency p99 and for throughput; the in-process
+harness numbers are the regression guard. `oha` is documented only: it is not a
+repo or CI dependency.
+
 # History benchmark baseline
 
 The named history queries (spec §13) over a deterministic synthetic project,
@@ -69,3 +91,217 @@ pinned with `INDEXED BY` (0.95 ms).
 
 The 1 000 000 numbers are a single local quick-mode run on the reference
 machine; the maintainer's full-gate run replaces them.
+
+# Proxy added-latency gate (spec §13)
+
+The proxy's steady-state **added** latency on the realistic HTTPS hot path
+(MITM TLS on, recording on), measured by
+`crates/crosswire-proxy/tests/perf_added_latency.rs` with the in-process load
+harness (`crates/crosswire-proxy/tests/load/mod.rs`, `drive_mitm`):
+
+```sh
+# Report-only (CI smoke): runs, prints the SUMMARY line, never asserts.
+cargo test --release -p crosswire-proxy --test perf_added_latency -- --nocapture
+# Maintainer gate: additionally asserts delta < 2000 us.
+CROSSWIRE_PERF_ASSERT=1 \
+  cargo test --release -p crosswire-proxy --test perf_added_latency -- --nocapture
+```
+
+The gate drives 64 keep-alive connections issuing back-to-back origin-form
+`GET /` for a 16 KiB response body over client TLS, once straight to a TLS echo
+upstream and once through a real MITM proxy that mints a leaf, relays and
+records; the per-connection TLS handshake and `CONNECT` setup (plus a
+32-request warmup) are excluded from the samples. The `SUMMARY` line prints
+both the p50 and p99 deltas; the maintainer gate **asserts on the p50 delta**
+(`p50_proxy − p50_direct < 2 ms`, the intrinsic per-request proxy overhead).
+Always built **`--release`** — debug rustls/ring crypto is ~20x slower and
+meaningless here.
+
+## Reference machine: MacBook Air (Mac14,2), Apple M2, 8 cores, 8 GiB, macOS
+
+Measured 2026-10-28, release profile, 2 s per path.
+
+| metric | direct | via MITM proxy | added (proxy − direct) |
+|---|---|---|---|
+| **p50 (asserted)** | ~0.73 ms | ~2.55 ms | **~1.8 ms — under the 2 ms target** |
+| p99 (reported) | ~1.1–3.4 ms | ~4.3–5.9 ms | ~2.5–4.6 ms (contention-dominated) |
+| throughput | ~55–87k rps | ~20–24k rps | — |
+
+The **p50 added latency is a stable ~1.8 ms** across runs and is the asserted
+baseline. The **p99 is contention-dominated in-process; see the `oha`
+maintainer gate** — it is reported only, not asserted. Four back-to-back runs
+gave p99 deltas of 2.48 / 3.24 / 4.57 / 3.10 ms (high run-to-run variance)
+while p50 held ~1.8 ms.
+
+Why the p99 is not the bound here: this is an *in-process, closed-loop*
+measurement — the load generator, the proxy and the TLS upstream all share one
+4-worker Tokio runtime on an 8-core box, driven back-to-back (max-rate), and
+the `TestSink` records synchronously under a single mutex (full 16 KiB body
+clones), unlike the production async queue→writer. So the proxy path saturates
+the machine and its p99 reflects in-process queueing and lock contention, not
+intrinsic per-request latency. The **authoritative §13 p99 < 2 ms added-latency**
+figure is a maintainer-run `oha`-vs-direct measurement against a standalone
+`crosswire serve` (separate-process load generator, real async writer) on the
+reference machines, wired in a later task (Task 5).
+
+# Proxy throughput gate (spec §13)
+
+The proxy must sustain **>= 5,000 req/s** with MITM TLS on and recording on,
+measured by `crates/crosswire-proxy/tests/perf_throughput.rs` with the same
+in-process harness (`drive_mitm`): 64 keep-alive client-TLS connections issuing
+back-to-back `GET /` for a 16 KiB body through a `CONNECT` tunnel for 3 s, which
+saturates the proxy. Always run **`--release`** (debug TLS crypto is ~20x
+slower). Run the two tests serially (`--test-threads=1`) so they do not contend
+for the same cores:
+
+```sh
+# Report-only (CI smoke): prints the SUMMARY rows, never asserts throughput.
+cargo test --release -p crosswire-proxy --test perf_throughput -- --nocapture --test-threads=1
+# Maintainer gate: additionally asserts MITM >= 5000 req/s.
+CROSSWIRE_PERF_ASSERT=1 \
+  cargo test --release -p crosswire-proxy --test perf_throughput -- --nocapture --test-threads=1
+```
+
+| row | what | asserted |
+|---|---|---|
+| `throughput_mitm_at_least_5k` | MITM + recording on (`recorded > 0` always asserted) | `>= 5000 req/s` under `CROSSWIRE_PERF_ASSERT=1` |
+| `throughput_sni_tunnel` | SNI passthrough tunnel, no cert minted (reference) | no |
+
+## Reference machine: MacBook Air (Mac14,2), Apple M2, 8 cores, 8 GiB, macOS
+
+Measured 2026-10-28, release profile, 64 connections, 3 s.
+
+| row | req/s | p50 | p99 |
+|---|---|---|---|
+| MITM + recording | ~25,200 | ~2.4 ms | ~3.7 ms |
+| SNI passthrough tunnel (reference) | ~43,200 | ~1.4 ms | ~2.1 ms |
+
+Caveat: load generator, proxy and upstream share one 4-worker runtime and the
+`TestSink` records synchronously, so these in-process figures are a
+conservative floor; the authoritative throughput is the maintainer `oha` run
+against a standalone `crosswire serve` (Task 5).
+
+# Store ingest gate (spec §13)
+
+The store must sustain **>= 2,000 exchanges/s** committed through the real
+writer path at the §13 body mix, measured by
+`crates/crosswire-store/tests/perf_ingest.rs`. It submits through the same
+`ExchangeSink::submit` the proxy uses (bounded queue, then the OS writer
+thread, default config: `BEGIN IMMEDIATE`, commit every 250 ms / 1,000
+exchanges), not the synthetic bulk insert. Bodies follow the Plan 6 mix
+(60 % < 4 KiB, 30 % 4-64 KiB, 9 % 64 KiB-1 MiB, 1 % 1-8 MiB), unique and
+incompressible; the test asserts the submitted proportions are within
+tolerance. The rate counts **committed** exchanges only: `Event::Committed`
+ids are counted by a subscriber (also used as flow control so the queue never
+overruns into the journal-spill path: at most 9,000 exchanges / 56 MiB in
+flight), the writer is drained, the total is cross-checked against
+`count(*) ... state = 'committed'` in the database, and the rate is committed
+over the wall time from the first submit to the last commit (3 s submit
+window plus the final drain). Always **`--release`**:
+
+```sh
+# Report-only (CI smoke): prints the SUMMARY line, never asserts the rate.
+cargo test --release -p crosswire-store --test perf_ingest -- --nocapture
+# CROSSWIRE_PERF_ASSERT=1 changes nothing here: the rate is never asserted
+# against 2,000/s. Only the body mix and a gross-regression floor are asserted.
+```
+
+**Status: REPORT-ONLY.** The measured ingest rate (about 700 exchanges/s,
+about 65 MB/s of body bytes, on the M2 below) is **below the §13 target of
+2,000 exchanges/s**. The test prints the `SUMMARY ingest` line (committed,
+secs, rate, mb_per_s, mix) and asserts only the submitted body mix and a
+generous gross-regression floor of 300 exchanges/s (release builds), which is
+not the §13 target. The gap is tracked in the pre-0.1.0 backlog pending a
+maintainer decision: optimise the writer (parallel hash/compress, blake3, or a
+lower zstd level), OR redefine the §13 ingest metric as MB/s or a lighter mix,
+OR confirm on the reference 4-vCPU Linux VM.
+
+## Reference machine: MacBook Air (Mac14,2), Apple M2, 8 cores, 8 GiB, macOS
+
+Measured 2026-10-29, release profile, three runs.
+
+| metric | value |
+|---|---|
+| committed exchanges / s | ~700 (698 / 708 / 722) |
+| body bytes ingested | ~65 MB/s |
+| §13 target | 2,000 / s (**not met at this mix on this machine; report-only**) |
+
+The rate is body-volume bound, not per-exchange bound: the mean exchange at
+this mix carries ~100 KB (the 9 % and 1 % buckets dominate), so 2,000/s would
+need ~200 MB/s through the single writer thread (SHA-256, zstd level 3, pack
+append, `fsync`). The same harness with bodies capped at 65 KiB commits ~2,400
+exchanges/s. The disk is not the limit (300 MB written with a full fsync
+sustains ~350 MB/s here). The authoritative figure is the maintainer run on
+the reference machines.
+
+# UI frame-time and filter-latency trace (spec §13)
+
+The history view must stay smooth at 1M rows: **no animation frame > 32 ms**
+during a 10 s scroll, and a filter applied in **< 300 ms**. Measured by
+`ui/e2e/perf-scroll.spec.ts` against a REAL `crosswire serve` on a seeded
+synthetic project (`scripts/ui-perf.sh` builds, seeds via the
+`crosswire-store` `seed_project` example behind the `synthetic` feature,
+serves, and runs Playwright). Frames are sampled PASSIVELY: an in-page
+`requestAnimationFrame` collector records timestamp deltas and reads no layout;
+the scroll is real wheel events from outside the page and "Load more" is
+clicked on a timer. Then `host = api.example.com` is applied and timed from the
+click until every rendered row is that host.
+
+```sh
+# Default 100,000 rows; prints the SUMMARY ui_perf line.
+just ui-perf
+# Maintainer size: 1M rows (seeding ~6 min, serve opens it in ~2 min, ~5 GB).
+CROSSWIRE_UI_PERF_ROWS=1000000 just ui-perf
+```
+
+**Status: REPORT-ONLY (frame target NOT met).** The §13 frame target (no frame
+> 32 ms over a 10 s scroll at 1M rows) is not met because the history list is
+not virtualized: every loaded row stays in the DOM, growing to ~47-48k nodes
+(~3.8-3.9k rows) in 10 s, and ~14 % of frames exceed 32 ms. The spec asserts
+only generous gross-regression floors (max frame < 2 s, filter < 5 s), never
+the 32 ms / 300 ms targets (`CROSSWIRE_PERF_ASSERT` has no effect here). Pending
+a maintainer decision to virtualize or window the history list; tracked in the
+pre-0.1.0 backlog. The filter target (< 300 ms) is met at 1M; an earlier run
+with a forced-layout harness saw ~450 ms on a cold first query at 100k (first-
+query warmup), so treat single filter samples as noisy.
+
+## Reference machine: MacBook Air (Mac14,2), Apple M2, 8 cores, 8 GiB, macOS
+
+Measured 2026-10-29, headless Chromium (Playwright 1.64), release server,
+passive sampling.
+
+| rows | max frame | p99 frame | frames > 32 ms | filter | DOM rows / nodes after scroll |
+|---|---|---|---|---|---|
+| 100,000 | 117 ms | 100 ms | 61 / 474 | 122 ms | 3,900 / 48,344 |
+| 1,000,000 | 117 ms | 100 ms | 64 / 459 | 124 ms | 3,800 / 47,068 |
+
+(The earlier forced-layout harness read 283 ms max frame; passive sampling
+roughly halves it but the target is still missed by ~3.6x.)
+
+# oha cross-check (authoritative p99 and throughput)
+
+The in-process harness shares cores between load generator, proxy and
+upstream, so its p99 is contention-dominated. For the authoritative added-latency
+p99 and throughput on the reference machines, drive a standalone
+`crosswire serve` from a separate process with [`oha`](https://github.com/hatoo/oha).
+Maintainer-only and optional: `cargo install oha` yourself; it is not in
+`Cargo.toml` or CI.
+
+```sh
+cargo build --release -p crosswire-server
+BIN=target/release/crosswire
+# Start the proxy (see scripts/ui-perf.sh for the full serve lifecycle; the CA
+# dir must live outside the project). Note the printed proxy address.
+$BIN serve --project /tmp/oha/proj --ca-dir /tmp/oha/ca \
+  --api-bind 127.0.0.1:0 --proxy-bind 127.0.0.1:0 --bootstrap-file /tmp/oha/boot
+# Any local HTTPS origin serving a 16 KiB body at / (the harness's shape).
+# Baseline: straight to the origin, no proxy.
+oha -z 10s -c 64 --no-tui --insecure https://127.0.0.1:8443/
+# Through the proxy (MITM on, recording on); --insecure because the minted
+# leaf chains to the Crosswire CA, not a system root.
+oha -z 10s -c 64 --no-tui --insecure -x http://127.0.0.1:<proxy-port> https://127.0.0.1:8443/
+```
+
+Added latency is the difference of the two runs' p99 (and p50) latency columns;
+throughput is the proxied run's requests/sec (target >= 5,000). Record the
+reference-machine numbers next to the matching harness section above.

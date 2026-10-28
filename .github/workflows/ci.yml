@@ -75,6 +75,7 @@ jobs:
       - run: just bench
       # Scaled perf guard, ubuntu only: EXPLAIN QUERY PLAN index-usage tests (the
       # hardware-independent regression guard) plus a loose 100k-row sanity run.
+      # Also runs the proxy added-latency/throughput tests report-only (release).
       # The 1M latency gate is maintainer-only (`just perf`), never asserted here.
       - run: just perf-smoke
         if: matrix.os == 'ubuntu-latest'
