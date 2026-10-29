@@ -3,6 +3,7 @@
 pub mod exchanges;
 pub mod intercept;
 pub mod misc;
+pub mod preview;
 pub mod repeater;
 pub mod scope;
 pub mod tokens;

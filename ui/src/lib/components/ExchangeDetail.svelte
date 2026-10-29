@@ -3,6 +3,7 @@
   import ByteEditor from '../editor/ByteEditor.svelte';
   import { bytesToLatin1 } from '../editor/encoding';
   import { apiGet, apiGetBytes } from '../api/client';
+  import { previewToken, previewSrc } from '../api/preview';
   import { ApiError } from '../api/errors';
   import type { ExchangeDto, HeadDto, MessageDto } from '../stores/history.svelte';
 
@@ -20,6 +21,19 @@
   let loadError = $state<string | null>(null);
   let reqBody = $state<BodyState | null>(null);
   let respBody = $state<BodyState | null>(null);
+  let previewUrl = $state<string | null>(null);
+  let previewError = $state<string | null>(null);
+
+  async function openPreview() {
+    const current = id;
+    previewError = null;
+    try {
+      const { path } = await previewToken(current);
+      if (id === current) previewUrl = previewSrc(path);
+    } catch (e) {
+      if (id === current) previewError = e instanceof Error ? e.message : 'preview failed';
+    }
+  }
 
   // Decode base64 (the model's bytes_serde wire form) into exact bytes.
   function base64ToBytes(b64: string): Uint8Array {
@@ -73,6 +87,8 @@
     loadError = null;
     reqBody = null;
     respBody = null;
+    previewUrl = null;
+    previewError = null;
     void (async () => {
       try {
         const ex = await apiGet<ExchangeDto>(`/api/v1/exchanges/${current}`);
@@ -217,6 +233,23 @@
               />
             </div>
           {/key}
+          <button type="button" data-testid="preview-button" onclick={openPreview}>Preview</button>
+          {#if previewError}
+            <p class="error" role="alert" data-testid="preview-error">{previewError}</p>
+          {/if}
+          {#if previewUrl}
+            <!-- Inert render on the 127.0.0.1 origin: no allow-scripts, no allow-same-origin. -->
+            <!-- §11.1 allowlist: previewSrc() hard-codes the http://127.0.0.1:<port> origin and only accepts a /preview/ path. -->
+            <!-- eslint-disable no-restricted-syntax -->
+            <iframe
+              data-testid="preview-frame"
+              title="Response preview"
+              sandbox=""
+              referrerpolicy="no-referrer"
+              src={previewUrl}
+            ></iframe>
+            <!-- eslint-enable no-restricted-syntax -->
+          {/if}
         {/if}
       {/if}
     </div>
@@ -284,6 +317,12 @@
     font-size: 0.8rem;
     white-space: pre-wrap;
     word-break: break-all;
+  }
+  iframe {
+    width: 100%;
+    height: 20rem;
+    border: 1px solid #333;
+    background: #fff;
   }
   .diags {
     margin: 0;

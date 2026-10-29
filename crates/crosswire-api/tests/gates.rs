@@ -11,7 +11,9 @@ use std::time::Duration;
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
-use common::{spawn_upstream, Opts, TestApp, Ws};
+use bytes::Bytes;
+use common::{request_message, response_message, spawn_upstream, Opts, TestApp, Ws};
+use crosswire_model::{Body, Exchange, ExchangeState};
 
 /// A ULID path placeholder for routes that take an id/side segment. The gate
 /// rejects these requests before the handler parses the segment, so any
@@ -106,6 +108,66 @@ async fn route_auth_every_route_except_the_five_is_401() {
         );
         fails += 1;
     }
+}
+
+// -- route_auth_preview_is_public_but_mint_is_not ---------------------------
+
+#[tokio::test]
+async fn route_auth_preview_is_public_but_mint_is_not() {
+    // The preview route (§11.1) on the isolated 127.0.0.1 origin needs no API
+    // credential: the capability token in its query string is the credential, so
+    // the gate runs no cookie/session check. The mint route that issues the token
+    // is an ordinary `/api/v1` route and DOES need a credential. Every other
+    // non-public route is covered by `route_auth_every_route_except_the_five_is_401`.
+    let app = TestApp::new().await;
+    let cookie = app.session_cookie().await;
+
+    // Seed one committed exchange with an HTML response body.
+    let mut e = Exchange::new(request_message(
+        b"GET /p HTTP/1.1\r\nHost: a.test\r\n\r\n",
+        Body::None,
+    ));
+    e.set_response(response_message(
+        b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 13\r\n\r\n",
+        Body::inline(Bytes::from_static(b"<html></html>")),
+    ));
+    e.set_state(ExchangeState::Committed);
+    let id = e.id().to_string();
+    app.submit(e);
+    app.wait_count(1).await;
+
+    // The mint route is NOT public: no credential is a 401.
+    let r = app
+        .get(&format!("/api/v1/exchanges/{id}/preview-token"), &[])
+        .await;
+    assert_eq!(r.status, 401, "the mint route must require a credential");
+
+    // Mint a token (authenticated) and then preview it on the 127.0.0.1 origin
+    // with NO API credential at all: the preview route is public.
+    let path = {
+        let m = app
+            .get(
+                &format!("/api/v1/exchanges/{id}/preview-token"),
+                &[
+                    ("Cookie", cookie.as_str()),
+                    ("Sec-Fetch-Site", "same-origin"),
+                ],
+            )
+            .await;
+        assert_eq!(m.status, 200, "mint: {}", m.body_string());
+        m.json()["path"].as_str().expect("a path").to_string()
+    };
+    let r = app.get(&path, &[("Host", "127.0.0.1")]).await;
+    assert_ne!(
+        r.status, 401,
+        "the preview route must not require a credential"
+    );
+    assert_eq!(
+        r.status,
+        200,
+        "the preview route is served with only the capability token: {}",
+        r.body_string()
+    );
 }
 
 // -- another_localhost_port_cannot_read_any_route_or_events -----------------

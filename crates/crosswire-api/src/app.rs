@@ -17,6 +17,7 @@ use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 
 use crate::auth::{gate, RateLimiter};
+use crate::preview_token::PreviewKey;
 use crate::session::SessionStore;
 use crate::tokens::BootstrapStore;
 
@@ -82,6 +83,9 @@ pub struct AppState {
     pub bootstrap_ttl: Duration,
     /// Per-peer authentication-failure rate limiter.
     pub auth_limiter: RateLimiter,
+    /// The per-serve secret that signs preview capability tokens (§11.1).
+    /// Generated once at serve start; never serialized or logged.
+    pub preview_key: Arc<PreviewKey>,
 }
 
 impl std::fmt::Debug for AppState {
@@ -126,6 +130,7 @@ impl AppState {
             idle_timeout: config.idle_timeout,
             bootstrap_ttl: config.bootstrap_ttl,
             auth_limiter: RateLimiter::new(),
+            preview_key: Arc::new(PreviewKey::random()),
         })
     }
 }
@@ -153,6 +158,7 @@ pub(crate) fn api_routes() -> OpenApiRouter<AppState> {
         .routes(routes!(exchanges::list_exchanges))
         .routes(routes!(exchanges::get_exchange, exchanges::patch_exchange))
         .routes(routes!(exchanges::get_body))
+        .routes(routes!(exchanges::get_preview_token))
         .routes(routes!(exchanges::get_curl))
         .routes(routes!(exchanges::get_raw))
         .routes(routes!(exchanges::list_markers))
@@ -188,6 +194,16 @@ pub(crate) fn api_routes() -> OpenApiRouter<AppState> {
 /// records request or response bytes, tokens or cookies.
 fn finish(router: Router<AppState>, state: AppState) -> Router {
     router
+        // The sandboxed preview route (§11.1). It is NOT an `/api/v1` route and
+        // is deliberately absent from the OpenAPI document: it is served only on
+        // the isolated `127.0.0.1`/`[::1]` origin (enforced by the gate) and
+        // authenticated by the capability token in its query string, not a
+        // cookie. Registered before the gate layer so the gate wraps it, and as
+        // an explicit route so it takes precedence over any UI fallback.
+        .route(
+            "/preview/{id}",
+            axum::routing::get(crate::routes::preview::preview),
+        )
         .layer(from_fn_with_state(state.clone(), gate))
         // Record method and path only (never the query string, which can
         // carry filters, and never bodies, tokens or cookies).
