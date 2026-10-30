@@ -5,7 +5,8 @@
   // network, no eval-class API.
   import { onMount } from 'svelte';
   import { apply, CODECS, jwtView, type Codec, type Direction } from '../decode/codecs';
-  import { bytesToLatin1, encodePastedText, latin1ToBytes } from '../editor/encoding';
+  import { bytesToLatin1 } from '../editor/encoding';
+  import { fromTextareaText, toTextareaText } from '../decode/textarea';
   import HexPane from '../editor/HexPane.svelte';
 
   let { initial, onClose }: { initial: Uint8Array; onClose: () => void } = $props();
@@ -20,7 +21,7 @@
   // flagged with a chip, exactly like the editor's paste path.
   // svelte-ignore state_referenced_locally
   let input = $state<Uint8Array>(initial);
-  const text = $derived(bytesToLatin1(input));
+  const text = $derived(toTextareaText(input));
   let nonLatin1 = $state(false);
   let notice = $state<string | null>(null);
   let root: HTMLDivElement;
@@ -41,20 +42,10 @@
 
   function onInput(e: Event) {
     const el = e.currentTarget as HTMLTextAreaElement;
-    let wide = false;
-    for (let i = 0; i < el.value.length; i++) {
-      if (el.value.charCodeAt(i) > 0xff) {
-        wide = true;
-        break;
-      }
-    }
-    if (wide) {
-      input = encodePastedText(el.value).bytes;
-      el.value = bytesToLatin1(input);
-    } else {
-      input = latin1ToBytes(el.value);
-    }
-    nonLatin1 = wide;
+    const r = fromTextareaText(el.value);
+    input = r.bytes;
+    if (r.nonLatin1) el.value = toTextareaText(input);
+    nonLatin1 = r.nonLatin1;
   }
 
   function addStep() {

@@ -169,3 +169,30 @@ test('second_chord_reseeds_pane', async ({ page }) => {
   await page.keyboard.press('Control+Shift+D');
   await expect(page.getByTestId('decoder-input')).toHaveValue('Crosswire');
 });
+
+test('seeded_crlf_survives_edit', async ({ page }) => {
+  await mock(page, Buffer.from([0x61, 0x0d, 0x0a, 0x62]));
+  await page.goto('/');
+  await selectBody(page, null);
+  await openPane(page);
+  const input = page.getByTestId('decoder-input');
+  await expect(input).toHaveValue('a\u240d\nb');
+  await input.click();
+  await page.keyboard.press('Control+End');
+  await page.keyboard.type('c');
+  await addStep(page, 0, 'hex', 'encode');
+  await expect(page.getByTestId('decoder-output-0')).toHaveText('610d0a6263');
+  await expect(page.getByTestId('decoder-input-chip')).toHaveCount(0);
+});
+
+test('copy_failure_shows_chip', async ({ page }) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText: () => Promise.reject(new Error('denied')) },
+    });
+  });
+  await openSeeded(page);
+  await addStep(page, 0, 'base64', 'decode');
+  await page.getByTestId('decoder-copy-0').click();
+  await expect(page.getByTestId('decoder-copy-error')).toHaveText('Copy failed: clipboard unavailable.');
+});
