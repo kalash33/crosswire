@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import { SvelteSet } from 'svelte/reactivity';
   import { history, type ExchangeFilter, type Row } from '../lib/stores/history.svelte';
   import { events } from '../lib/stores/events.svelte';
@@ -118,6 +118,23 @@
       include: [...scope.scope.include, hostRule(host)],
       exclude: scope.scope.exclude,
     });
+  }
+
+  // "Tag…": select the focused/opened row, then focus the detail's tag input.
+  // The detail loads asynchronously, so retry briefly until the input exists.
+  async function tagRow(): Promise<void> {
+    const id = focusedId ?? selectedId;
+    if (!id) return;
+    openRow(id);
+    await tick();
+    for (let i = 0; i < 40; i++) {
+      const el = document.querySelector<HTMLInputElement>('[data-testid="tag-input"]');
+      if (el) {
+        el.focus();
+        return;
+      }
+      await new Promise((r) => setTimeout(r, 50));
+    }
   }
 
   function fmtTime(ms: number): string {
@@ -303,7 +320,7 @@
           >Send to Repeater</button
         >
         <button type="button" disabled title="Available in a later release">Copy as curl</button>
-        <button type="button" disabled title="Available in a later release">Tag…</button>
+        <button type="button" data-testid="row-tag" onclick={() => void tagRow()}>Tag…</button>
       </div>
     </div>
 

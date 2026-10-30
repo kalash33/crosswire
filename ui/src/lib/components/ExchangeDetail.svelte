@@ -1,5 +1,7 @@
 <script lang="ts">
   import CopyMenu from './CopyMenu.svelte';
+  import TagsNotesEditor from './TagsNotesEditor.svelte';
+  import { history } from '../stores/history.svelte';
   import ByteEditor from '../editor/ByteEditor.svelte';
   import { bytesToLatin1 } from '../editor/encoding';
   import { apiGet, apiGetBytes } from '../api/client';
@@ -23,6 +25,11 @@
   let respBody = $state<BodyState | null>(null);
   let previewUrl = $state<string | null>(null);
   let previewError = $state<string | null>(null);
+
+  function onTagsNotesSaved(ex: ExchangeDto): void {
+    if (ex.id === id) exchange = ex;
+    history.patchRow(ex.id, { tags: ex.tags ?? [], notes: ex.notes });
+  }
 
   async function openPreview() {
     const current = id;
@@ -134,11 +141,12 @@
       <code class="id" data-testid="detail-id">{exchange.id}</code>
       <span class="chip">state: {exchange.state ?? 'unknown'}</span>
       <span class="chip">scope: {exchange.scope_state ?? 'unknown'}</span>
-      {#if exchange.tags && exchange.tags.length > 0}
-        {#each exchange.tags as tag (tag)}
-          <span class="chip tag">{tag}</span>
-        {/each}
-      {/if}
+      <TagsNotesEditor
+        id={exchange.id}
+        tags={exchange.tags ?? []}
+        notes={exchange.notes ?? ''}
+        onSaved={onTagsNotesSaved}
+      />
     </header>
 
     <!-- Request -->
@@ -279,10 +287,6 @@
     border-radius: 3px;
     background: #2a2a3a;
     color: #cfd0ff;
-  }
-  .chip.tag {
-    background: #223322;
-    color: #bfe9bf;
   }
   .pane {
     display: flex;

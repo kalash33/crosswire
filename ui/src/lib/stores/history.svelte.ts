@@ -202,6 +202,14 @@ export function createHistory(opts: HistoryOptions = {}) {
     get hasMore(): boolean {
       return nextCursor !== null;
     },
+    /** Patch one in-memory row (after a tags/notes save); a miss is a no-op. */
+    patchRow(id: string, patch: { tags?: string[]; notes?: string }): void {
+      const idx = rows.findIndex((r) => r.id === id);
+      if (idx < 0) return;
+      const next = rows.slice();
+      next[idx] = { ...next[idx], ...(patch.tags !== undefined ? { tags: patch.tags } : {}) };
+      rows = next;
+    },
     applyFilter,
     reload,
     loadMore,
