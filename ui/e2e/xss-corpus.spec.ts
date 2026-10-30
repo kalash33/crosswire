@@ -191,9 +191,9 @@ test('typed_tag_and_notes_payloads_render_as_text', async ({ page, baseURL }) =>
   const chips = page.getByTestId('tag-chip');
   await expect(chips).toHaveCount(XSS_CORPUS.length);
   for (let i = 0; i < typedTags.length; i++) {
-    // chip text is the tag plus the remove button's glyph; the tag text must be exactly the prefix
+    // chip text is exactly the tag plus the remove button's glyph
     const text = (await chips.nth(i).textContent()) ?? '';
-    expect(text.startsWith(typedTags[i]), `chip ${i}`).toBe(true);
+    expect(text, `chip ${i}`).toBe(typedTags[i] + '×');
     expect(await chips.nth(i).locator('[data-testid="tag-remove"]').count()).toBe(1);
   }
   const rowTags = page.getByTestId('history-row').locator('td.tags');
@@ -269,6 +269,7 @@ test('decoder_outputs_are_text_for_every_payload', async ({ page, baseURL }) => 
   await expect(page.getByTestId('decoder-jwt-banner')).toHaveText('signature not verified');
   const jwtText = (await page.getByTestId('decoder-jwt').textContent()) ?? '';
   expect(jwtText).toContain(XSS_CORPUS[0].value);
+  expect(jwtText).toContain(XSS_CORPUS[1].value);
 
   await page.mouse.move(5, 5);
   await page.mouse.move(300, 300);

@@ -181,3 +181,36 @@ test('notes_failure_keeps_text_typed_since', async ({ page }) => {
   await expect(page.getByTestId('tags-notes-error')).toBeVisible();
   await expect(page.getByTestId('notes-input')).toHaveValue('abcdef');
 });
+
+test('draft_survives_parent_refresh_after_save', async ({ page }) => {
+  // The FIRST PATCH is held; later ones answer immediately (200, empty body).
+  let release!: () => void;
+  const held = new Promise<void>((res) => { release = res; });
+  let first = true;
+  const { patches } = await setup(page, {
+    gate: () => {
+      if (!first) return undefined;
+      first = false;
+      return held;
+    },
+  });
+  await rowFor(page, A).locator('td.open').first().click();
+  await expect(page.getByTestId('tag-chip')).toHaveCount(1);
+  await page.getByTestId('tag-input').fill('a');
+  await page.getByTestId('tag-input').press('Enter');
+  await expect(page.getByTestId('tag-chip')).toHaveCount(2); // optimistic chip, PATCH held
+  await expect.poll(() => patches.length).toBe(1);
+
+  await page.getByTestId('tag-input').fill('b-draft');
+  await page.getByTestId('notes-input').click();
+  await page.getByTestId('notes-input').pressSequentially('pending note', { delay: 5 });
+
+  release(); // save completes -> parent reassigns `exchange` with the same id
+  await expect(page.getByTestId('tag-chip').nth(1)).toContainText('a');
+  await expect(page.getByTestId('tag-input')).toHaveValue('b-draft');
+  await expect(page.getByTestId('notes-input')).toHaveValue('pending note');
+  await expect
+    .poll(() => patches.some((p) => p.body.notes === 'pending note'))
+    .toBe(true);
+  expect(patches[patches.length - 1]).toEqual({ id: A, body: { notes: 'pending note' } });
+});

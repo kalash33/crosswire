@@ -28,7 +28,9 @@
   // A different exchange: reset local state (and drop any pending notes save).
   // The parent reassigns `exchange` after every save, which re-fires this effect
   // with the SAME id; resetting then would wipe a draft or pending notes typed
-  // while the save was in flight, so only a changed id resets.
+  // while the save was in flight, so only a changed id resets. A same-id prop
+  // refresh is deliberately NOT adopted: the parent never re-fetches the same
+  // id and unmounts the editor on an id change.
   let lastId = untrack(() => id);
   $effect(() => {
     const next = id;
