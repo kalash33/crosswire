@@ -144,7 +144,7 @@ function hexDecode(input: Uint8Array): CodecResult {
 // ---- html entities ------------------------------------------------------
 
 const NAMED: Record<string, number> = { amp: 0x26, lt: 0x3c, gt: 0x3e, quot: 0x22, apos: 0x27, nbsp: 0xa0 };
-const ENTITY = /^&(#[0-9]+|#[xX][0-9a-fA-F]+|[A-Za-z][A-Za-z0-9]*);/;
+const ENTITY = /^&(#[0-9]{1,10}|#[xX][0-9a-fA-F]{1,8}|[A-Za-z][A-Za-z0-9]*);/;
 const HTML_ESC: Record<number, string> = {
   0x26: '&amp;',
   0x3c: '&lt;',
@@ -185,7 +185,7 @@ function htmlDecode(input: Uint8Array): CodecResult {
       continue;
     }
     // Entities are ASCII; look at a bounded window so this stays linear.
-    const window = String.fromCharCode(...input.subarray(i, i + 12));
+    const window = String.fromCharCode(...input.subarray(i, i + 32));
     const m = ENTITY.exec(window);
     if (!m) {
       out.push(0x26); // lone '&' is ordinary text, not an entity
@@ -260,7 +260,7 @@ export function jwtView(input: Uint8Array): JwtView | null {
   const payload = decodeSegment(parts[1]);
   const warnings = ['signature not verified'];
   const alg = headerAlg(header);
-  if (alg === 'none') warnings.push('alg is none');
+  if (String(alg).toLowerCase() === 'none') warnings.push('alg is none');
   else if (alg === undefined) warnings.push('alg missing');
   return { header, payload, signature: parts[2], warnings };
 }

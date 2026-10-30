@@ -112,4 +112,17 @@ describe('jwtView', () => {
     const t = `${b64url('{}')}.${b64url('{}')}.x`;
     expect(jwtView(enc(t))!.warnings).toEqual(['signature not verified', 'alg missing']);
   });
+
+  it('jwt_view_alg_None_mixed_case_warns', () => {
+    const t = `${b64url('{"alg":"None"}')}.${b64url('{}')}.`;
+    expect(jwtView(enc(t))!.warnings).toEqual(['signature not verified', 'alg is none']);
+  });
+});
+
+describe('html long entity', () => {
+  it('html_long_unknown_entity_warns', () => {
+    const r = apply('html', 'decode', enc('&verylongname;'));
+    expect(new TextDecoder().decode(r.bytes)).toBe('&verylongname;');
+    expect(r.warning).toBe('html: 1 unknown entities kept literally');
+  });
 });
