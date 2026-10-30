@@ -2,7 +2,6 @@
   import { untrack } from 'svelte';
   import { patchExchange } from '../api/exchanges';
   import { addTag } from '../tags';
-  import type { ExchangeDto } from '../stores/history.svelte';
 
   // Tags and notes are user-controlled text: rendered ONLY via `{…}` text
   // interpolation (§11.1) — never as markup, never in an href/src.
@@ -11,7 +10,7 @@
     tags,
     notes,
     onSaved,
-  }: { id: string; tags: string[]; notes: string; onSaved: (ex: ExchangeDto) => void } = $props();
+  }: { id: string; tags: string[]; notes: string; onSaved: (saved: { tags?: string[]; notes?: string }) => void } = $props();
 
   const NOTES_DEBOUNCE_MS = 400;
 
@@ -22,6 +21,9 @@
   let saveError = $state<string | null>(null);
   let timer: ReturnType<typeof setTimeout> | null = null;
   let notesDirty = false;
+  // Per-field save sequence: only the latest save of a field may apply.
+  let tagSeq = 0;
+  let notesSeq = 0;
 
   // A different exchange: reset local state (and drop any pending notes save).
   $effect(() => {
@@ -33,6 +35,8 @@
       tagError = null;
       saveError = null;
       notesDirty = false;
+      tagSeq++;
+      notesSeq++;
       if (timer) clearTimeout(timer);
       timer = null;
     });
@@ -40,18 +44,20 @@
 
   async function saveTags(next: string[]): Promise<void> {
     const current = id;
+    const seq = ++tagSeq;
     const previous = localTags;
     localTags = next; // optimistic
     saveError = null;
     try {
-      const ex = await patchExchange(current, { tags: next });
-      if (id !== current) return;
-      onSaved(ex);
+      await patchExchange(current, { tags: next });
     } catch (e) {
-      if (id !== current) return;
+      if (id !== current || seq !== tagSeq) return;
       localTags = previous;
       saveError = e instanceof Error ? e.message : 'failed to save tags';
+      return;
     }
+    if (id !== current || seq !== tagSeq) return;
+    onSaved({ tags: next });
   }
 
   function submitTag(): void {
@@ -76,18 +82,21 @@
     if (!notesDirty) return;
     notesDirty = false;
     const current = id;
+    const seq = ++notesSeq;
     const sent = localNotes;
     const previous = untrack(() => notes);
     saveError = null;
     try {
-      const ex = await patchExchange(current, { notes: sent });
-      if (id !== current) return;
-      onSaved(ex);
+      await patchExchange(current, { notes: sent });
     } catch (e) {
-      if (id !== current) return;
-      localNotes = previous;
+      if (id !== current || seq !== notesSeq) return;
+      if (localNotes === sent) localNotes = previous;
+      else notesDirty = true; // keep text typed since; it will be re-sent
       saveError = e instanceof Error ? e.message : 'failed to save notes';
+      return;
     }
+    if (id !== current || seq !== notesSeq) return;
+    onSaved({ notes: sent });
   }
 
   function onNotesInput(e: Event): void {
@@ -100,7 +109,7 @@
 
 <div class="tn">
   <div class="tags">
-    {#each localTags as tag (tag)}
+    {#each localTags as tag, i (i)}
       <span class="chip tag" data-testid="tag-chip"
         >{tag}<button
           type="button"

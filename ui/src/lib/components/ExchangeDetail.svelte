@@ -26,9 +26,10 @@
   let previewUrl = $state<string | null>(null);
   let previewError = $state<string | null>(null);
 
-  function onTagsNotesSaved(ex: ExchangeDto): void {
-    if (ex.id === id) exchange = ex;
-    history.patchRow(ex.id, { tags: ex.tags ?? [], notes: ex.notes });
+  // The PATCH answers with an empty body, so merge the values that were sent.
+  function onTagsNotesSaved(saved: { tags?: string[]; notes?: string }): void {
+    if (exchange && exchange.id === id) exchange = { ...exchange, ...saved };
+    history.patchRow(id, saved);
   }
 
   async function openPreview() {

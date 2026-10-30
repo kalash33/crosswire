@@ -24,7 +24,9 @@ function exchangeJson(e: Ex) {
 interface Opts {
   patchStatus?: number;
   /** Resolves before a PATCH for this id is answered. */
-  gate?: (id: string) => Promise<void> | undefined;
+  gate?: (id: string, body: { tags?: string[]; notes?: string }) => Promise<void> | undefined;
+  /** Per-PATCH status override (default 200). */
+  statusFor?: (body: { tags?: string[]; notes?: string }) => number;
 }
 
 async function setup(page: Page, opts: Opts = {}) {
@@ -52,12 +54,15 @@ async function setup(page: Page, opts: Opts = {}) {
     if (r.request().method() === 'PATCH') {
       const body = r.request().postDataJSON() as { tags?: string[]; notes?: string };
       patches.push({ id, body });
-      await opts.gate?.(id);
-      if (opts.patchStatus && opts.patchStatus >= 400) {
-        return r.fulfill({ status: opts.patchStatus, json: { error: { code: 'internal', message: 'boom' } } });
+      await opts.gate?.(id, body);
+      const status = opts.statusFor?.(body) ?? opts.patchStatus ?? 200;
+      if (status >= 400) {
+        return r.fulfill({ status, json: { error: { code: 'internal', message: 'boom' } } });
       }
       if (body.tags) db[id].tags = body.tags;
       if (body.notes !== undefined) db[id].notes = body.notes;
+      // Like the real route: 200 with an EMPTY body.
+      return r.fulfill({ status: 200, body: '' });
     }
     return r.fulfill({ status: 200, json: exchangeJson(db[id]) });
   });
@@ -137,4 +142,42 @@ test('filter_tag_lists_tagged_row', async ({ page }) => {
   await page.getByTestId('filter-apply').click();
   await expect(page.getByTestId('history-row')).toHaveCount(1);
   await expect(rowFor(page, B)).toBeVisible();
+});
+
+test('stale_tag_failure_does_not_roll_back_newer_state', async ({ page }) => {
+  let releaseX!: () => void;
+  const heldX = new Promise<void>((res) => (releaseX = res));
+  const { patches } = await setup(page, {
+    gate: (_id, body) => (body.tags?.includes('x') && !body.tags.includes('y') ? heldX : undefined),
+    statusFor: (body) => (body.tags?.includes('x') && !body.tags.includes('y') ? 500 : 200),
+  });
+  await rowFor(page, A).locator('td.open').first().click();
+  await page.getByTestId('tag-input').fill('x');
+  await page.getByTestId('tag-input').press('Enter');
+  await page.getByTestId('tag-input').fill('y');
+  await page.getByTestId('tag-input').press('Enter');
+  await expect(page.getByTestId('tag-chip')).toHaveCount(3);
+  await expect.poll(() => patches.length).toBe(2);
+  releaseX();
+  await page.waitForTimeout(300);
+  await expect(page.getByTestId('tag-chip')).toHaveCount(3);
+  await expect(page.getByTestId('tags-notes-error')).toHaveCount(0);
+  await expect(rowFor(page, A).locator('td.tags')).toContainText('y');
+});
+
+test('notes_failure_keeps_text_typed_since', async ({ page }) => {
+  let release!: () => void;
+  const held = new Promise<void>((res) => (release = res));
+  const { patches } = await setup(page, {
+    gate: (_id, body) => (body.notes === 'abc' ? held : undefined),
+    statusFor: (body) => (body.notes === 'abc' ? 500 : 200),
+  });
+  await rowFor(page, A).locator('td.open').first().click();
+  await page.getByTestId('notes-input').click();
+  await page.getByTestId('notes-input').pressSequentially('abc');
+  await expect.poll(() => patches.length).toBe(1);
+  await page.getByTestId('notes-input').pressSequentially('def');
+  release();
+  await expect(page.getByTestId('tags-notes-error')).toBeVisible();
+  await expect(page.getByTestId('notes-input')).toHaveValue('abcdef');
 });

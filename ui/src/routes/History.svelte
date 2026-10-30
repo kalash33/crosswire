@@ -129,7 +129,7 @@
     await tick();
     for (let i = 0; i < 40; i++) {
       const el = document.querySelector<HTMLInputElement>('[data-testid="tag-input"]');
-      if (el) {
+      if (el && selectedId === id) {
         el.focus();
         return;
       }
