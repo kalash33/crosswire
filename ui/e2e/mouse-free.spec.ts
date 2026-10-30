@@ -216,6 +216,21 @@ test('mouse-free core loop: history -> repeater -> send -> intercept via Burp ch
   await page.keyboard.press('Control+f');
   await expect.poll(() => h.forwards.length).toBe(1);
   expect(h.forwards[0].id).toBe(HELD_ID);
+
+  // ---- 7. decode-selection (Ctrl+Shift+D chord) opens the decoder; Escape closes.
+  await page.evaluate(() => {
+    const el = document.querySelector('.cm-content');
+    if (!el) throw new Error('no editor');
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    const sel = window.getSelection()!;
+    sel.removeAllRanges();
+    sel.addRange(range);
+  });
+  await page.keyboard.press('Control+Shift+D');
+  await expect(page.getByTestId('decoder-pane')).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(page.getByTestId('decoder-pane')).toHaveCount(0);
 });
 
 test('mouse-free: drop a held item via the Ctrl+D chord', async ({ page }) => {

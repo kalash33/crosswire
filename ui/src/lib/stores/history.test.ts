@@ -122,4 +122,22 @@ describe('history store', () => {
     expect(refetch.host).toBe('a.test');
     expect(refetch.after).toBeUndefined();
   });
+
+  it('patchRow_updates_only_matching_row', async () => {
+    const get = vi.fn().mockResolvedValue(page([row('A'), row('B')]));
+    const h = createHistory({ get, subscribe: noSub });
+    await h.reload();
+    h.patchRow('B', { tags: ['x'], notes: 'n' });
+    expect(h.rows.find((r) => r.id === 'A')?.tags).toEqual([]);
+    expect(h.rows.find((r) => r.id === 'B')?.tags).toEqual(['x']);
+  });
+
+  it('patchRow_unknown_id_is_noop', async () => {
+    const get = vi.fn().mockResolvedValue(page([row('A')]));
+    const h = createHistory({ get, subscribe: noSub });
+    await h.reload();
+    const before = h.rows;
+    h.patchRow('ZZ', { tags: ['x'] });
+    expect(h.rows).toBe(before);
+  });
 });

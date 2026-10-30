@@ -1,0 +1,289 @@
+import { test, expect, type Page } from '@playwright/test';
+
+// vite-preview + a stateful mocked API. PATCH echoes the merged exchange.
+
+const A = '01HZZZZZZZZZZZZZZZZZZZZZAAA';
+const B = '01HZZZZZZZZZZZZZZZZZZZZZBBB';
+const b64 = (s: string) => Buffer.from(s, 'utf8').toString('base64');
+const HEAD = 'GET / HTTP/1.1\r\nHost: a.example\r\n\r\n';
+
+interface Ex { id: string; tags: string[]; notes: string }
+
+function exchangeJson(e: Ex) {
+  return {
+    id: e.id,
+    request: {
+      kind: 'http1-raw', fidelity: 'raw', diagnostics: [],
+      head: { type: 'http1-raw', bytes: b64(HEAD), parser_version: 1 },
+      body: { type: 'none' },
+    },
+    response: null, scope_state: 'in', state: 'committed', tags: e.tags, notes: e.notes,
+  };
+}
+
+interface Opts {
+  patchStatus?: number;
+  /** Resolves before a PATCH for this id is answered. */
+  gate?: (id: string, body: { tags?: string[]; notes?: string }) => Promise<void> | undefined;
+  /** Per-PATCH status override (default 200). */
+  statusFor?: (body: { tags?: string[]; notes?: string }) => number;
+}
+
+async function setup(page: Page, opts: Opts = {}) {
+  const db: Record<string, Ex> = {
+    [A]: { id: A, tags: ['old'], notes: '' },
+    [B]: { id: B, tags: ['other'], notes: 'bee' },
+  };
+  const patches: { id: string; body: Record<string, unknown> }[] = [];
+  await page.route('**/api/v1/counts', (r) => r.fulfill({ status: 200, json: { exchanges: 2 } }));
+  await page.route(/\/exchanges\/[^/?]+\/body\//, (r) =>
+    r.fulfill({ status: 404, json: { error: { code: 'not_found', message: 'x' } } }),
+  );
+  await page.route(/\/api\/v1\/exchanges(\?.*)?$/, (r) => {
+    const tag = new URL(r.request().url()).searchParams.get('tag');
+    const items = Object.values(db)
+      .filter((e) => !tag || e.tags.includes(tag))
+      .map((e) => ({
+        id: e.id, created_at: 1_700_000_000_000, method: 'GET', host: 'a.example',
+        path: `/${e.id.slice(-3)}`, status: 200, resp_len: 1, state: 'committed', tags: e.tags,
+      }));
+    return r.fulfill({ status: 200, json: { items, next_cursor: null } });
+  });
+  await page.route(/\/api\/v1\/exchanges\/[^/?]+$/, async (r) => {
+    const id = decodeURIComponent(new URL(r.request().url()).pathname.split('/').pop()!);
+    if (r.request().method() === 'PATCH') {
+      const body = r.request().postDataJSON() as { tags?: string[]; notes?: string };
+      patches.push({ id, body });
+      await opts.gate?.(id, body);
+      const status = opts.statusFor?.(body) ?? opts.patchStatus ?? 200;
+      if (status >= 400) {
+        return r.fulfill({ status, json: { error: { code: 'internal', message: 'boom' } } });
+      }
+      if (body.tags) db[id].tags = body.tags;
+      if (body.notes !== undefined) db[id].notes = body.notes;
+      // Like the real route: 200 with an EMPTY body.
+      return r.fulfill({ status: 200, body: '' });
+    }
+    return r.fulfill({ status: 200, json: exchangeJson(db[id]) });
+  });
+  await page.goto('/');
+  return { patches, db };
+}
+
+const rowFor = (page: Page, id: string) => page.locator(`[data-testid="history-row"][data-id="${id}"]`);
+
+test('add_tag_patches_full_list_and_updates_row_and_detail', async ({ page }) => {
+  const { patches } = await setup(page);
+  await rowFor(page, A).locator('td.open').first().click();
+  await expect(page.getByTestId('tag-chip')).toHaveCount(1);
+  await page.getByTestId('tag-input').fill('new');
+  await page.getByTestId('tag-input').press('Enter');
+  await expect(page.getByTestId('tag-chip')).toHaveCount(2);
+  await expect(rowFor(page, A).locator('td.tags')).toContainText('new');
+  expect(patches).toEqual([{ id: A, body: { tags: ['old', 'new'] } }]);
+});
+
+test('remove_tag_patches_and_removes_chip', async ({ page }) => {
+  const { patches } = await setup(page);
+  await rowFor(page, A).locator('td.open').first().click();
+  await page.getByTestId('tag-remove').first().click();
+  await expect(page.getByTestId('tag-chip')).toHaveCount(0);
+  await expect(rowFor(page, A).locator('td.tags')).not.toContainText('old');
+  expect(patches).toEqual([{ id: A, body: { tags: [] } }]);
+});
+
+test('notes_typing_sends_one_debounced_patch', async ({ page }) => {
+  const { patches } = await setup(page);
+  await rowFor(page, A).locator('td.open').first().click();
+  await page.getByTestId('notes-input').click();
+  await page.getByTestId('notes-input').pressSequentially('abcdefgh', { delay: 10 });
+  await page.waitForTimeout(600);
+  expect(patches).toEqual([{ id: A, body: { notes: 'abcdefgh' } }]);
+});
+
+test('patch_500_rolls_back_and_shows_error', async ({ page }) => {
+  await setup(page, { patchStatus: 500 });
+  await rowFor(page, A).locator('td.open').first().click();
+  await page.getByTestId('tag-input').fill('new');
+  await page.getByTestId('tag-input').press('Enter');
+  await expect(page.getByTestId('tags-notes-error')).toBeVisible();
+  await expect(page.getByTestId('tag-chip')).toHaveCount(1);
+  await expect(page.getByTestId('tag-chip')).toContainText('old');
+});
+
+test('switching_exchange_mid_flight_discards_response', async ({ page }) => {
+  let release!: () => void;
+  const held = new Promise<void>((res) => (release = res));
+  await setup(page, { gate: (id) => (id === A ? held : undefined) });
+  await rowFor(page, A).locator('td.open').first().click();
+  await page.getByTestId('tag-input').fill('late');
+  await page.getByTestId('tag-input').press('Enter');
+  await rowFor(page, B).locator('td.open').first().click();
+  await expect(page.getByTestId('detail-id')).toHaveText(B);
+  release();
+  await page.waitForTimeout(300);
+  await expect(page.getByTestId('detail-id')).toHaveText(B);
+  await expect(page.getByTestId('tag-chip')).toHaveCount(1);
+  await expect(page.getByTestId('tag-chip')).toContainText('other');
+  await expect(page.getByTestId('notes-input')).toHaveValue('bee');
+  // M-2: the late save still updates ITS row, not B's detail.
+  await expect(rowFor(page, A).locator('td.tags')).toContainText('late');
+});
+
+test('row_tag_action_focuses_tag_input', async ({ page }) => {
+  await setup(page);
+  await rowFor(page, A).focus();
+  await page.getByTestId('row-tag').click();
+  await expect(page.getByTestId('detail-id')).toHaveText(A);
+  await expect(page.getByTestId('tag-input')).toBeFocused();
+});
+
+test('filter_tag_lists_tagged_row', async ({ page }) => {
+  await setup(page);
+  await page.getByTestId('filter-tag').fill('other');
+  await page.getByTestId('filter-apply').click();
+  await expect(page.getByTestId('history-row')).toHaveCount(1);
+  await expect(rowFor(page, B)).toBeVisible();
+});
+
+test('stale_tag_failure_does_not_roll_back_newer_state', async ({ page }) => {
+  let releaseX!: () => void;
+  const heldX = new Promise<void>((res) => (releaseX = res));
+  const { patches } = await setup(page, {
+    gate: (_id, body) => (body.tags?.includes('x') && !body.tags.includes('y') ? heldX : undefined),
+    statusFor: (body) => (body.tags?.includes('x') && !body.tags.includes('y') ? 500 : 200),
+  });
+  await rowFor(page, A).locator('td.open').first().click();
+  await page.getByTestId('tag-input').fill('x');
+  await page.getByTestId('tag-input').press('Enter');
+  await page.getByTestId('tag-input').fill('y');
+  await page.getByTestId('tag-input').press('Enter');
+  await expect(page.getByTestId('tag-chip')).toHaveCount(3);
+  await expect.poll(() => patches.length).toBe(1); // saves are serialized
+  releaseX();
+  await expect.poll(() => patches.length).toBe(2); // the coalesced newer value follows
+  await page.waitForTimeout(300);
+  await expect(page.getByTestId('tag-chip')).toHaveCount(3);
+  await expect(page.getByTestId('tags-notes-error')).toHaveCount(0);
+  await expect(rowFor(page, A).locator('td.tags')).toContainText('y');
+});
+
+test('notes_failure_keeps_text_typed_since', async ({ page }) => {
+  let release!: () => void;
+  const held = new Promise<void>((res) => (release = res));
+  const { patches } = await setup(page, {
+    gate: (_id, body) => (body.notes === 'abc' ? held : undefined),
+    statusFor: (body) => (body.notes === 'abc' ? 500 : 200),
+  });
+  await rowFor(page, A).locator('td.open').first().click();
+  await page.getByTestId('notes-input').click();
+  await page.getByTestId('notes-input').pressSequentially('abc');
+  await expect.poll(() => patches.length).toBe(1);
+  await page.getByTestId('notes-input').pressSequentially('def');
+  release();
+  await expect(page.getByTestId('tags-notes-error')).toBeVisible();
+  await expect(page.getByTestId('notes-input')).toHaveValue('abcdef');
+});
+
+test('draft_survives_parent_refresh_after_save', async ({ page }) => {
+  // The FIRST PATCH is held; later ones answer immediately (200, empty body).
+  let release!: () => void;
+  const held = new Promise<void>((res) => { release = res; });
+  let first = true;
+  const { patches } = await setup(page, {
+    gate: () => {
+      if (!first) return undefined;
+      first = false;
+      return held;
+    },
+  });
+  await rowFor(page, A).locator('td.open').first().click();
+  await expect(page.getByTestId('tag-chip')).toHaveCount(1);
+  await page.getByTestId('tag-input').fill('a');
+  await page.getByTestId('tag-input').press('Enter');
+  await expect(page.getByTestId('tag-chip')).toHaveCount(2); // optimistic chip, PATCH held
+  await expect.poll(() => patches.length).toBe(1);
+
+  await page.getByTestId('tag-input').fill('b-draft');
+  await page.getByTestId('notes-input').click();
+  await page.getByTestId('notes-input').pressSequentially('pending note', { delay: 5 });
+
+  release(); // save completes -> parent reassigns `exchange` with the same id
+  await expect(page.getByTestId('tag-chip').nth(1)).toContainText('a');
+  await expect(page.getByTestId('tag-input')).toHaveValue('b-draft');
+  await expect(page.getByTestId('notes-input')).toHaveValue('pending note');
+  await expect
+    .poll(() => patches.some((p) => p.body.notes === 'pending note'))
+    .toBe(true);
+  expect(patches[patches.length - 1]).toEqual({ id: A, body: { notes: 'pending note' } });
+});
+
+test('concurrent_tag_saves_are_serialized', async ({ page }) => {
+  let release!: () => void;
+  const held = new Promise<void>((res) => (release = res));
+  let first = true;
+  const { patches, db } = await setup(page, {
+    gate: () => {
+      if (!first) return undefined;
+      first = false;
+      return held;
+    },
+  });
+  await rowFor(page, A).locator('td.open').first().click();
+  await page.getByTestId('tag-input').fill('x');
+  await page.getByTestId('tag-input').press('Enter');
+  await expect.poll(() => patches.length).toBe(1);
+  await page.getByTestId('tag-input').fill('y');
+  await page.getByTestId('tag-input').press('Enter');
+  await expect(page.getByTestId('tag-chip')).toHaveCount(3);
+  await page.waitForTimeout(300);
+  expect(patches).toHaveLength(1); // no second PATCH while the first is in flight
+  release();
+  await expect.poll(() => patches.length).toBe(2);
+  expect(patches[1]).toEqual({ id: A, body: { tags: ['old', 'x', 'y'] } });
+  await expect.poll(() => db[A].tags).toEqual(['old', 'x', 'y']);
+});
+
+test('rapid_notes_edits_coalesce', async ({ page }) => {
+  let release!: () => void;
+  const held = new Promise<void>((res) => (release = res));
+  let first = true;
+  const { patches } = await setup(page, {
+    gate: () => {
+      if (!first) return undefined;
+      first = false;
+      return held;
+    },
+  });
+  await rowFor(page, A).locator('td.open').first().click();
+  await page.getByTestId('notes-input').click();
+  await page.getByTestId('notes-input').pressSequentially('abc');
+  await expect.poll(() => patches.length).toBe(1); // debounce fired, held
+  await page.getByTestId('notes-input').pressSequentially('def');
+  await page.waitForTimeout(600); // second debounce fires while the first is held
+  expect(patches).toHaveLength(1);
+  release();
+  await expect.poll(() => patches.length).toBe(2);
+  await page.waitForTimeout(300);
+  expect(patches).toEqual([
+    { id: A, body: { notes: 'abc' } },
+    { id: A, body: { notes: 'abcdef' } },
+  ]);
+});
+
+test('pending_notes_flush_on_unmount_targets_old_exchange', async ({ page }) => {
+  const { patches } = await setup(page);
+  await rowFor(page, A).locator('td.open').first().click();
+  await expect(page.getByTestId('detail-id')).toHaveText(A);
+  await page.getByTestId('notes-input').click();
+  await page.getByTestId('notes-input').pressSequentially('typed');
+  // Suppress blur so only the unmount path can flush (Chromium blurs a removed textarea, which the old onblur save would have caught); Firefox does not.
+  await page.evaluate(() => window.addEventListener('blur', (e) => e.stopPropagation(), true));
+  await rowFor(page, B).locator('td.open').first().click(); // before the debounce fires
+  await expect(page.getByTestId('detail-id')).toHaveText(B);
+  await page.waitForTimeout(800);
+  // The flush must land before the 400 ms debounce could have fired on its own.
+  await expect.poll(() => patches.length, { timeout: 250 }).toBe(1);
+  expect(patches).toEqual([{ id: A, body: { notes: 'typed' } }]);
+  await expect(page.getByTestId('notes-input')).toHaveValue('bee');
+});
