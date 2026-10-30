@@ -9,7 +9,11 @@
   import { fromTextareaText, toTextareaText } from '../decode/textarea';
   import HexPane from '../editor/HexPane.svelte';
 
-  let { initial, onClose }: { initial: Uint8Array; onClose: () => void } = $props();
+  let {
+    initial,
+    initialNonLatin1 = false,
+    onClose,
+  }: { initial: Uint8Array; initialNonLatin1?: boolean; onClose: () => void } = $props();
 
   interface Step {
     codec: Codec;
@@ -22,7 +26,8 @@
   // svelte-ignore state_referenced_locally
   let input = $state<Uint8Array>(initial);
   const text = $derived(toTextareaText(input));
-  let nonLatin1 = $state(false);
+  // svelte-ignore state_referenced_locally
+  let nonLatin1 = $state(initialNonLatin1);
   let notice = $state<string | null>(null);
   let root: HTMLDivElement;
   let steps = $state<Step[]>([]);

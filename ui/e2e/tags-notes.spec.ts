@@ -67,7 +67,7 @@ async function setup(page: Page, opts: Opts = {}) {
     return r.fulfill({ status: 200, json: exchangeJson(db[id]) });
   });
   await page.goto('/');
-  return { patches };
+  return { patches, db };
 }
 
 const rowFor = (page: Page, id: string) => page.locator(`[data-testid="history-row"][data-id="${id}"]`);
@@ -126,6 +126,8 @@ test('switching_exchange_mid_flight_discards_response', async ({ page }) => {
   await expect(page.getByTestId('tag-chip')).toHaveCount(1);
   await expect(page.getByTestId('tag-chip')).toContainText('other');
   await expect(page.getByTestId('notes-input')).toHaveValue('bee');
+  // M-2: the late save still updates ITS row, not B's detail.
+  await expect(rowFor(page, A).locator('td.tags')).toContainText('late');
 });
 
 test('row_tag_action_focuses_tag_input', async ({ page }) => {
@@ -157,8 +159,9 @@ test('stale_tag_failure_does_not_roll_back_newer_state', async ({ page }) => {
   await page.getByTestId('tag-input').fill('y');
   await page.getByTestId('tag-input').press('Enter');
   await expect(page.getByTestId('tag-chip')).toHaveCount(3);
-  await expect.poll(() => patches.length).toBe(2);
+  await expect.poll(() => patches.length).toBe(1); // saves are serialized
   releaseX();
+  await expect.poll(() => patches.length).toBe(2); // the coalesced newer value follows
   await page.waitForTimeout(300);
   await expect(page.getByTestId('tag-chip')).toHaveCount(3);
   await expect(page.getByTestId('tags-notes-error')).toHaveCount(0);
@@ -213,4 +216,70 @@ test('draft_survives_parent_refresh_after_save', async ({ page }) => {
     .poll(() => patches.some((p) => p.body.notes === 'pending note'))
     .toBe(true);
   expect(patches[patches.length - 1]).toEqual({ id: A, body: { notes: 'pending note' } });
+});
+
+test('concurrent_tag_saves_are_serialized', async ({ page }) => {
+  let release!: () => void;
+  const held = new Promise<void>((res) => (release = res));
+  let first = true;
+  const { patches, db } = await setup(page, {
+    gate: () => {
+      if (!first) return undefined;
+      first = false;
+      return held;
+    },
+  });
+  await rowFor(page, A).locator('td.open').first().click();
+  await page.getByTestId('tag-input').fill('x');
+  await page.getByTestId('tag-input').press('Enter');
+  await expect.poll(() => patches.length).toBe(1);
+  await page.getByTestId('tag-input').fill('y');
+  await page.getByTestId('tag-input').press('Enter');
+  await expect(page.getByTestId('tag-chip')).toHaveCount(3);
+  await page.waitForTimeout(300);
+  expect(patches).toHaveLength(1); // no second PATCH while the first is in flight
+  release();
+  await expect.poll(() => patches.length).toBe(2);
+  expect(patches[1]).toEqual({ id: A, body: { tags: ['old', 'x', 'y'] } });
+  await expect.poll(() => db[A].tags).toEqual(['old', 'x', 'y']);
+});
+
+test('rapid_notes_edits_coalesce', async ({ page }) => {
+  let release!: () => void;
+  const held = new Promise<void>((res) => (release = res));
+  let first = true;
+  const { patches } = await setup(page, {
+    gate: () => {
+      if (!first) return undefined;
+      first = false;
+      return held;
+    },
+  });
+  await rowFor(page, A).locator('td.open').first().click();
+  await page.getByTestId('notes-input').click();
+  await page.getByTestId('notes-input').pressSequentially('abc');
+  await expect.poll(() => patches.length).toBe(1); // debounce fired, held
+  await page.getByTestId('notes-input').pressSequentially('def');
+  await page.waitForTimeout(600); // second debounce fires while the first is held
+  expect(patches).toHaveLength(1);
+  release();
+  await expect.poll(() => patches.length).toBe(2);
+  await page.waitForTimeout(300);
+  expect(patches).toEqual([
+    { id: A, body: { notes: 'abc' } },
+    { id: A, body: { notes: 'abcdef' } },
+  ]);
+});
+
+test('pending_notes_flush_on_unmount_targets_old_exchange', async ({ page }) => {
+  const { patches } = await setup(page);
+  await rowFor(page, A).locator('td.open').first().click();
+  await expect(page.getByTestId('detail-id')).toHaveText(A);
+  await page.getByTestId('notes-input').click();
+  await page.getByTestId('notes-input').pressSequentially('typed');
+  await rowFor(page, B).locator('td.open').first().click(); // before the debounce fires
+  await expect(page.getByTestId('detail-id')).toHaveText(B);
+  await page.waitForTimeout(800);
+  expect(patches).toEqual([{ id: A, body: { notes: 'typed' } }]);
+  await expect(page.getByTestId('notes-input')).toHaveValue('bee');
 });

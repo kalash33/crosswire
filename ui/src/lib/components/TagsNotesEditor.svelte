@@ -1,7 +1,9 @@
 <script lang="ts">
-  import { untrack } from 'svelte';
+  import { onDestroy, untrack } from 'svelte';
   import { patchExchange } from '../api/exchanges';
   import { addTag } from '../tags';
+
+  type Saved = { id: string; tags?: string[]; notes?: string };
 
   // Tags and notes are user-controlled text: rendered ONLY via `{…}` text
   // interpolation (§11.1) — never as markup, never in an href/src.
@@ -10,9 +12,47 @@
     tags,
     notes,
     onSaved,
-  }: { id: string; tags: string[]; notes: string; onSaved: (saved: { tags?: string[]; notes?: string }) => void } = $props();
+  }: { id: string; tags: string[]; notes: string; onSaved: (saved: Saved) => void } = $props();
 
   const NOTES_DEBOUNCE_MS = 400;
+
+  // One lane per field per exchange. The PATCH routes REPLACE the whole field
+  // and the server applies requests in arrival order, so at most ONE save per
+  // lane is in flight; while it is, only the LATEST wanted value is remembered
+  // (`next`) and sent when the in-flight save settles. A lane goes `stale` when
+  // its exchange is left: it keeps draining (so a pending value is still
+  // delivered to the right id) but no longer touches local UI state.
+  interface Lane<T> {
+    busy: boolean;
+    next: { v: T } | null;
+    stale: boolean;
+  }
+  const newLane = <T,>(): Lane<T> => ({ busy: false, next: null, stale: false });
+
+  async function drain<T>(
+    lane: Lane<T>,
+    send: (v: T) => Promise<void>,
+    onOk: (v: T) => void,
+    onFail: (v: T, e: unknown) => void,
+  ): Promise<void> {
+    lane.busy = true;
+    try {
+      while (lane.next) {
+        const { v } = lane.next;
+        lane.next = null;
+        try {
+          await send(v);
+        } catch (e) {
+          // A newer value supersedes the failed one: it is sent next.
+          if (!lane.stale && !lane.next) onFail(v, e);
+          continue;
+        }
+        onOk(v);
+      }
+    } finally {
+      lane.busy = false;
+    }
+  }
 
   let localTags = $state<string[]>(untrack(() => [...tags]));
   let localNotes = $state(untrack(() => notes));
@@ -21,51 +61,70 @@
   let saveError = $state<string | null>(null);
   let timer: ReturnType<typeof setTimeout> | null = null;
   let notesDirty = false;
-  // Per-field save sequence: only the latest save of a field may apply.
-  let tagSeq = 0;
-  let notesSeq = 0;
+  // Exchange the dirty notes belong to, captured when the save is SCHEDULED.
+  let notesId = untrack(() => id);
+  // Last values the server is known to hold (rollback targets).
+  let tagServer = untrack(() => [...tags]);
+  let notesServer = untrack(() => notes);
+  let tagLane = newLane<string[]>();
+  let notesLane = newLane<string>();
 
-  // A different exchange: reset local state (and drop any pending notes save).
-  // The parent reassigns `exchange` after every save, which re-fires this effect
-  // with the SAME id; resetting then would wipe a draft or pending notes typed
-  // while the save was in flight, so only a changed id resets. A same-id prop
-  // refresh is deliberately NOT adopted: the parent never re-fetches the same
-  // id and unmounts the editor on an id change.
+  // A different exchange: flush dirty notes for the OLD id, then reset local
+  // state. The parent reassigns `exchange` after every save, which re-fires this
+  // effect with the SAME id; resetting then would wipe a draft or pending notes
+  // typed while the save was in flight, so only a changed id resets. A same-id
+  // prop refresh is deliberately NOT adopted: the parent never re-fetches the
+  // same id.
   let lastId = untrack(() => id);
   $effect(() => {
     const next = id;
     untrack(() => {
       if (next === lastId) return;
       lastId = next;
+      saveNotes(); // targets notesId (the old exchange)
+      tagLane.stale = true;
+      notesLane.stale = true;
+      tagLane = newLane();
+      notesLane = newLane();
       localTags = [...tags];
       localNotes = notes;
+      tagServer = [...tags];
+      notesServer = notes;
+      notesId = next;
       draft = '';
       tagError = null;
       saveError = null;
       notesDirty = false;
-      tagSeq++;
-      notesSeq++;
-      if (timer) clearTimeout(timer);
-      timer = null;
     });
   });
 
-  async function saveTags(next: string[]): Promise<void> {
-    const current = id;
-    const seq = ++tagSeq;
-    const previous = localTags;
+  // Unmount: drop the debounce timer but still deliver dirty notes (and any
+  // coalesced tag value) to the exchange they were typed for.
+  onDestroy(() => {
+    saveNotes();
+    tagLane.stale = true;
+    notesLane.stale = true;
+  });
+
+  function saveTags(next: string[]): void {
+    const lane = tagLane;
+    const savedId = id;
     localTags = next; // optimistic
     saveError = null;
-    try {
-      await patchExchange(current, { tags: next });
-    } catch (e) {
-      if (id !== current || seq !== tagSeq) return;
-      localTags = previous;
-      saveError = e instanceof Error ? e.message : 'failed to save tags';
-      return;
-    }
-    if (id !== current || seq !== tagSeq) return;
-    onSaved({ tags: next });
+    lane.next = { v: next };
+    if (lane.busy) return;
+    void drain(
+      lane,
+      (v) => patchExchange(savedId, { tags: v }),
+      (v) => {
+        if (!lane.stale) tagServer = v;
+        onSaved({ id: savedId, tags: v });
+      },
+      (_v, e) => {
+        localTags = tagServer;
+        saveError = e instanceof Error ? e.message : 'failed to save tags';
+      },
+    );
   }
 
   function submitTag(): void {
@@ -84,34 +143,38 @@
     void saveTags(localTags.filter((t) => t !== tag));
   }
 
-  async function saveNotes(): Promise<void> {
+  function saveNotes(): void {
     if (timer) clearTimeout(timer);
     timer = null;
     if (!notesDirty) return;
     notesDirty = false;
-    const current = id;
-    const seq = ++notesSeq;
+    const lane = notesLane;
+    const savedId = notesId;
     const sent = localNotes;
-    const previous = untrack(() => notes);
     saveError = null;
-    try {
-      await patchExchange(current, { notes: sent });
-    } catch (e) {
-      if (id !== current || seq !== notesSeq) return;
-      if (localNotes === sent) localNotes = previous;
-      else notesDirty = true; // keep text typed since; it will be re-sent
-      saveError = e instanceof Error ? e.message : 'failed to save notes';
-      return;
-    }
-    if (id !== current || seq !== notesSeq) return;
-    onSaved({ notes: sent });
+    lane.next = { v: sent };
+    if (lane.busy) return;
+    void drain(
+      lane,
+      (v) => patchExchange(savedId, { notes: v }),
+      (v) => {
+        if (!lane.stale) notesServer = v;
+        onSaved({ id: savedId, notes: v });
+      },
+      (v, e) => {
+        if (localNotes === v) localNotes = notesServer;
+        else notesDirty = true; // keep text typed since; it will be re-sent
+        saveError = e instanceof Error ? e.message : 'failed to save notes';
+      },
+    );
   }
 
   function onNotesInput(e: Event): void {
     localNotes = (e.currentTarget as HTMLTextAreaElement).value;
     notesDirty = true;
+    notesId = id; // the exchange these edits belong to
     if (timer) clearTimeout(timer);
-    timer = setTimeout(() => void saveNotes(), NOTES_DEBOUNCE_MS);
+    timer = setTimeout(saveNotes, NOTES_DEBOUNCE_MS);
   }
 </script>
 
@@ -151,7 +214,7 @@
     rows="2"
     value={localNotes}
     oninput={onNotesInput}
-    onblur={() => void saveNotes()}
+    onblur={saveNotes}
   ></textarea>
   {#if saveError}<p class="error" role="alert" data-testid="tags-notes-error">{saveError}</p>{/if}
 </div>

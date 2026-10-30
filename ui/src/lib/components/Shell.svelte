@@ -11,7 +11,7 @@
 
   // decode-selection opens the decoder pane seeded from the live DOM selection
   // (covers CodeMirror and plain text); an empty selection opens it empty.
-  let decoderInput = $state<Uint8Array | null>(null);
+  let decoderInput = $state<{ bytes: Uint8Array; nonLatin1: boolean } | null>(null);
 
   // The ONE keydown dispatch for the whole app.
   onMount(() => {
@@ -62,7 +62,7 @@
 
   {#if decoderInput}
     {#key decoderInput}
-      <DecoderPane initial={decoderInput} onClose={() => (decoderInput = null)} />
+      <DecoderPane initial={decoderInput.bytes} initialNonLatin1={decoderInput.nonLatin1} onClose={() => (decoderInput = null)} />
     {/key}
   {/if}
 

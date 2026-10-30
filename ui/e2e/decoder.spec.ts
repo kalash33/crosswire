@@ -196,3 +196,33 @@ test('copy_failure_shows_chip', async ({ page }) => {
   await page.getByTestId('decoder-copy-0').click();
   await expect(page.getByTestId('decoder-copy-error')).toHaveText('Copy failed: clipboard unavailable.');
 });
+
+test('unicode_selection_outside_editor_is_utf8', async ({ page }) => {
+  await mock(page);
+  await page.route(/\/api\/v1\/exchanges\/[^/?]+$/, (r) =>
+    r.fulfill({
+      status: 200,
+      json: {
+        id: ID,
+        request: msg('GET / HTTP/1.1\r\nHost: d.example\r\n\r\n', { type: 'none' }),
+        response: null,
+        scope_state: 'in', state: 'committed', tags: ['日本'], notes: '',
+      },
+    }),
+  );
+  await page.goto('/');
+  await page.getByTestId('history-row').first().click();
+  const chip = page.getByTestId('tag-chip').first();
+  await expect(chip).toContainText('日本');
+  await chip.evaluate((el) => {
+    const range = document.createRange();
+    range.selectNodeContents(el.firstChild as Node);
+    const sel = window.getSelection()!;
+    sel.removeAllRanges();
+    sel.addRange(range);
+  });
+  await openPane(page);
+  await addStep(page, 0, 'hex', 'encode');
+  await expect(page.getByTestId('decoder-output-0')).toHaveText('e697a5e69cac');
+  await expect(page.getByTestId('decoder-input-chip')).toBeVisible();
+});

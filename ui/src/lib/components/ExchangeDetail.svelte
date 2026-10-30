@@ -27,9 +27,12 @@
   let previewError = $state<string | null>(null);
 
   // The PATCH answers with an empty body, so merge the values that were sent.
-  function onTagsNotesSaved(saved: { tags?: string[]; notes?: string }): void {
-    if (exchange && exchange.id === id) exchange = { ...exchange, ...saved };
-    history.patchRow(id, saved);
+  // A save that lands after a row switch still updates ITS row, never the
+  // detail now showing another exchange.
+  function onTagsNotesSaved(saved: { id: string; tags?: string[]; notes?: string }): void {
+    const { id: savedId, ...values } = saved;
+    if (exchange && exchange.id === savedId) exchange = { ...exchange, ...values };
+    history.patchRow(savedId, values);
   }
 
   async function openPreview() {
