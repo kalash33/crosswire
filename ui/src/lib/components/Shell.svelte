@@ -3,34 +3,15 @@
   import { keymap } from '../keymap';
   import { router, routes } from '../router.svelte';
   import { intercept } from '../stores/intercept.svelte';
+  import { latin1ToBytes } from '../editor/encoding';
+  import DecoderPane from './DecoderPane.svelte';
   import StatusBar from './StatusBar.svelte';
 
   let { children }: { children?: Snippet } = $props();
 
-  // ---- decode-selection -----------------------------------------------------
-  // A minimal, REAL inline encode of the current selection (Burp's Decoder
-  // neighbourhood). The selected text is read from the live DOM selection (which
-  // covers the CodeMirror editor and plain text alike) and shown as Base64, URL-
-  // and Hex-encoded forms in a small popover. The decoded bytes are rendered as
-  // TEXT ONLY (Svelte `{...}` interpolation, never {@html}); §11.1 holds.
-  interface Decoded {
-    source: string;
-    base64: string;
-    url: string;
-    hex: string;
-  }
-  let decoded = $state<Decoded | null>(null);
-
-  function encodeSelection(sel: string): Decoded {
-    const bytes = new TextEncoder().encode(sel);
-    let bin = '';
-    let hex = '';
-    for (const b of bytes) {
-      bin += String.fromCharCode(b);
-      hex += b.toString(16).padStart(2, '0');
-    }
-    return { source: sel, base64: btoa(bin), url: encodeURIComponent(sel), hex };
-  }
+  // decode-selection opens the decoder pane seeded from the live DOM selection
+  // (covers CodeMirror and plain text); an empty selection opens it empty.
+  let decoderInput = $state<Uint8Array | null>(null);
 
   // The ONE keydown dispatch for the whole app.
   onMount(() => {
@@ -46,8 +27,7 @@
       if (intercept.loaded) void intercept.setEnabled(!intercept.enabled);
     });
     const offDecode = keymap.register('decode-selection', () => {
-      const sel = window.getSelection()?.toString() ?? '';
-      decoded = sel ? encodeSelection(sel) : null;
+      decoderInput = latin1ToBytes(window.getSelection()?.toString() ?? '');
     });
 
     return () => {
@@ -80,23 +60,8 @@
     {@render children?.()}
   </main>
 
-  {#if decoded}
-    <div class="decode-popover" data-testid="decode-popover" role="dialog" aria-label="Decode selection">
-      <div class="decode-head">
-        <strong>Encode selection</strong>
-        <button type="button" aria-label="Dismiss" data-testid="decode-close" onclick={() => (decoded = null)}
-          >×</button
-        >
-      </div>
-      <dl class="decode-body">
-        <dt>Base64</dt>
-        <dd data-testid="decode-base64">{decoded.base64}</dd>
-        <dt>URL</dt>
-        <dd data-testid="decode-url">{decoded.url}</dd>
-        <dt>Hex</dt>
-        <dd data-testid="decode-hex">{decoded.hex}</dd>
-      </dl>
-    </div>
+  {#if decoderInput}
+    <DecoderPane initial={decoderInput} onClose={() => (decoderInput = null)} />
   {/if}
 
   <StatusBar />
@@ -136,47 +101,5 @@
   .main {
     overflow: auto;
     padding: 0.75rem;
-  }
-  .decode-popover {
-    position: fixed;
-    right: 0.75rem;
-    bottom: 2.5rem;
-    z-index: 20;
-    max-width: min(32rem, 90vw);
-    background: #1c1c28;
-    border: 1px solid #3a3a4a;
-    border-radius: 6px;
-    padding: 0.5rem 0.65rem;
-    box-shadow: 0 6px 24px #0008;
-    font-size: 0.8rem;
-  }
-  .decode-head {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 0.75rem;
-    margin-bottom: 0.35rem;
-  }
-  .decode-head button {
-    background: none;
-    border: none;
-    color: inherit;
-    cursor: pointer;
-    font-size: 1rem;
-    line-height: 1;
-  }
-  .decode-body {
-    display: grid;
-    grid-template-columns: auto 1fr;
-    gap: 0.2rem 0.6rem;
-    margin: 0;
-  }
-  .decode-body dt {
-    opacity: 0.7;
-  }
-  .decode-body dd {
-    margin: 0;
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    word-break: break-all;
   }
 </style>
