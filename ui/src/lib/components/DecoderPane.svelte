@@ -5,7 +5,7 @@
   // network, no eval-class API.
   import { onMount } from 'svelte';
   import { apply, CODECS, jwtView, type Codec, type Direction } from '../decode/codecs';
-  import { bytesToLatin1, encodePastedText } from '../editor/encoding';
+  import { bytesToLatin1, encodePastedText, latin1ToBytes } from '../editor/encoding';
   import HexPane from '../editor/HexPane.svelte';
 
   let { initial, onClose }: { initial: Uint8Array; onClose: () => void } = $props();
@@ -15,16 +15,17 @@
     dir: Direction;
   }
 
-  // `text` is what the textarea shows; `input` is the byte form every step
-  // consumes. Seeded bytes map 1:1 (Latin-1); typed/pasted text is UTF-8.
-  // svelte-ignore state_referenced_locally
-  let text = $state(bytesToLatin1(initial));
+  // The textarea always shows bytesToLatin1(input) (1:1 Latin-1, §7.2), so
+  // every seeded byte round-trips. Input outside Latin-1 is UTF-8 encoded and
+  // flagged with a chip, exactly like the editor's paste path.
   // svelte-ignore state_referenced_locally
   let input = $state<Uint8Array>(initial);
+  const text = $derived(bytesToLatin1(input));
   let nonLatin1 = $state(false);
+  let notice = $state<string | null>(null);
+  let root: HTMLDivElement;
   let steps = $state<Step[]>([]);
   let hexOpen = $state<Record<number, boolean>>({});
-  let inputEl: HTMLTextAreaElement;
 
   const outputs = $derived.by(() => {
     const out: { bytes: Uint8Array; warning: string | null }[] = [];
@@ -39,10 +40,21 @@
   const jwt = $derived(jwtView(input));
 
   function onInput(e: Event) {
-    text = (e.currentTarget as HTMLTextAreaElement).value;
-    const r = encodePastedText(text);
-    input = r.bytes;
-    nonLatin1 = r.nonLatin1;
+    const el = e.currentTarget as HTMLTextAreaElement;
+    let wide = false;
+    for (let i = 0; i < el.value.length; i++) {
+      if (el.value.charCodeAt(i) > 0xff) {
+        wide = true;
+        break;
+      }
+    }
+    if (wide) {
+      input = encodePastedText(el.value).bytes;
+      el.value = bytesToLatin1(input);
+    } else {
+      input = latin1ToBytes(el.value);
+    }
+    nonLatin1 = wide;
   }
 
   function addStep() {
@@ -54,8 +66,13 @@
     hexOpen = {};
   }
 
-  function copy(i: number) {
-    void navigator.clipboard?.writeText(bytesToLatin1(outputs[i].bytes));
+  async function copy(i: number): Promise<void> {
+    try {
+      await navigator.clipboard?.writeText(bytesToLatin1(outputs[i].bytes));
+      notice = null;
+    } catch {
+      notice = 'Copy failed: clipboard unavailable.';
+    }
   }
 
   // The dialog's own dismiss; app chords stay in the keymap.
@@ -66,7 +83,14 @@
     }
   }
 
-  onMount(() => inputEl.focus());
+  // Take focus so Escape works right after the chord; give it back on close.
+  onMount(() => {
+    const prev = document.activeElement;
+    root.focus();
+    return () => {
+      if (prev instanceof HTMLElement) prev.focus();
+    };
+  });
 </script>
 
 <div
@@ -75,6 +99,7 @@
   role="dialog"
   aria-label="Decoder"
   tabindex="-1"
+  bind:this={root}
   onkeydown={onKeydown}
 >
   <div class="head">
@@ -88,12 +113,15 @@
     aria-label="Decoder input"
     rows="3"
     spellcheck="false"
-    bind:this={inputEl}
     value={text}
     oninput={onInput}
   ></textarea>
   {#if nonLatin1}
     <div class="chip" data-testid="decoder-input-chip">non-Latin-1 text re-encoded as UTF-8</div>
+  {/if}
+
+  {#if notice}
+    <div class="chip" data-testid="decoder-copy-error">{notice}</div>
   {/if}
 
   {#if jwt}

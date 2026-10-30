@@ -125,4 +125,12 @@ describe('html long entity', () => {
     expect(new TextDecoder().decode(r.bytes)).toBe('&verylongname;');
     expect(r.warning).toBe('html: 1 unknown entities kept literally');
   });
+
+  it('html_overlong_numeric_entity_warns', () => {
+    for (const t of ['&#12345678901;', '&#x123456789;']) {
+      const r = apply('html', 'decode', enc(t));
+      expect(new TextDecoder().decode(r.bytes)).toBe(t);
+      expect(r.warning).toBe('html: 1 unknown entities kept literally');
+    }
+  });
 });

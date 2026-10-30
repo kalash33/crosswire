@@ -144,7 +144,7 @@ function hexDecode(input: Uint8Array): CodecResult {
 // ---- html entities ------------------------------------------------------
 
 const NAMED: Record<string, number> = { amp: 0x26, lt: 0x3c, gt: 0x3e, quot: 0x22, apos: 0x27, nbsp: 0xa0 };
-const ENTITY = /^&(#[0-9]{1,10}|#[xX][0-9a-fA-F]{1,8}|[A-Za-z][A-Za-z0-9]*);/;
+const ENTITY = /^&(#[0-9]{1,29}|#[xX][0-9a-fA-F]{1,28}|[A-Za-z][A-Za-z0-9]*);/;
 const HTML_ESC: Record<number, string> = {
   0x26: '&amp;',
   0x3c: '&lt;',

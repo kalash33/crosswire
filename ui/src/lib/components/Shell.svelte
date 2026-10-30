@@ -3,7 +3,7 @@
   import { keymap } from '../keymap';
   import { router, routes } from '../router.svelte';
   import { intercept } from '../stores/intercept.svelte';
-  import { latin1ToBytes } from '../editor/encoding';
+  import { selectionBytes } from '../decode/selection';
   import DecoderPane from './DecoderPane.svelte';
   import StatusBar from './StatusBar.svelte';
 
@@ -19,7 +19,7 @@
     window.addEventListener('keydown', on);
 
     // Global chords (available from every view). toggle-intercept flips the
-    // proxy hold from anywhere; decode-selection pops the encoder for the
+    // proxy hold from anywhere; decode-selection opens the decoder pane for the
     // current selection. View-scoped chords (send, forward, drop, tab cycling,
     // send-to-repeater) are registered by the view that owns them and torn down
     // on unmount, so a chord never acts on a view that is no longer mounted.
@@ -27,7 +27,7 @@
       if (intercept.loaded) void intercept.setEnabled(!intercept.enabled);
     });
     const offDecode = keymap.register('decode-selection', () => {
-      decoderInput = latin1ToBytes(window.getSelection()?.toString() ?? '');
+      decoderInput = selectionBytes();
     });
 
     return () => {
@@ -61,7 +61,9 @@
   </main>
 
   {#if decoderInput}
-    <DecoderPane initial={decoderInput} onClose={() => (decoderInput = null)} />
+    {#key decoderInput}
+      <DecoderPane initial={decoderInput} onClose={() => (decoderInput = null)} />
+    {/key}
   {/if}
 
   <StatusBar />

@@ -8,7 +8,7 @@ const msg = (head: string, body: unknown) => ({
   head: { type: 'http1-raw', bytes: b64(head), parser_version: 1 }, body,
 });
 
-async function mock(page: Page) {
+async function mock(page: Page, bodyBytes: Buffer = Buffer.from(BODY, 'latin1')) {
   await page.route('**/api/v1/counts', (r) => r.fulfill({ status: 200, json: { exchanges: 1 } }));
   await page.route('**/api/v1/scope', (r) => r.fulfill({ status: 200, json: { include: [], exclude: [] } }));
   await page.route(/\/api\/v1\/intercept$/, (r) =>
@@ -18,7 +18,7 @@ async function mock(page: Page) {
     r.fulfill({ status: 404, json: { error: { code: 'not_found', message: 'x' } } }),
   );
   await page.route(/\/api\/v1\/exchanges\/[^/]+\/body\/resp$/, (r) =>
-    r.fulfill({ status: 200, contentType: 'application/octet-stream', headers: { 'x-crosswire-length': String(BODY.length) }, body: Buffer.from(BODY, 'latin1') }),
+    r.fulfill({ status: 200, contentType: 'application/octet-stream', headers: { 'x-crosswire-length': String(bodyBytes.length) }, body: bodyBytes }),
   );
   await page.route(/\/api\/v1\/exchanges\/[^/?]+$/, (r) =>
     r.fulfill({
@@ -26,20 +26,21 @@ async function mock(page: Page) {
       json: {
         id: ID,
         request: msg('GET / HTTP/1.1\r\nHost: d.example\r\n\r\n', { type: 'none' }),
-        response: msg('HTTP/1.1 200 OK\r\n\r\n', { type: 'inline', truncated_at: BODY.length }),
+        response: msg('HTTP/1.1 200 OK\r\n\r\n', { type: 'inline', truncated_at: bodyBytes.length }),
         scope_state: 'in', state: 'committed', tags: [], notes: '',
       },
     }),
   );
   await page.route(/\/api\/v1\/exchanges(\?.*)?$/, (r) =>
-    r.fulfill({ status: 200, json: { items: [{ id: ID, created_at: 1_700_000_000_000, method: 'GET', host: 'd.example', path: '/', status: 200, resp_len: BODY.length, state: 'committed', tags: [] }], next_cursor: null } }),
+    r.fulfill({ status: 200, json: { items: [{ id: ID, created_at: 1_700_000_000_000, method: 'GET', host: 'd.example', path: '/', status: 200, resp_len: bodyBytes.length, state: 'committed', tags: [] }], next_cursor: null } }),
   );
 }
 
-async function selectBody(page: Page) {
+async function selectBody(page: Page, ready: string | null = BODY) {
   await page.getByTestId('history-row').first().click();
   const body = page.getByTestId('detail-resp-body');
-  await expect(body).toContainText(BODY);
+  if (ready) await expect(body).toContainText(ready);
+  await body.locator('.cm-content').focus();
   await body.evaluate((el) => {
     const range = document.createRange();
     range.selectNodeContents(el.querySelector('.cm-content') ?? el);
@@ -121,4 +122,50 @@ test('empty_selection_opens_empty_pane', async ({ page }) => {
   await expect(page.getByTestId('app-shell')).toBeVisible();
   await openPane(page);
   await expect(page.getByTestId('decoder-input')).toHaveValue('');
+});
+
+test('seeded_high_byte_survives_edit', async ({ page }) => {
+  await mock(page, Buffer.from([0x41, 0xe9]));
+  await page.goto('/');
+  await selectBody(page, 'A');
+  await openPane(page);
+  const input = page.getByTestId('decoder-input');
+  await input.click();
+  await page.keyboard.press('Control+End');
+  await page.keyboard.type(' ');
+  await addStep(page, 0, 'hex', 'encode');
+  await expect(page.getByTestId('decoder-output-0')).toHaveText('41e920');
+  await expect(page.getByTestId('decoder-input-chip')).toHaveCount(0);
+});
+
+test('typed_non_latin1_is_utf8_with_chip', async ({ page }) => {
+  await openSeeded(page);
+  await page.getByTestId('decoder-input').fill('\u20ac');
+  await addStep(page, 0, 'hex', 'encode');
+  await expect(page.getByTestId('decoder-output-0')).toHaveText('e282ac');
+  await expect(page.getByTestId('decoder-input-chip')).toBeVisible();
+});
+
+test('selection_over_nonprintables_is_byte_exact', async ({ page }) => {
+  await mock(page, Buffer.from([0x41, 0x7f, 0x85, 0x42]));
+  await page.goto('/');
+  await selectBody(page, null);
+  await openPane(page);
+  await addStep(page, 0, 'hex', 'encode');
+  await expect(page.getByTestId('decoder-output-0')).toHaveText('417f8542');
+});
+
+test('second_chord_reseeds_pane', async ({ page }) => {
+  await openSeeded(page);
+  await expect(page.getByTestId('decoder-input')).toHaveValue(BODY);
+  await page.evaluate(() => {
+    const el = document.querySelector('.brand')!;
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    const sel = window.getSelection()!;
+    sel.removeAllRanges();
+    sel.addRange(range);
+  });
+  await page.keyboard.press('Control+Shift+D');
+  await expect(page.getByTestId('decoder-input')).toHaveValue('Crosswire');
 });
