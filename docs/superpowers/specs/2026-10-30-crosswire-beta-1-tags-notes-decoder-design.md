@@ -31,7 +31,7 @@ No Rust changes. No new npm or cargo dependency (the codecs are hand-rolled; no 
 
 ## 3. Tags and notes (§7.0, §7.6)
 
-- **Client:** `ui/src/lib/api/exchanges.ts` → `patchExchange(id, body: PatchBody): Promise<ExchangeDto>` over the existing `apiSend('PATCH', …)`.
+- **Client:** `ui/src/lib/api/exchanges.ts` → `patchExchange(id, body: PatchBody): Promise<void>` over the existing `apiSend('PATCH', …)`. The route returns `200` with an **empty body**, so the client resolves on success and the editor applies the values it sent (it never reads a response body).
 - **Editor** (`ui/src/lib/components/TagsNotesEditor.svelte`, mounted in the `ExchangeDetail` header, replacing the read-only chips): tag chips each with a remove button; an "add tag" input (Enter or comma commits; Escape clears); a notes `<textarea>`.
   - Tags save **immediately** on add/remove (one PATCH carrying the full replacement list — the API semantics are "replace"). Notes save **debounced** (400 ms after the last keystroke, and on blur) with one PATCH carrying `notes` only.
   - **Optimistic with rollback, latest-save-wins:** each field keeps a save sequence number; a response for anything but the latest save is ignored (no rollback, no error, no row patch), so a stale failure cannot overwrite newer state and out-of-order responses cannot regress the row. A failed notes save rolls back only if the text is unchanged since it was sent; otherwise the typed text is kept (still dirty) and the error shows. the chip list / notes update at once; on a PATCH error the previous value is restored and an inline error line shows the message. A stale response (the user switched exchange mid-flight) is discarded, matching the `id === current` guard already used in `ExchangeDetail`.
