@@ -277,9 +277,13 @@ test('pending_notes_flush_on_unmount_targets_old_exchange', async ({ page }) => 
   await expect(page.getByTestId('detail-id')).toHaveText(A);
   await page.getByTestId('notes-input').click();
   await page.getByTestId('notes-input').pressSequentially('typed');
+  // Suppress blur so only the unmount path can flush (Chromium blurs a removed textarea, which the old onblur save would have caught); Firefox does not.
+  await page.evaluate(() => window.addEventListener('blur', (e) => e.stopPropagation(), true));
   await rowFor(page, B).locator('td.open').first().click(); // before the debounce fires
   await expect(page.getByTestId('detail-id')).toHaveText(B);
   await page.waitForTimeout(800);
+  // The flush must land before the 400 ms debounce could have fired on its own.
+  await expect.poll(() => patches.length, { timeout: 250 }).toBe(1);
   expect(patches).toEqual([{ id: A, body: { notes: 'typed' } }]);
   await expect(page.getByTestId('notes-input')).toHaveValue('bee');
 });
