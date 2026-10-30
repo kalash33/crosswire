@@ -7,6 +7,7 @@ use bytes::Bytes;
 /// The kind of edit.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "kebab-case"))]
 #[non_exhaustive]
 pub enum ChangeOp {
     /// Bytes were inserted.
@@ -15,11 +16,18 @@ pub enum ChangeOp {
     Delete,
     /// Bytes were replaced.
     Replace,
+    /// An edit kind written by a newer version of Crosswire.
+    #[cfg_attr(feature = "serde", serde(other))]
+    Unknown,
 }
 
 /// Why an edit was made.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+///
+/// On the wire the unit reasons are kebab-case strings and the data reasons
+/// are externally tagged objects (`{"intruder-position": 3}`).
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "kebab-case"))]
 #[non_exhaustive]
 pub enum ChangeReason {
     /// A hop-by-hop header was removed.
@@ -37,6 +45,10 @@ pub enum ChangeReason {
     InterceptEdit,
     /// Any other reason.
     Custom(String),
+    /// A reason written by a newer version of Crosswire (read from a plain
+    /// string code).
+    #[cfg_attr(feature = "serde", serde(other))]
+    Unknown,
 }
 
 /// A single edit applied to a message.

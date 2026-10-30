@@ -480,6 +480,8 @@ fn shift_spans(old: &HeadSpans, reps: &[(Range<usize>, usize)]) -> HeadSpans {
             target: sp(*target),
             version: sp(*version),
         },
+        // No spans to move.
+        StartLineSpans::Unknown => StartLineSpans::Unknown,
     };
     let headers = old
         .headers()

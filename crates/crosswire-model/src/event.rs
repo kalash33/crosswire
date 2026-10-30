@@ -19,7 +19,8 @@ pub enum Event {
         /// The exchange id.
         #[serde(with = "crate::ulid_serde")]
         id: Ulid,
-        /// Event sequence number.
+        /// Event sequence number (0 when absent).
+        #[serde(default)]
         seq: u64,
     },
     /// A batch of exchanges was durably committed.
@@ -27,14 +28,16 @@ pub enum Event {
         /// The committed ids.
         #[serde(default, with = "crate::ulid_serde::vec")]
         ids: Vec<Ulid>,
-        /// Event sequence number.
+        /// Event sequence number (0 when absent).
+        #[serde(default)]
         seq: u64,
     },
     /// A marker row was written.
     Marker {
         /// The marker.
         marker: Marker,
-        /// Event sequence number.
+        /// Event sequence number (0 when absent).
+        #[serde(default)]
         seq: u64,
     },
     /// Something failed.
@@ -42,7 +45,8 @@ pub enum Event {
         /// What failed.
         #[serde(default)]
         detail: String,
-        /// Event sequence number.
+        /// Event sequence number (0 when absent).
+        #[serde(default)]
         seq: u64,
     },
     /// A configured limit was exceeded.
@@ -50,20 +54,25 @@ pub enum Event {
         /// Which limit.
         #[serde(default)]
         detail: String,
-        /// Event sequence number.
+        /// Event sequence number (0 when absent).
+        #[serde(default)]
         seq: u64,
     },
     /// The consumer fell behind and events were dropped.
     Lagged {
         /// How many events were missed.
         missed: u64,
-        /// Event sequence number.
+        /// Event sequence number (0 when absent).
+        #[serde(default)]
         seq: u64,
     },
+    /// An event written by a newer version of Crosswire.
+    #[serde(other)]
+    Unknown,
 }
 
 impl Event {
-    /// The event's sequence number.
+    /// The event's sequence number (0 for [`Event::Unknown`]).
     #[must_use]
     pub fn seq(&self) -> u64 {
         match self {
@@ -73,6 +82,7 @@ impl Event {
             | Event::Error { seq, .. }
             | Event::LimitExceeded { seq, .. }
             | Event::Lagged { seq, .. } => *seq,
+            Event::Unknown => 0,
         }
     }
 }

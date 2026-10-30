@@ -8,12 +8,17 @@
 //! with kebab-case wire names, and fields that a later version may add have
 //! `#[serde(default)]`. [`SCHEMA_VERSION`] travels in the API envelope.
 //!
-//! Additive-only applies to fields. A newer writer may add enum variants:
-//! the plain string enums ([`Fidelity`], [`MessageKind`], [`MarkerKind`],
-//! [`TunnelReason`]) read an unrecognised name as `Unknown`; the tagged
-//! enums ([`Head`], [`Body`], [`ChainResult`], [`Event`]) and the remaining
-//! plain enums fail to deserialise on an unrecognised variant, so a reader
-//! must be upgraded before data using new variants reaches it.
+//! Additive-only applies to fields and to enum variants: a newer writer may
+//! add either, and an older reader never fails on them. Every enum on the
+//! wire has an `Unknown` variant that an unrecognised code reads as: the
+//! plain string enums ([`Fidelity`], [`MessageKind`], [`MarkerKind`],
+//! [`TunnelReason`], [`ExchangeState`], [`ScopeState`], [`NamespaceKind`],
+//! and `crosswire-core`'s `ChangeOp`, `ChangeReason`, `EncodingHint`,
+//! `Severity`, `DiagnosticCode`) on an unknown string, and the enums tagged
+//! by a `type` key ([`Head`], [`Body`], [`ChainResult`], [`Event`],
+//! [`StartLineSpans`], [`FramingRecord`]) on an unknown `type`. Codes are
+//! kebab-case, except `Severity` and `DiagnosticCode`, whose snake_case wire
+//! codes equal their `as_str()` names (the corpus `.expect.json` names).
 //!
 //! Byte payloads serialise as base64 strings under the default `std`
 //! feature; see the `bytes_serde` module notes in the source for the full
@@ -48,7 +53,9 @@ pub use message::{
 pub use redact::RedactionPolicy;
 pub use sink::{ExchangeSink, SinkError};
 
-/// Version of the stored and served schema. Starts at 1; bumped only by a
-/// change that older readers cannot ignore (which the additive-only rule
-/// forbids after 0.1.0, so in practice it moves only on a deliberate break).
-pub const SCHEMA_VERSION: u32 = 1;
+/// Version of the stored and served schema. Bumped only by a change that
+/// older readers cannot ignore (which the additive-only rule forbids after
+/// 0.1.0, so in practice it moves only on a deliberate break). 2 is the
+/// 0.1.0 freeze: stable codes with `Unknown` fallbacks, `type`-tagged
+/// variant families, and no stored `cert_override`.
+pub const SCHEMA_VERSION: u32 = 2;

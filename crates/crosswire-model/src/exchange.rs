@@ -35,6 +35,9 @@ pub enum ScopeState {
     Empty,
     /// The Host header differs from the connection target.
     HostMismatch,
+    /// A scope state written by a newer version of Crosswire.
+    #[serde(other)]
+    Unknown,
 }
 
 /// Which table an exchange belongs to.
@@ -49,6 +52,9 @@ pub enum NamespaceKind {
     Repeater,
     /// An intruder attack's results.
     Intruder,
+    /// A namespace written by a newer version of Crosswire.
+    #[serde(other)]
+    Unknown,
 }
 
 /// The namespace an exchange lives in.
@@ -92,6 +98,9 @@ pub enum ExchangeState {
     Committed,
     /// Recording failed.
     Error,
+    /// A state written by a newer version of Crosswire.
+    #[serde(other)]
+    Unknown,
 }
 
 /// One request/response pair as recorded.

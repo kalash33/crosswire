@@ -3,6 +3,7 @@
 /// How a header field was represented on the wire (reserved for HPACK/QPACK).
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "kebab-case"))]
 #[non_exhaustive]
 pub enum EncodingHint {
     /// Fully indexed field.
@@ -13,6 +14,9 @@ pub enum EncodingHint {
     LiteralWithoutIndexing,
     /// Literal field that intermediaries must never index.
     NeverIndexed,
+    /// A representation written by a newer version of Crosswire.
+    #[cfg_attr(feature = "serde", serde(other))]
+    Unknown,
 }
 
 /// Per-field encoding hint, reserved for the frozen schema.

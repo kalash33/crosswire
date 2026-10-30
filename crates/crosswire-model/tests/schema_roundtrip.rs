@@ -64,8 +64,8 @@ fn event_roundtrips_and_has_seq() {
 }
 
 #[test]
-fn schema_version_is_one() {
-    assert_eq!(SCHEMA_VERSION, 1);
+fn schema_version_is_two() {
+    assert_eq!(SCHEMA_VERSION, 2);
 }
 
 #[test]

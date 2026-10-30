@@ -269,8 +269,10 @@ impl Transport {
         let tls_ms = ms(t1);
         info = info
             .with_tls(tls.version.clone(), tls.cipher.clone())
-            .with_chain_result(tls.chain_result.clone())
-            .with_cert_override(tls.chain_error.is_some());
+            // An overridden chain failure is `ChainResult::Overridden` (the
+            // backend sets it exactly when `chain_error` is present), which
+            // is what `ConnectionInfo::cert_override` reports.
+            .with_chain_result(tls.chain_result.clone());
         if let Some(a) = &tls.alpn {
             info = info.with_alpn(a.clone());
         }

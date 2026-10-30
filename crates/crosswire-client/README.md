@@ -93,7 +93,8 @@ partial response as if it were whole.
   same verification, and if it fails the handshake continues with the reason
   kept: `TlsInfo::chain_result()` is `Overridden`, `chain_error()` and
   `Connection::chain_error()` carry the reason, and `ConnectionInfo` records
-  `cert_override` as true so the exchange shows the override. Handshake
+  the `Overridden` chain result (its `cert_override()` is derived from it) so
+  the exchange shows the override. Handshake
   signatures are still checked. It is meant for a per-host override and is never
   a default; the policy that applies it belongs to the caller.
 - A bad SNI is an error (`ClientError::Tls`), never a fallback to another name.

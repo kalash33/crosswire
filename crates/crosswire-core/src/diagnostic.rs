@@ -2,9 +2,10 @@
 
 use crate::{Profile, Span};
 
-/// How serious a diagnostic is.
+/// How serious a diagnostic is. The wire code is [`Severity::as_str`].
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 #[non_exhaustive]
 pub enum Severity {
     /// Informational.
@@ -13,11 +14,31 @@ pub enum Severity {
     Warning,
     /// Violates the specification.
     Error,
+    /// A severity written by a newer version of Crosswire. It orders after
+    /// [`Severity::Error`] only because it is declared last; it carries no
+    /// meaning of its own.
+    #[cfg_attr(feature = "serde", serde(other))]
+    Unknown,
 }
 
-/// Stable identifier of a kind of diagnostic.
+impl Severity {
+    /// Stable snake_case name of the severity (its wire code).
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Severity::Info => "info",
+            Severity::Warning => "warning",
+            Severity::Error => "error",
+            Severity::Unknown => "unknown",
+        }
+    }
+}
+
+/// Stable identifier of a kind of diagnostic. The wire code is
+/// [`DiagnosticCode::as_str`] (the corpus `.expect.json` names).
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 #[non_exhaustive]
 pub enum DiagnosticCode {
     /// See [`DiagnosticCode::as_str`]: `duplicate_content_length`.
@@ -65,17 +86,24 @@ pub enum DiagnosticCode {
     /// See [`DiagnosticCode::as_str`]: `body_after_no_body_status`.
     BodyAfterNoBodyStatus,
     /// See [`DiagnosticCode::as_str`]: `expect_100_continue`.
+    #[cfg_attr(feature = "serde", serde(rename = "expect_100_continue"))]
     Expect100Continue,
     /// See [`DiagnosticCode::as_str`]: `http_0_9_request`.
+    #[cfg_attr(feature = "serde", serde(rename = "http_0_9_request"))]
     Http09Request,
     /// See [`DiagnosticCode::as_str`]: `version_unusual`.
     VersionUnusual,
     /// See [`DiagnosticCode::as_str`]: `chunk_size_whitespace`.
     ChunkSizeWhitespace,
+    /// A code written by a newer version of Crosswire (`unknown`). Never
+    /// raised by this parser and not part of [`DiagnosticCode::ALL`].
+    #[cfg_attr(feature = "serde", serde(other))]
+    Unknown,
 }
 
 impl DiagnosticCode {
-    /// Every code, in declaration order.
+    /// Every code this parser can raise, in declaration order
+    /// ([`DiagnosticCode::Unknown`] excluded).
     pub const ALL: &'static [DiagnosticCode] = &[
         DiagnosticCode::DuplicateContentLength,
         DiagnosticCode::ConflictingFraming,
@@ -137,6 +165,7 @@ impl DiagnosticCode {
             DiagnosticCode::Http09Request => "http_0_9_request",
             DiagnosticCode::VersionUnusual => "version_unusual",
             DiagnosticCode::ChunkSizeWhitespace => "chunk_size_whitespace",
+            DiagnosticCode::Unknown => "unknown",
         }
     }
 
@@ -170,6 +199,7 @@ impl DiagnosticCode {
             DiagnosticCode::Http09Request => (Severity::Warning, Severity::Error),
             DiagnosticCode::VersionUnusual => (Severity::Warning, Severity::Error),
             DiagnosticCode::ChunkSizeWhitespace => (Severity::Info, Severity::Warning),
+            DiagnosticCode::Unknown => (Severity::Unknown, Severity::Unknown),
         };
         match profile {
             Profile::Strict => strict,
