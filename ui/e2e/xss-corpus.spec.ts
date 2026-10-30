@@ -1,6 +1,9 @@
 import { test, expect, type Page } from '@playwright/test';
 import { XSS_CORPUS } from './fixtures/xss-corpus';
 import { watch, liveProbe } from './fixtures/xss-detect';
+import { apply, CODECS, type Direction } from '../src/lib/decode/codecs';
+import { fromTextareaText } from '../src/lib/decode/textarea';
+import { bytesToLatin1 } from '../src/lib/editor/encoding';
 
 // Text-rendering half of the XSS gate: captured bytes are attacker-controlled,
 // so seed the corpus into every rendered field and prove nothing executes.
@@ -131,6 +134,145 @@ test('corpus in list and detail renders as inert text', async ({ page, baseURL }
   await page.waitForTimeout(500);
 
   // No payload became live DOM anywhere in the app.
+  const live = await liveProbe(page);
+  expect(live.pwned).toBe(0);
+  expect(live.injected).toBe(0);
+  expect(page.url()).toBe(startUrl);
+  expect(violations).toEqual([]);
+});
+
+test('typed_tag_and_notes_payloads_render_as_text', async ({ page, baseURL }) => {
+  const origin = new URL(baseURL!).origin;
+  // Stateful mock: PATCH records the body and answers 200 with an EMPTY body (like the real route).
+  let tags: string[] = [];
+  let notes = '';
+  const patches: { tags?: string[]; notes?: string }[] = [];
+  await page.route('**/api/v1/counts', (r) => r.fulfill({ status: 200, json: COUNTS }));
+  await page.route('**/api/v1/scope', (r) => r.fulfill({ status: 200, json: { include: [], exclude: [] } }));
+  await page.route(/\/api\/v1\/exchanges\/[^/]+\/body\/(req|resp)$/, (r) =>
+    r.fulfill({ status: 404, json: { error: { code: 'not_found', message: 'x' } } }),
+  );
+  await page.route(/\/api\/v1\/exchanges\/[^/?]+$/, (r) => {
+    if (r.request().method() === 'PATCH') {
+      const body = r.request().postDataJSON() as { tags?: string[]; notes?: string };
+      patches.push(body);
+      if (body.tags) tags = body.tags;
+      if (body.notes !== undefined) notes = body.notes;
+      return r.fulfill({ status: 200, body: '' });
+    }
+    return r.fulfill({ status: 200, json: { ...DETAIL, request: { ...DETAIL.request, body: { type: 'none' } }, response: null, tags, notes } });
+  });
+  await page.route(/\/api\/v1\/exchanges(\?.*)?$/, (r) =>
+    r.fulfill({ status: 200, json: { items: [{ ...ROW, host: 'h.example', path: '/', tags }], next_cursor: null } }),
+  );
+  const violations = watch(page, origin);
+  await page.goto('/');
+  const startUrl = page.url();
+  await page.getByTestId('history-row').locator('td.open').first().click();
+  await expect(page.getByTestId('exchange-detail')).toBeVisible();
+
+  // Tags reject over-64-char values and control characters (client guard). Payloads over the
+  // limit are typed as their first 64 chars (trimmed) so every payload still drives the chip path.
+  // The corpus has no CR/LF, so no control-character handling is needed on the tag path.
+  const typedTags: string[] = [];
+  for (const p of XSS_CORPUS) {
+    const tag = p.value.slice(0, 64).trim();
+    typedTags.push(tag);
+    const before = patches.length;
+    await page.getByTestId('tag-input').fill(tag);
+    await page.getByTestId('tag-input').press('Enter');
+    await expect.poll(() => patches.length, { message: p.name }).toBe(before + 1);
+    expect(patches[before].tags).toEqual(typedTags); // verbatim, full list
+    await expect(page.getByTestId('tag-error')).toHaveCount(0);
+    // Let the save settle (row patch / detail refresh) before typing the next tag.
+    await expect(page.getByTestId('tag-chip')).toHaveCount(typedTags.length);
+    await expect(page.getByTestId('tag-input')).toHaveValue('');
+  }
+  const chips = page.getByTestId('tag-chip');
+  await expect(chips).toHaveCount(XSS_CORPUS.length);
+  for (let i = 0; i < typedTags.length; i++) {
+    // chip text is the tag plus the remove button's glyph; the tag text must be exactly the prefix
+    const text = (await chips.nth(i).textContent()) ?? '';
+    expect(text.startsWith(typedTags[i]), `chip ${i}`).toBe(true);
+    expect(await chips.nth(i).locator('[data-testid="tag-remove"]').count()).toBe(1);
+  }
+  const rowTags = page.getByTestId('history-row').locator('td.tags');
+  for (const t of typedTags) await expect(rowTags).toContainText(t);
+
+  // Notes: a textarea normalizes CR to LF, so the oracle is the value the textarea holds.
+  const notesEl = page.getByTestId('notes-input');
+  for (const p of XSS_CORPUS) {
+    const before = patches.length;
+    await notesEl.fill(p.value);
+    const held = await notesEl.inputValue();
+    expect(held).toBe(p.value.replace(/\r\n?/g, '\n'));
+    await notesEl.blur();
+    await expect.poll(() => patches.length, { message: p.name }).toBeGreaterThan(before);
+    expect(patches[patches.length - 1]).toEqual({ notes: held });
+  }
+
+  await page.mouse.move(5, 5);
+  await page.mouse.move(300, 300);
+  await page.waitForTimeout(300);
+  const live = await liveProbe(page);
+  expect(live.pwned).toBe(0);
+  expect(live.injected).toBe(0);
+  expect(page.url()).toBe(startUrl);
+  expect(violations).toEqual([]);
+});
+
+test('decoder_outputs_are_text_for_every_payload', async ({ page, baseURL }) => {
+  const origin = new URL(baseURL!).origin;
+  await page.route('**/api/v1/counts', (r) => r.fulfill({ status: 200, json: COUNTS }));
+  await page.route(/\/api\/v1\/exchanges(\?.*)?$/, (r) =>
+    r.fulfill({ status: 200, json: { items: [], next_cursor: null } }),
+  );
+  const violations = watch(page, origin);
+  await page.goto('/');
+  const startUrl = page.url();
+  // The chord only works once the app has hydrated; retry the press until the pane appears.
+  await expect(page.getByTestId('app-root')).toBeVisible();
+  await expect(async () => {
+    await page.keyboard.press('Control+Shift+D');
+    await expect(page.getByTestId('decoder-pane')).toBeVisible({ timeout: 1000 });
+  }).toPass();
+  const input = page.getByTestId('decoder-input');
+  await page.getByTestId('decoder-step-add').click();
+  const codecSel = page.getByTestId('decoder-step-0-codec');
+  const dirSel = page.getByTestId('decoder-step-0-dir');
+  const out = page.getByTestId('decoder-output-0');
+  const dirs: Direction[] = ['encode', 'decode'];
+
+  for (const p of XSS_CORPUS) {
+    await input.fill(p.value);
+    // Oracle is computed from what the textarea ACTUALLY holds (CR normalization cannot desync it).
+    const bytes = fromTextareaText(await input.inputValue()).bytes;
+    for (const codec of CODECS) {
+      for (const dir of dirs) {
+        await codecSel.selectOption(codec);
+        await dirSel.selectOption(dir);
+        const expected = bytesToLatin1(apply(codec, dir, bytes).bytes);
+        await expect(out, `${p.name} ${codec} ${dir}`).toHaveText(expected, { useInnerText: false });
+        expect(await out.textContent()).toBe(expected);
+      }
+    }
+    const live = await liveProbe(page);
+    expect(live.pwned, p.name).toBe(0);
+    expect(live.injected, p.name).toBe(0);
+  }
+
+  // A payload that is also a decodable JWT-shaped string renders in the JWT view as text.
+  const u = (s: string) => Buffer.from(s).toString('base64url');
+  const jwtish = `${u(XSS_CORPUS[0].value)}.${u(XSS_CORPUS[1].value)}.${u(XSS_CORPUS[2].value)}`;
+  await input.fill(jwtish);
+  await expect(page.getByTestId('decoder-jwt')).toBeVisible();
+  await expect(page.getByTestId('decoder-jwt-banner')).toHaveText('signature not verified');
+  const jwtText = (await page.getByTestId('decoder-jwt').textContent()) ?? '';
+  expect(jwtText).toContain(XSS_CORPUS[0].value);
+
+  await page.mouse.move(5, 5);
+  await page.mouse.move(300, 300);
+  await page.waitForTimeout(300);
   const live = await liveProbe(page);
   expect(live.pwned).toBe(0);
   expect(live.injected).toBe(0);
