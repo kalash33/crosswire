@@ -26,9 +26,15 @@
   let notesSeq = 0;
 
   // A different exchange: reset local state (and drop any pending notes save).
+  // The parent reassigns `exchange` after every save, which re-fires this effect
+  // with the SAME id; resetting then would wipe a draft or pending notes typed
+  // while the save was in flight, so only a changed id resets.
+  let lastId = untrack(() => id);
   $effect(() => {
-    void id;
+    const next = id;
     untrack(() => {
+      if (next === lastId) return;
+      lastId = next;
       localTags = [...tags];
       localNotes = notes;
       draft = '';
