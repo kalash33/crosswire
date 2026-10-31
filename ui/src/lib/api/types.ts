@@ -57,6 +57,8 @@ export interface HealthResponse {
   schema_version: number;
   /** The project database format (`user_version`) this build reads and writes. */
   format_version: number;
+  /** The proxy's bound address as `host:port` (`[v6]:port` for IPv6), when known. */
+  proxy_addr?: string;
 }
 
 /** The `POST /scope/import` body. */

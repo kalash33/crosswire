@@ -17,6 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   including the gate's own `401`, `421` and `404` refusals. `GET /api/v1/health`
   adds `schema_version` and `format_version` (`crosswire-store` exports
   `FORMAT_VERSION`).
+- **crosswire-api**: `GET /api/v1/health` reports the proxy's bound address as
+  an optional `proxy_addr`, so clients show the right address when
+  `serve --proxy-bind` used a non-default one.
 - **Release pipeline and governance** (R2): one workspace version; release-plz
   opens the release PR and cuts the `v<version>` tag; cargo-dist builds the
   `crosswire` binary for `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`
