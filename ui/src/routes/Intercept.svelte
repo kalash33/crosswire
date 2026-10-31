@@ -7,6 +7,26 @@
   import { repeater } from '../lib/stores/repeater.svelte';
   import { router } from '../lib/router.svelte';
   import { keymap } from '../lib/keymap';
+  import Badge from '../lib/ui/Badge.svelte';
+  import Button from '../lib/ui/Button.svelte';
+  import Toolbar from '../lib/ui/Toolbar.svelte';
+  import { toasts } from '../lib/ui/toasts.svelte';
+
+  // The store records a failure in `intercept.error` instead of throwing, so
+  // the outcome of every action is read back from it.
+  function report(done: string) {
+    if (intercept.error) toasts.push({ kind: 'error', text: intercept.error });
+    else toasts.push({ kind: 'success', text: done });
+  }
+  async function drop() {
+    if (!focus) return;
+    await intercept.drop(focus.id);
+    report('Dropped');
+  }
+  async function forwardAll() {
+    await intercept.forwardAll();
+    report('Forwarded all held requests');
+  }
 
   onMount(() => {
     intercept.start();
@@ -15,9 +35,7 @@
     // send-to-repeater (Ctrl+R). Registered while mounted; torn down on unmount.
     const offs = [
       keymap.register('forward', () => void forward()),
-      keymap.register('drop', () => {
-        if (focus) void intercept.drop(focus.id);
-      }),
+      keymap.register('drop', () => void drop()),
       keymap.register('send-to-repeater', () => toRepeater()),
     ];
     return () => offs.forEach((off) => off());
@@ -66,7 +84,10 @@
   async function forward() {
     if (!focus) return;
     // Non-editable: always the ORIGINAL bytes (no body), never a truncation.
-    if (!focus.editable || !dirty) return void (await intercept.forward(focus.id));
+    if (!focus.editable || !dirty) {
+      await intercept.forward(focus.id);
+      return report('Forwarded');
+    }
     const { head, body } = splitRequest(bytes);
     // An edited body REQUIRES the edited head; always send the head. Send the
     // body when there is one, or when the original had one (an emptied body).
@@ -75,6 +96,7 @@
       head,
       body: body.length > 0 || hadBody ? body : null,
     });
+    report('Forwarded with your edits');
   }
 
   function toRepeater() {
@@ -92,75 +114,209 @@
 </script>
 
 <div class="intercept" data-testid="intercept-view">
-  <div class="toolbar">
-    <span data-testid="intercept-state">Intercept {intercept.enabled ? 'ON' : 'OFF'}</span>
-    <button type="button" data-testid="forward-all" onclick={() => void intercept.forwardAll()}
-      >Forward all</button
+  <header class="top">
+    <label class="switch">
+      <input
+        type="checkbox"
+        role="switch"
+        data-testid="intercept-switch"
+        checked={intercept.enabled}
+        onchange={(e) => void intercept.setEnabled(e.currentTarget.checked)}
+      />
+      <span class="track" aria-hidden="true"><span class="thumb"></span></span>
+      <span class="state" data-testid="intercept-state">Intercept is {intercept.enabled ? 'ON' : 'OFF'}</span>
+    </label>
+    <Badge kind="neutral" value={`${intercept.held.length} held`} />
+    <span class="spacer"></span>
+    <Button
+      data-testid="forward-all"
+      icon="forward"
+      disabled={intercept.held.length === 0}
+      onclick={() => void forwardAll()}>Forward all</Button
     >
-  </div>
+  </header>
 
   {#if intercept.error}
-    <p class="error" role="alert" data-testid="intercept-error">{intercept.error}</p>
+    <p class="alert" role="alert" data-testid="intercept-error">{intercept.error}</p>
   {/if}
 
-  <HeldList held={intercept.held} selectedId={focus?.id ?? null} onselect={(id) => (pickedId = id)} />
+  <div class="grid">
+    <div class="work">
+      <section class="card">
+        <h2>Queue</h2>
+        <HeldList
+          held={intercept.held}
+          enabled={intercept.enabled}
+          selectedId={focus?.id ?? null}
+          onselect={(id) => (pickedId = id)}
+          onenable={() => void intercept.setEnabled(true)}
+        />
+      </section>
 
-  {#if focus}
-    <section class="detail" data-testid="intercept-detail">
-      <div class="actions">
-        <button type="button" data-testid="forward" disabled={!original} onclick={() => void forward()}>
-          Forward{dirty && focus.editable ? ' (edited)' : ''}
-        </button>
-        <button type="button" data-testid="drop" onclick={() => void intercept.drop(focus.id)}
-          >Drop</button
-        >
-        <button type="button" data-testid="to-repeater" disabled={!original} onclick={toRepeater}
-          >Send to repeater</button
-        >
-        {#if !focus.editable}
-          <span class="badge" data-testid="not-editable-badge"
-            >not editable (body over the hold limit; forwards original)</span
-          >
-        {/if}
-      </div>
-      {#if loadError}
-        <p class="error" role="alert" data-testid="held-load-error">{loadError}</p>
-      {:else if original}
-        {#key `${focus.id}:${epoch}`}
-          <ByteEditor bind:bytes readonly={!focus.editable} />
-        {/key}
-      {:else}
-        <p class="placeholder">Loading held bytes…</p>
+      {#if focus}
+        <section class="card detail" data-testid="intercept-detail">
+          <Toolbar label="Held request actions">
+            <Button
+              variant="primary"
+              icon="forward"
+              kbd="Ctrl+F"
+              data-testid="forward"
+              disabled={!original}
+              onclick={() => void forward()}
+              >Forward{dirty && focus.editable ? ' (edited)' : ''}</Button
+            >
+            <Button variant="danger" icon="drop" kbd="Ctrl+D" data-testid="drop" onclick={() => void drop()}
+              >Drop</Button
+            >
+            <Button
+              icon="repeater"
+              kbd="Ctrl+R"
+              data-testid="to-repeater"
+              disabled={!original}
+              onclick={toRepeater}>Send to Repeater</Button
+            >
+            {#if !focus.editable}
+              <span class="not-editable" data-testid="not-editable-badge"
+                >not editable (body over the hold limit; forwards original)</span
+              >
+            {/if}
+          </Toolbar>
+          {#if loadError}
+            <p class="alert" role="alert" data-testid="held-load-error">{loadError}</p>
+          {:else if original}
+            {#key `${focus.id}:${epoch}`}
+              <ByteEditor bind:bytes readonly={!focus.editable} />
+            {/key}
+          {:else}
+            <p class="placeholder">Loading held bytes…</p>
+          {/if}
+        </section>
       {/if}
-    </section>
-  {/if}
+    </div>
 
-  <details class="rules-box">
-    <summary>Rules</summary>
-    <RulesEditor />
-  </details>
+    <aside class="card rules-card">
+      <h2>Rules</h2>
+      <RulesEditor />
+    </aside>
+  </div>
 </div>
 
 <style>
   .intercept {
     display: flex;
     flex-direction: column;
-    gap: 0.75rem;
+    gap: var(--s-3);
+    padding: var(--s-4);
+    min-width: 0;
   }
-  .toolbar,
-  .actions {
+  .top {
     display: flex;
-    gap: 0.6rem;
     align-items: center;
+    gap: var(--s-3);
+    padding: var(--s-3) var(--s-4);
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    border-radius: var(--r-2);
   }
-  .badge {
-    font-size: 0.75rem;
-    border: 1px solid #b9770e;
-    color: #e0a040;
-    border-radius: 3px;
-    padding: 0.05rem 0.4rem;
+  .spacer {
+    flex: 1 1 auto;
   }
-  .error {
-    color: #e06060;
+  .switch {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--s-3);
+    cursor: pointer;
+    position: relative;
+  }
+  .switch input {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    opacity: 0;
+    cursor: pointer;
+    z-index: 1;
+  }
+  .track {
+    position: relative;
+    width: 40px;
+    height: 22px;
+    border-radius: 11px;
+    background: var(--bg-active);
+    border: 1px solid var(--border-strong);
+    transition: background 0.12s;
+  }
+  .thumb {
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: var(--fg-muted);
+    transition: transform 0.12s;
+  }
+  .switch input:checked + .track {
+    background: var(--warn-bg);
+    border-color: var(--warn);
+  }
+  .switch input:checked + .track .thumb {
+    transform: translateX(18px);
+    background: var(--warn);
+  }
+  .switch input:focus-visible + .track {
+    outline: 2px solid var(--focus);
+    outline-offset: 2px;
+  }
+  .state {
+    font-size: var(--fs-lg);
+    font-weight: 600;
+  }
+  .grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 20rem;
+    gap: var(--s-3);
+    align-items: start;
+  }
+  @media (max-width: 900px) {
+    .grid {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+  .work {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-3);
+    min-width: 0;
+  }
+  .card {
+    padding: var(--s-3) var(--s-4);
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    border-radius: var(--r-2);
+    min-width: 0;
+  }
+  h2 {
+    margin: 0 0 var(--s-2);
+    font-size: var(--fs-md);
+    font-weight: 600;
+  }
+  .not-editable {
+    font-size: var(--fs-xs);
+    color: var(--warn-fg);
+    background: var(--warn-bg);
+    border-radius: var(--r-1);
+    padding: 2px var(--s-2);
+  }
+  .alert {
+    margin: 0;
+    padding: var(--s-2) var(--s-3);
+    color: var(--danger-fg);
+    background: var(--danger-bg);
+    border-radius: var(--r-1);
+  }
+  .placeholder {
+    color: var(--fg-muted);
   }
 </style>

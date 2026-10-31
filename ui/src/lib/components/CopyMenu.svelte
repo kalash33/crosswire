@@ -3,6 +3,7 @@
   import { curl, raw } from '../api/copy';
   import { bytesToLatin1 } from '../editor/encoding';
   import { keymap } from '../keymap';
+  import { toasts } from '../ui/toasts.svelte';
 
   // Shared copy control for any view showing a recorded exchange. Every copy
   // goes through the audited server routes, then the async Clipboard API; the
@@ -21,8 +22,10 @@
           : bytesToLatin1(await raw(target, { redacted }));
       await navigator.clipboard.writeText(text);
       status = `Copied ${kind}${redacted ? ' (redacted)' : ''}.`;
+      toasts.push({ kind: 'success', text: status });
     } catch (e) {
       status = `Copy failed: ${e instanceof Error ? e.message : 'clipboard unavailable'}`;
+      toasts.push({ kind: 'error', text: status });
     }
   }
 

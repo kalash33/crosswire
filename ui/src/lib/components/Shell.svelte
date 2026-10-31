@@ -1,107 +1,110 @@
 <script lang="ts">
   import { onMount, type Snippet } from 'svelte';
   import { keymap } from '../keymap';
-  import { router, routes } from '../router.svelte';
+  import { router } from '../router.svelte';
   import { intercept } from '../stores/intercept.svelte';
+  import { events } from '../stores/events.svelte';
+  import { decoder } from '../stores/decoder.svelte';
   import { selectionBytes } from '../decode/selection';
-  import DecoderPane from './DecoderPane.svelte';
+  import Rail from './Rail.svelte';
+  import TopBar from './TopBar.svelte';
   import StatusBar from './StatusBar.svelte';
+  import ShortcutsDialog from './ShortcutsDialog.svelte';
+  import Toast from '../ui/Toast.svelte';
+  import { toasts } from '../ui/toasts.svelte';
 
   let { children }: { children?: Snippet } = $props();
 
-  // decode-selection opens the decoder pane seeded from the live DOM selection
-  // (covers CodeMirror and plain text); an empty selection opens it empty.
-  let decoderInput = $state<{ bytes: Uint8Array; nonLatin1: boolean } | null>(null);
+  let shortcutsOpen = $state(false);
+
+  // Live-socket transitions, one toast each (never per retry): "lost" once
+  // after a connected socket drops, "reconnected" once when it comes back.
+  // The very first connect is silent.
+  let everConnected = false;
+  let lost = false;
+  $effect(() => {
+    if (events.connected) {
+      if (lost) toasts.push({ kind: 'success', text: 'Live updates reconnected.' });
+      lost = false;
+      everConnected = true;
+    } else if (everConnected && !lost) {
+      lost = true;
+      toasts.push({ kind: 'error', text: 'Live updates lost. Reconnecting…', ttlMs: 6000 });
+    }
+  });
 
   // The ONE keydown dispatch for the whole app.
   onMount(() => {
-    const on = (e: KeyboardEvent) => keymap.dispatch(e);
+    // While the cheat sheet is open the page behind it is inert: no global
+    // chord (Ctrl+T, Ctrl+Shift+D, …) may act on it.
+    const on = (e: KeyboardEvent) => {
+      if (!shortcutsOpen) keymap.dispatch(e);
+    };
     window.addEventListener('keydown', on);
+    // Every route gets the live socket (status dot, counts, intercept queue).
+    events.start();
 
     // Global chords (available from every view). toggle-intercept flips the
-    // proxy hold from anywhere; decode-selection opens the decoder pane for the
-    // current selection. View-scoped chords (send, forward, drop, tab cycling,
-    // send-to-repeater) are registered by the view that owns them and torn down
-    // on unmount, so a chord never acts on a view that is no longer mounted.
+    // proxy hold from anywhere; decode-selection seeds the Decoder route with
+    // the current selection and opens it; `?` opens the cheat sheet. View-
+    // scoped chords (send, forward, drop, tab cycling, send-to-repeater) are
+    // registered by the view that owns them and torn down on unmount, so a
+    // chord never acts on a view that is no longer mounted.
     const offToggle = keymap.register('toggle-intercept', () => {
       if (intercept.loaded) void intercept.setEnabled(!intercept.enabled);
     });
     const offDecode = keymap.register('decode-selection', () => {
-      decoderInput = selectionBytes();
+      const sel = selectionBytes();
+      decoder.seed(sel.bytes, sel.nonLatin1);
+      router.navigate('/decoder');
+    });
+    const offShortcuts = keymap.register('show-shortcuts', () => {
+      shortcutsOpen = true;
     });
 
     return () => {
       window.removeEventListener('keydown', on);
       offToggle();
       offDecode();
+      offShortcuts();
+      events.close();
     };
   });
 </script>
 
 <div class="shell" data-testid="app-shell">
-  <nav class="nav" data-testid="app-nav" aria-label="Primary">
-    <strong class="brand">Crosswire</strong>
-    <!-- SPA nav: pushState via router.navigate (no server round-trip), rendered
-         as buttons so no dynamic <a href> is introduced (§11.1). -->
-    {#each routes as route (route.path)}
-      <button
-        type="button"
-        class="nav-link"
-        class:active={router.path === route.path}
-        aria-current={router.path === route.path ? 'page' : undefined}
-        data-testid={`nav-${route.label.toLowerCase()}`}
-        onclick={() => router.navigate(route.path)}
-      >
-        {route.label}
-      </button>
-    {/each}
-  </nav>
+  <Rail />
+  <TopBar onShortcuts={() => (shortcutsOpen = true)} />
   <main class="main" data-testid="app-main">
     {@render children?.()}
   </main>
-
-  {#if decoderInput}
-    {#key decoderInput}
-      <DecoderPane initial={decoderInput.bytes} initialNonLatin1={decoderInput.nonLatin1} onClose={() => (decoderInput = null)} />
-    {/key}
-  {/if}
-
   <StatusBar />
+  <Toast />
+  {#if shortcutsOpen}
+    <ShortcutsDialog onClose={() => (shortcutsOpen = false)} />
+  {/if}
 </div>
 
 <style>
+  /* Fixed-height application grid (U1 spec D3): only .main scrolls. */
   .shell {
     display: grid;
-    grid-template-rows: auto 1fr auto;
-    min-height: 100vh;
-  }
-  .nav {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    padding: 0.5rem 0.75rem;
-    border-bottom: 1px solid #8884;
-  }
-  .brand {
-    margin-right: 0.5rem;
-  }
-  .nav-link {
-    background: none;
-    border: none;
-    color: inherit;
-    font: inherit;
-    font-size: 0.85rem;
-    padding: 0.2rem 0.5rem;
-    border-radius: 4px;
-    cursor: pointer;
-    opacity: 0.8;
-  }
-  .nav-link.active {
-    background: #26263a;
-    opacity: 1;
+    grid-template-columns: var(--rail-w) minmax(0, 1fr);
+    grid-template-rows: var(--topbar-h) minmax(0, 1fr) var(--statusbar-h);
+    grid-template-areas:
+      'rail top'
+      'rail main'
+      'status status';
+    height: 100vh;
+    height: 100dvh;
+    overflow: hidden;
+    background: var(--bg);
   }
   .main {
+    grid-area: main;
+    min-width: 0;
+    min-height: 0;
     overflow: auto;
-    padding: 0.75rem;
+    padding: var(--s-3) var(--s-4);
   }
 </style>

@@ -1,5 +1,21 @@
 import { ApiError, errorFromResponse } from './errors';
 
+// A mid-session 401 (server restarted, cookie expired) must land on the Auth
+// screen, not leave a frozen view. The session store registers the handler
+// (a hook instead of an import keeps client <-> session acyclic).
+let onUnauthorized: (() => void) | null = null;
+
+/** The bootstrap exchange answers 401 for a bad token; that is not an expiry. */
+const SESSION_PATH = '/api/v1/session';
+
+export function setUnauthorizedHandler(fn: (() => void) | null): void {
+  onUnauthorized = fn;
+}
+
+function noteStatus(status: number, url: string): void {
+  if (status === 401 && url.split('?')[0] !== SESSION_PATH) onUnauthorized?.();
+}
+
 export type QueryValue = string | number | boolean | null | undefined;
 export type QueryParams = Record<string, QueryValue | readonly QueryValue[]>;
 
@@ -24,7 +40,10 @@ async function request<T>(url: string, init: RequestInit): Promise<T> {
   headers.set('Sec-Fetch-Site', 'same-origin');
   const res = await fetch(url, { ...init, headers, credentials: 'same-origin' });
   const text = await res.text();
-  if (!res.ok) throw errorFromResponse(res.status, res.statusText, text);
+  if (!res.ok) {
+    noteStatus(res.status, url);
+    throw errorFromResponse(res.status, res.statusText, text);
+  }
   if (text === '') return undefined as T;
   try {
     return JSON.parse(text) as T;
@@ -52,6 +71,7 @@ export async function apiGetBytes(
     headers: { 'Sec-Fetch-Site': 'same-origin' },
   });
   if (!res.ok) {
+    noteStatus(res.status, path);
     const text = await res.text();
     throw errorFromResponse(res.status, res.statusText, text);
   }

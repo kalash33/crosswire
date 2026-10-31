@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Web UI overhaul** (U1): a redesigned, dark-by-default interface with a
+  light theme toggle, built on in-repo design tokens and components (no new
+  dependencies). A tool rail and top bar replace the old header; a Start panel
+  walks a new project through proxy, CA and browser setup; Decoder and Settings
+  are routes of their own; History gets a selection toolbar, a row context menu,
+  bulk tag and add-to-scope, a foldable filter bar and a split exchange detail
+  with Headers, Raw and Hex tabs; Repeater, Intercept and Scope move onto the
+  same component set; a `?` sheet lists every shortcut.
 - **Web UI beta-1**: tags and a notes editor on each exchange, and a decoder
   pane for the selected message.
 - **Preview zero-egress layer**: the previewed content cannot make a network

@@ -62,3 +62,15 @@ test('pasting a valid token enters the app; invalid shows an error', async ({ pa
   await page.getByTestId('token-submit').click();
   await expect(page.getByTestId('app-shell')).toBeVisible();
 });
+
+test('a mid-session 401 returns to the auth screen', async ({ page }) => {
+  await page.route('**/api/v1/scope', (r) =>
+    r.fulfill({ status: 401, json: { error: { code: 'unauthorized', message: 'no session' } } }),
+  );
+  // The status bar loads scope as soon as the shell mounts; that 401 is the
+  // "server restarted" case and must land on Auth, not a frozen view.
+  await page.goto(`/#bootstrap=${GOOD}`);
+  await expect(page.getByTestId('auth-screen')).toBeVisible();
+  await expect(page.getByTestId('app-shell')).toHaveCount(0);
+  await expect(page.getByTestId('auth-error')).toContainText('expired');
+});

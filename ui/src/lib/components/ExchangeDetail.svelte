@@ -1,16 +1,45 @@
+<script lang="ts" module>
+  // The Headers/Raw/Hex choice per side outlives a row switch (the detail is
+  // re-created for every exchange), so it lives at module level.
+  type View = 'headers' | 'raw' | 'hex';
+  // A narrow pane shows one message at a time; the response is the default.
+  const views = $state<{ req: View; resp: View; side: 'req' | 'resp' }>({
+    req: 'raw',
+    resp: 'raw',
+    side: 'resp',
+  });
+</script>
+
 <script lang="ts">
-  import CopyMenu from './CopyMenu.svelte';
+  import { onMount } from 'svelte';
+  import CopyDropdown from './CopyDropdown.svelte';
   import TagsNotesEditor from './TagsNotesEditor.svelte';
-  import { history } from '../stores/history.svelte';
+  import HeadersTable from './HeadersTable.svelte';
+  import DiagnosticsList from './DiagnosticsList.svelte';
+  import HexWindow from './HexWindow.svelte';
   import ByteEditor from '../editor/ByteEditor.svelte';
+  import Badge from '../ui/Badge.svelte';
+  import Button from '../ui/Button.svelte';
+  import Tabs from '../ui/Tabs.svelte';
+  import Segmented from '../ui/Segmented.svelte';
+  import Splitter from '../ui/Splitter.svelte';
+  import { toasts } from '../ui/toasts.svelte';
+  import { history } from '../stores/history.svelte';
+  import { decoder } from '../stores/decoder.svelte';
+  import { router } from '../router.svelte';
+  import { copyStatus } from '../copy-actions.svelte';
+  import { selectionBytes } from '../decode/selection';
   import { bytesToLatin1 } from '../editor/encoding';
+  import { parseHeadLines, type HeaderLine } from '../http/headers';
+  import { humanBytes, timeShort } from '../format';
   import { apiGet, apiGetBytes } from '../api/client';
   import { previewToken, previewSrc } from '../api/preview';
   import { ApiError } from '../api/errors';
-  import type { ExchangeDto, HeadDto, MessageDto } from '../stores/history.svelte';
+  import type { ExchangeDto, HeadDto, MessageDto, Row } from '../stores/history.svelte';
 
-  // The selected exchange id. Changing it reloads the detail.
-  let { id }: { id: string } = $props();
+  // The selected exchange id (the parent re-creates this component per id) and
+  // its history row, when loaded, for the title line.
+  let { id, row = null }: { id: string; row?: Row | null } = $props();
 
   interface BodyState {
     bytes: Uint8Array;
@@ -26,6 +55,16 @@
   let previewUrl = $state<string | null>(null);
   let previewError = $state<string | null>(null);
 
+  // The layout follows the DETAIL PANE's own width (bind:clientWidth uses a
+  // ResizeObserver), not the window: from 760px the two messages sit side by
+  // side, each the full height; below that a Request | Response switch shows
+  // one at a time, also at full height.
+  const SIDE_BY_SIDE_PX = 760;
+  let paneWidth = $state(0);
+  const wide = $derived(paneWidth >= SIDE_BY_SIDE_PX);
+
+  onMount(() => copyStatus.clear());
+
   // The PATCH answers with an empty body, so merge the values that were sent.
   // A save that lands after a row switch still updates ITS row, never the
   // detail now showing another exchange.
@@ -35,15 +74,34 @@
     history.patchRow(savedId, values);
   }
 
-  async function openPreview() {
+  /** Render the response in the inert preview frame (also used by History's toolbar). */
+  export async function openPreview(): Promise<void> {
     const current = id;
     previewError = null;
+    views.side = 'resp';
     try {
       const { path } = await previewToken(current);
       if (id === current) previewUrl = previewSrc(path);
     } catch (e) {
       if (id === current) previewError = e instanceof Error ? e.message : 'preview failed';
     }
+  }
+
+  // Decode selection: read the selection at pointerdown, before the button
+  // takes focus, then seed the Decoder and go there.
+  let grabbed: { bytes: Uint8Array; nonLatin1: boolean } | null = null;
+  function grabSelection(): void {
+    grabbed = selectionBytes();
+  }
+  function decodeSelection(): void {
+    const sel = grabbed ?? selectionBytes();
+    grabbed = null;
+    if (sel.bytes.length === 0) {
+      toasts.push({ kind: 'info', text: 'Select bytes in the Raw view first, then Decode selection.' });
+      return;
+    }
+    decoder.seed(sel.bytes, sel.nonLatin1);
+    router.navigate('/decoder');
   }
 
   // Decode base64 (the model's bytes_serde wire form) into exact bytes.
@@ -59,12 +117,20 @@
     return head.type === 'http1-raw' ? base64ToBytes(head.bytes) : null;
   }
 
-  // A structured, text-only rendering of a non-raw head. Values are decoded
-  // Latin-1 (text only — never interpreted as markup).
+  // Fields of a normalized head; values are Latin-1 text, never markup.
+  function structuredFields(head: HeadDto): HeaderLine[] {
+    if (head.type !== 'normalized') return [];
+    return (head.map ?? []).map(([name, valueB64]) => ({
+      name,
+      value: bytesToLatin1(base64ToBytes(valueB64)),
+    }));
+  }
+
+  // A structured, text-only rendering of a non-raw head.
   function structuredHead(head: HeadDto): string {
     if (head.type === 'normalized') {
-      return (head.map ?? [])
-        .map(([name, valueB64]) => `${name}: ${bytesToLatin1(base64ToBytes(valueB64))}`)
+      return structuredFields(head)
+        .map((f) => `${f.name}: ${f.value}`)
         .join('\n');
     }
     if (head.type === 'tunnel') {
@@ -124,27 +190,205 @@
     return `Partial capture: body truncated at ${b.truncatedAt} bytes. The bytes below are the captured prefix.`;
   }
 
-  // A read-only fidelity/diagnostics summary for one message.
+  // A read-only fidelity summary for one message.
   function fidelityNote(msg: MessageDto): string {
-    const parts = [`fidelity: ${msg.fidelity}`, `kind: ${msg.kind}`];
-    const diags = msg.diagnostics ?? [];
-    if (diags.length > 0) {
-      parts.push(`${diags.length} diagnostic${diags.length === 1 ? '' : 's'}`);
+    return `fidelity: ${msg.fidelity}, kind: ${msg.kind}`;
+  }
+
+  // Head + body bytes for the Hex tab (the head only when it is byte-exact).
+  function hexBytes(msg: MessageDto, body: BodyState | null): Uint8Array {
+    const head = rawHeadBytes(msg.head) ?? new Uint8Array();
+    const b = body?.bytes ?? new Uint8Array();
+    if (b.length === 0) return head;
+    const out = new Uint8Array(head.length + b.length);
+    out.set(head, 0);
+    out.set(b, head.length);
+    return out;
+  }
+
+  function headerCount(msg: MessageDto): number {
+    const raw = rawHeadBytes(msg.head);
+    return raw ? parseHeadLines(raw).headers.length : structuredFields(msg.head).length;
+  }
+
+  // Title line: prefer the history row; fall back to the request line.
+  const reqStart = $derived.by(() => {
+    if (!exchange) return null;
+    const raw = rawHeadBytes(exchange.request.head);
+    return raw ? parseHeadLines(raw).start : null;
+  });
+  const titleMethod = $derived(row?.method ?? reqStart?.split(' ')[0] ?? '');
+  const titlePath = $derived(row?.path ?? reqStart?.split(' ')[1] ?? '');
+  const fullTime = $derived.by(() => {
+    if (!row) return '';
+    try {
+      return new Date(row.created_at).toLocaleString();
+    } catch {
+      return String(row.created_at);
     }
-    return parts.join(' · ');
+  });
+
+  function tabsFor(msg: MessageDto) {
+    const d = msg.diagnostics?.length ?? 0;
+    return [
+      { id: 'headers', label: 'Headers', badge: headerCount(msg), testid: 'detail-tab-headers' },
+      { id: 'raw', label: 'Raw', badge: d > 0 ? `${d} diag` : undefined, testid: 'detail-tab-raw' },
+      { id: 'hex', label: 'Hex', testid: 'detail-tab-hex' },
+    ];
   }
 </script>
 
-<section class="detail" data-testid="exchange-detail">
+{#snippet bodyBlock(side: 'req' | 'resp', body: BodyState | null)}
+  {#if body === null}
+    <p class="note">Loading body…</p>
+  {:else if body.error}
+    <p class="error" role="alert">{body.error}</p>
+  {:else if body.absent}
+    <p class="note" data-testid={`detail-${side}-body-empty`}>
+      No {side === 'req' ? 'request' : 'response'} body.
+    </p>
+  {:else}
+    {#key `${id}-${side}-${body.bytes.length}`}
+      <div data-testid={`detail-${side}-body`}>
+        <ByteEditor bytes={body.bytes} readonly={true} diagnostic={truncationBanner(body)} />
+      </div>
+    {/key}
+  {/if}
+{/snippet}
+
+{#snippet message(side: 'req' | 'resp', msg: MessageDto, body: BodyState | null)}
+  {@const view = views[side]}
+  <div class="toolbar">
+    <span class="ptitle">{side === 'req' ? 'Request' : 'Response'}</span>
+    <Tabs
+      tabs={tabsFor(msg)}
+      active={view}
+      label={side === 'req' ? 'Request view' : 'Response view'}
+      onselect={(v) => (views[side] = v as View)}
+    />
+    <span class="spacer"></span>
+    {#if side === 'resp' && body && !body.absent && !body.error}
+      <Button size="sm" icon="external" data-testid="preview-button" onclick={openPreview}>Preview</Button>
+    {/if}
+  </div>
+  <p class="note" data-testid={`detail-${side}-fidelity`}>{fidelityNote(msg)}</p>
+  {#if msg.diagnostics && msg.diagnostics.length > 0}
+    <DiagnosticsList diagnostics={msg.diagnostics} testid={`detail-${side}-diagnostics`} />
+  {/if}
+
+  {#if side === 'resp'}
+    {#if previewError}
+      <p class="error" role="alert" data-testid="preview-error">{previewError}</p>
+    {/if}
+    {#if previewUrl}
+      <!-- Inert render on the 127.0.0.1 origin: no allow-scripts, no allow-same-origin. -->
+      <!-- §11.1 allowlist: previewSrc() hard-codes the http://127.0.0.1:<port> origin and only accepts a /preview/ path. -->
+      <!-- eslint-disable no-restricted-syntax -->
+      <iframe
+        data-testid="preview-frame"
+        title="Response preview"
+        sandbox=""
+        referrerpolicy="no-referrer"
+        src={previewUrl}
+      ></iframe>
+      <!-- eslint-enable no-restricted-syntax -->
+    {/if}
+  {/if}
+
+  <div class="panel" role="tabpanel" data-testid={`detail-${side}-panel-${view}`}>
+    {#if view === 'headers'}
+      {#if rawHeadBytes(msg.head)}
+        <HeadersTable bytes={rawHeadBytes(msg.head)} testid={`detail-${side}-headers`} />
+      {:else if msg.head.type === 'normalized'}
+        <HeadersTable structured={structuredFields(msg.head)} testid={`detail-${side}-headers`} />
+      {:else}
+        <p class="note">{structuredHead(msg.head)}</p>
+      {/if}
+    {:else if view === 'raw'}
+      {#key id}
+        {#if rawHeadBytes(msg.head)}
+          <div data-testid={`detail-${side}-head`} data-exact="true">
+            <ByteEditor bytes={rawHeadBytes(msg.head)!} readonly={true} />
+          </div>
+        {:else}
+          <!-- Structured fallback: text only (no byte-exact head bytes). -->
+          <pre class="structured" data-testid={`detail-${side}-head`} data-exact="false">{structuredHead(
+              msg.head,
+            )}</pre>
+        {/if}
+      {/key}
+      {@render bodyBlock(side, body)}
+    {:else}
+      {#key `${id}-${side}-hex-${body?.bytes.length ?? -1}`}
+        <HexWindow bytes={hexBytes(msg, body)} testid={`detail-${side}-hex`} />
+      {/key}
+      {#if rawHeadBytes(msg.head) === null}
+        <p class="note">Body only: this head was not recorded byte-exact.</p>
+      {/if}
+    {/if}
+  </div>
+{/snippet}
+
+{#snippet requestPane()}
+  {#if exchange}
+    <div class="pane" data-testid="detail-request">
+      {@render message('req', exchange.request, reqBody)}
+    </div>
+  {/if}
+{/snippet}
+
+{#snippet responsePane()}
+  {#if exchange}
+    <div class="pane" data-testid="detail-response">
+      {#if !exchange.response}
+        <div class="toolbar"><span class="ptitle">Response</span></div>
+        <p class="note" data-testid="detail-no-response">No response recorded.</p>
+      {:else}
+        {@render message('resp', exchange.response, respBody)}
+      {/if}
+    </div>
+  {/if}
+{/snippet}
+
+<section class="detail" data-testid="exchange-detail" bind:clientWidth={paneWidth}>
   {#if loadError}
     <p class="error" data-testid="detail-error" role="alert">{loadError}</p>
   {:else if !exchange}
-    <p data-testid="detail-loading">Loading exchange…</p>
+    <p class="note pad" data-testid="detail-loading">Loading exchange…</p>
   {:else}
-    <header class="meta">
-      <code class="id" data-testid="detail-id">{exchange.id}</code>
-      <span class="chip">state: {exchange.state ?? 'unknown'}</span>
-      <span class="chip">scope: {exchange.scope_state ?? 'unknown'}</span>
+    <header class="head">
+      <div class="titleline">
+        <h2 class="title" title={`${titleMethod} ${titlePath}`}>
+          <span class="method">{titleMethod}</span>
+          <span class="path">{titlePath}</span>
+        </h2>
+        <CopyDropdown
+          {id}
+          row={row ? { host: row.host, path: row.path } : null}
+          chords={true}
+          showStatus={true}
+        />
+        <Button
+          size="sm"
+          variant="ghost"
+          icon="decoder"
+          kbd="Ctrl+Shift+D"
+          data-testid="decode-selection"
+          onpointerdown={grabSelection}
+          onclick={decodeSelection}>Decode selection</Button
+        >
+      </div>
+      <div class="meta">
+        {#if row?.host}<span class="host" title={row.host}>{row.host}</span>{/if}
+        {#if row?.status !== null && row?.status !== undefined}<Badge kind="status" value={row.status} />{/if}
+        <Badge kind="state" value={exchange.state ?? 'unknown'} />
+        <span class="scope"><span class="dim">scope</span><Badge kind="scope" value={exchange.scope_state ?? 'unknown'} /></span>
+        {#if row?.resp_len !== null && row?.resp_len !== undefined}
+          <span class="dim">{humanBytes(row.resp_len)}</span>
+        {/if}
+        {#if row}<span class="dim" title={fullTime}>{timeShort(row.created_at)}</span>{/if}
+        <code class="id" data-testid="detail-id">{exchange.id}</code>
+      </div>
       <TagsNotesEditor
         id={exchange.id}
         tags={exchange.tags ?? []}
@@ -153,116 +397,28 @@
       />
     </header>
 
-    <!-- Request -->
-    <div class="pane" data-testid="detail-request">
-      <h3>Request</h3>
-      <CopyMenu id={exchange.id} />
-      <p class="note" data-testid="detail-req-fidelity">{fidelityNote(exchange.request)}</p>
-      {#if exchange.request.diagnostics && exchange.request.diagnostics.length > 0}
-        <ul class="diags" data-testid="detail-req-diagnostics">
-          {#each exchange.request.diagnostics as d, i (i)}
-            <li>{d.severity}: {d.code} @ {d.span.start}‥{d.span.end}</li>
-          {/each}
-        </ul>
-      {/if}
-
-      <h4>Head</h4>
-      {#key exchange.id}
-        {#if rawHeadBytes(exchange.request.head)}
-          <div data-testid="detail-req-head" data-exact="true">
-            <ByteEditor bytes={rawHeadBytes(exchange.request.head)!} readonly={true} />
-          </div>
-        {:else}
-          <!-- Structured fallback: text only (no byte-exact head bytes). -->
-          <pre class="structured" data-testid="detail-req-head" data-exact="false">{structuredHead(
-              exchange.request.head,
-            )}</pre>
-        {/if}
-      {/key}
-
-      <h4>Body</h4>
-      {#if reqBody === null}
-        <p class="note">Loading body…</p>
-      {:else if reqBody.error}
-        <p class="error" role="alert">{reqBody.error}</p>
-      {:else if reqBody.absent}
-        <p class="note" data-testid="detail-req-body-empty">No request body.</p>
+    <div class="sides">
+      {#if wide}
+        <Splitter direction="row" storageKey="history-messages" min={[300, 300]} label="Resize request and response">
+          {#snippet a()}{@render requestPane()}{/snippet}
+          {#snippet b()}{@render responsePane()}{/snippet}
+        </Splitter>
       {:else}
-        {#key `${exchange.id}-req-${reqBody.bytes.length}`}
-          <div data-testid="detail-req-body">
-            <ByteEditor
-              bytes={reqBody.bytes}
-              readonly={true}
-              diagnostic={truncationBanner(reqBody)}
-            />
-          </div>
-        {/key}
-      {/if}
-    </div>
-
-    <!-- Response -->
-    <div class="pane" data-testid="detail-response">
-      <h3>Response</h3>
-      {#if !exchange.response}
-        <p class="note" data-testid="detail-no-response">No response recorded.</p>
-      {:else}
-        <p class="note" data-testid="detail-resp-fidelity">{fidelityNote(exchange.response)}</p>
-        {#if exchange.response.diagnostics && exchange.response.diagnostics.length > 0}
-          <ul class="diags" data-testid="detail-resp-diagnostics">
-            {#each exchange.response.diagnostics as d, i (i)}
-              <li>{d.severity}: {d.code} @ {d.span.start}‥{d.span.end}</li>
-            {/each}
-          </ul>
-        {/if}
-
-        <h4>Head</h4>
-        {#key exchange.id}
-          {#if rawHeadBytes(exchange.response.head)}
-            <div data-testid="detail-resp-head" data-exact="true">
-              <ByteEditor bytes={rawHeadBytes(exchange.response.head)!} readonly={true} />
-            </div>
-          {:else}
-            <pre class="structured" data-testid="detail-resp-head" data-exact="false">{structuredHead(
-                exchange.response.head,
-              )}</pre>
-          {/if}
-        {/key}
-
-        <h4>Body</h4>
-        {#if respBody === null}
-          <p class="note">Loading body…</p>
-        {:else if respBody.error}
-          <p class="error" role="alert">{respBody.error}</p>
-        {:else if respBody.absent}
-          <p class="note" data-testid="detail-resp-body-empty">No response body.</p>
-        {:else}
-          {#key `${exchange.id}-resp-${respBody.bytes.length}`}
-            <div data-testid="detail-resp-body">
-              <ByteEditor
-                bytes={respBody.bytes}
-                readonly={true}
-                diagnostic={truncationBanner(respBody)}
-              />
-            </div>
-          {/key}
-          <button type="button" data-testid="preview-button" onclick={openPreview}>Preview</button>
-          {#if previewError}
-            <p class="error" role="alert" data-testid="preview-error">{previewError}</p>
-          {/if}
-          {#if previewUrl}
-            <!-- Inert render on the 127.0.0.1 origin: no allow-scripts, no allow-same-origin. -->
-            <!-- §11.1 allowlist: previewSrc() hard-codes the http://127.0.0.1:<port> origin and only accepts a /preview/ path. -->
-            <!-- eslint-disable no-restricted-syntax -->
-            <iframe
-              data-testid="preview-frame"
-              title="Response preview"
-              sandbox=""
-              referrerpolicy="no-referrer"
-              src={previewUrl}
-            ></iframe>
-            <!-- eslint-enable no-restricted-syntax -->
-          {/if}
-        {/if}
+        <div class="switch">
+          <Segmented
+            size="sm"
+            label="Message"
+            value={views.side}
+            onchange={(v) => (views.side = v)}
+            options={[
+              { value: 'req', label: 'Request', testid: 'detail-side-req' },
+              { value: 'resp', label: 'Response', testid: 'detail-side-resp' },
+            ]}
+          />
+        </div>
+        <div class="single">
+          {#if views.side === 'req'}{@render requestPane()}{:else}{@render responsePane()}{/if}
+        </div>
       {/if}
     </div>
   {/if}
@@ -272,70 +428,156 @@
   .detail {
     display: flex;
     flex-direction: column;
-    gap: 0.75rem;
+    height: 100%;
     min-width: 0;
+    min-height: 0;
+  }
+  .head {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-2);
+    padding: var(--s-3);
+    border-bottom: 1px solid var(--border);
+    /* Many or long tags (or a long host) must never squeeze the messages out:
+       the header takes at most ~40% of the pane and scrolls beyond that. */
+    flex: 0 1 auto;
+    max-height: 40%;
+    overflow-y: auto;
+  }
+  .titleline {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--s-2);
+    min-width: 0;
+  }
+  /* Only the title gives up width: a long path must never shrink the Copy and
+     Decode buttons under each other. */
+  .titleline > :global(:not(h2)) {
+    flex: none;
+  }
+  .title {
+    flex: 1 1 auto;
+    min-width: 0;
+    margin: 0;
+    font-family: var(--font-mono);
+    font-size: var(--fs-xl);
+    font-weight: 500;
+    line-height: 1.35;
+    color: var(--fg);
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    overflow-wrap: anywhere;
+  }
+  .method {
+    font-weight: 700;
+    color: var(--accent);
+    margin-right: var(--s-2);
   }
   .meta {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: 0.4rem;
+    gap: var(--s-1) var(--s-2);
+    font-size: var(--fs-sm);
+  }
+  .host {
+    font-family: var(--font-mono);
+    color: var(--fg-muted);
+    overflow-wrap: anywhere;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .scope {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--s-1);
+  }
+  .dim {
+    color: var(--fg-faint);
+    font-variant-numeric: tabular-nums;
   }
   .id {
-    font-size: 0.8rem;
-    opacity: 0.85;
+    margin-left: auto;
+    font-size: var(--fs-xs);
+    color: var(--fg-faint);
   }
-  .chip {
-    font-size: 0.75rem;
-    padding: 0.1rem 0.4rem;
-    border-radius: 3px;
-    background: #2a2a3a;
-    color: #cfd0ff;
+  .sides {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  .switch {
+    padding: var(--s-2) var(--s-3) 0;
+  }
+  .single {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: auto;
   }
   .pane {
     display: flex;
     flex-direction: column;
-    gap: 0.35rem;
+    gap: var(--s-2);
+    min-width: 0;
+    padding: var(--s-2) var(--s-3) var(--s-3);
+  }
+  .toolbar {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: var(--s-2);
     min-width: 0;
   }
-  h3 {
-    margin: 0.25rem 0 0;
-    font-size: 0.95rem;
+  .ptitle {
+    font-size: var(--fs-md);
+    font-weight: 600;
+    color: var(--fg);
+    margin-right: var(--s-1);
   }
-  h4 {
-    margin: 0.35rem 0 0;
-    font-size: 0.8rem;
-    opacity: 0.8;
+  .spacer {
+    flex: 1 1 auto;
+  }
+  .panel {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-2);
+    min-width: 0;
   }
   .note {
-    font-size: 0.8rem;
-    opacity: 0.75;
+    font-size: var(--fs-sm);
+    color: var(--fg-faint);
     margin: 0;
   }
+  .pad {
+    padding: var(--s-3);
+  }
   .error {
-    font-size: 0.85rem;
-    color: #ff9b9b;
+    font-size: var(--fs-md);
+    color: var(--danger);
     margin: 0;
+    padding: var(--s-2) var(--s-3);
   }
   .structured {
     margin: 0;
-    padding: 0.4rem 0.6rem;
-    background: #1b1b24;
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    font-size: 0.8rem;
+    padding: var(--s-2) var(--s-3);
+    background: var(--bg-sunken);
+    font-family: var(--font-mono);
+    font-size: var(--fs-sm);
     white-space: pre-wrap;
     word-break: break-all;
   }
   iframe {
     width: 100%;
     height: 20rem;
-    border: 1px solid #333;
-    background: #fff;
-  }
-  .diags {
-    margin: 0;
-    padding-left: 1rem;
-    font-size: 0.78rem;
-    color: #ffd9a0;
+    border: 1px solid var(--border);
+    border-radius: var(--r-1);
+    background: var(--preview-bg);
   }
 </style>

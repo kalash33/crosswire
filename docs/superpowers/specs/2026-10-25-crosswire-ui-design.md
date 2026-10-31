@@ -7,6 +7,14 @@ binding authority for product behaviour (§7), untrusted-content rendering
 pins the **frontend architecture** those sections leave open, for the alpha.2
 UI that drives the Plan 4 backend.
 
+**U1 addendum (2026-10-31):** the visual design, app shell and per-view
+layouts were reworked in U1 (design tokens with dark/light themes, a tool rail
+and top bar, a Start panel, `/decoder` and `/settings` routes, visible row
+actions, the split exchange detail with Headers/Raw/Hex tabs). Where the two
+disagree on layout, components or discoverability, follow
+`docs/superpowers/specs/2026-10-31-crosswire-u1-proper-app-ui-design.md`; the
+architecture, data flow and §11.1 rules here are unchanged.
+
 ## 1. What this is
 
 The Crosswire web UI: a Svelte single-page app that drives the alpha.2

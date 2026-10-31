@@ -2,7 +2,9 @@
   // A classic hex dump of the SAME bytes the editor holds: offset, up to 16 hex
   // columns, and a Latin-1/ASCII gutter. It reads the raw Uint8Array directly
   // (never a lossy string), so it matches the editor byte for byte.
-  let { bytes = new Uint8Array() }: { bytes?: Uint8Array } = $props();
+  // `base` is the absolute offset of bytes[0], for a paged window over a larger
+  // buffer (the History Hex tab); offsets print as base + index.
+  let { bytes = new Uint8Array(), base = 0 }: { bytes?: Uint8Array; base?: number } = $props();
 
   const BYTES_PER_ROW = 16;
 
@@ -17,7 +19,7 @@
       const cells = Array.from(slice, hx);
       let ascii = '';
       for (const b of slice) ascii += b >= 0x20 && b <= 0x7e ? String.fromCharCode(b) : '.';
-      out.push({ offset: off.toString(16).padStart(8, '0'), cells, ascii });
+      out.push({ offset: (base + off).toString(16).padStart(8, '0'), cells, ascii });
     }
     return out;
   });
@@ -45,7 +47,7 @@
 
 <style>
   .hex-pane {
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-family: var(--font-mono);
     font-size: 0.8rem;
     line-height: 1.4;
     white-space: pre;
@@ -56,16 +58,16 @@
     gap: 1rem;
   }
   .hex-offset {
-    color: #888;
+    color: var(--hex-offset);
   }
   .hex-cells {
     display: inline-flex;
     gap: 0.35rem;
   }
   .hex-ascii {
-    color: #9ab;
+    color: var(--hex-ascii);
   }
   .hex-empty {
-    color: #888;
+    color: var(--hex-offset);
   }
 </style>

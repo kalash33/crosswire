@@ -1,17 +1,24 @@
 <script lang="ts">
+  import { EditorView } from '@codemirror/view';
   import ByteEditor from '../editor/ByteEditor.svelte';
   import ConnSettings from './ConnSettings.svelte';
-  import CopyMenu from './CopyMenu.svelte';
-  import ResultHeader from './ResultHeader.svelte';
-  import { repeater, type RepeaterTab } from '../stores/repeater.svelte';
+  import RepeaterResponse from './RepeaterResponse.svelte';
+  import { repeater, type Mode, type RepeaterTab } from '../stores/repeater.svelte';
+  import { decoder } from '../stores/decoder.svelte';
+  import { router } from '../router.svelte';
   import { assistedChips, type AssistedToggles } from '../editor/assisted';
-  import { latin1ToBytes } from '../editor/encoding';
-  import { apiGetBytes } from '../api/client';
-  import { ApiError } from '../api/errors';
+  import { bytesToLatin1, latin1ToBytes } from '../editor/encoding';
+  import { toasts } from '../ui/toasts.svelte';
+  import Button from '../ui/Button.svelte';
+  import Segmented from '../ui/Segmented.svelte';
+  import Splitter from '../ui/Splitter.svelte';
+  import Toolbar from '../ui/Toolbar.svelte';
 
-  // One repeater tab's editor + connection + result. The tab object is reactive
-  // store state; its `raw` bytes are bound two-way to the editable ByteEditor.
-  let { tab }: { tab: RepeaterTab } = $props();
+  // One repeater tab: the request (connection card, toolbar, editor) beside
+  // the response. The tab object is reactive store state; its `raw` bytes are
+  // bound two-way to the editable ByteEditor. `onsend` is the view's send
+  // (it raises the error toast), shared with the Ctrl+Space chord.
+  let { tab, onsend }: { tab: RepeaterTab; onsend: (id: string) => void } = $props();
 
   // Assisted toggles (both default on, per the UI contract). Display-only: the
   // server applies the real edits; the chips describe what it will do.
@@ -21,18 +28,24 @@
   // bytes go untouched, so no assisted chips are rendered above the editor.
   const chips = $derived(tab.mode === 'assisted' ? assistedChips(tab.raw, toggles) : []);
 
+  const MODES = [
+    { value: 'assisted' as const, label: 'Assisted', testid: 'mode-assisted' },
+    { value: 'raw' as const, label: 'Raw', testid: 'mode-raw' },
+  ];
+
   // The ByteEditor seeds its document from `bytes` once at mount and thereafter
   // flows edits OUT through the binding; it does not react to an external `bytes`
   // reset. So when we replace the whole buffer (paste-raw), bump this epoch to
   // force a remount that re-seeds from the new bytes. Ordinary keystroke edits
   // flow editor -> store and never bump it, so the caret is preserved.
   let editorEpoch = $state(0);
+  let editorWrap = $state<HTMLElement>();
 
-  // PASTE-RAW (first-class). The true byte-exact inverse of the editor's "Copy
-  // raw": read the clipboard text and map it Latin-1 1:1 (every code point
-  // 0x00..0xFF -> that byte), replacing the whole request buffer. Unlike the
-  // editor's in-editor paste (UTF-8, wire-safe for human text), this preserves
-  // raw bytes exactly — the path the paste-raw round-trip gate exercises.
+  // PASTE-RAW (first-class). The true byte-exact inverse of "Copy raw": read
+  // the clipboard text and map it Latin-1 1:1 (every code point 0x00..0xFF ->
+  // that byte), replacing the whole request buffer. Unlike the editor's
+  // in-editor paste (UTF-8, wire-safe for human text), this preserves raw bytes
+  // exactly — the path the paste-raw round-trip gate exercises.
   let pasteError = $state<string | null>(null);
   async function pasteRaw(): Promise<void> {
     pasteError = null;
@@ -41,231 +54,207 @@
       repeater.setRaw(tab.id, latin1ToBytes(text));
       editorEpoch += 1;
     } catch {
-      pasteError = 'Paste failed: clipboard unavailable.';
+      pasteError = 'Paste failed: the clipboard is unavailable. Allow clipboard access and try again.';
     }
   }
 
-  // ---- Response bytes -------------------------------------------------------
-  // Sourced via apiGetBytes('/exchanges/{id}/body/resp') for the outcome's
-  // exchange_id (the send response carries only the id, not the bytes). A 404
-  // means the response had no body.
-  interface RespState {
-    bytes: Uint8Array;
-    absent: boolean;
-    error: string | null;
+  // COPY RAW: the whole draft as Latin-1 text (byte b -> U+00b), so pasting it
+  // back with "Paste raw" restores every byte.
+  async function copyRaw(): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(bytesToLatin1(tab.raw));
+      toasts.push({ kind: 'success', text: `Copied raw request (${tab.raw.length} bytes).` });
+    } catch {
+      toasts.push({ kind: 'error', text: 'Copy failed: the clipboard is unavailable.' });
+    }
   }
-  let resp = $state<RespState | null>(null);
 
+  // DECODE SELECTION: the request editor's selection, read from the editor
+  // state (byte-exact; the DOM text holds placeholder glyphs). An empty
+  // selection sends the whole draft.
+  function decodeSelection(): void {
+    const cm = editorWrap?.querySelector('.cm-editor');
+    const view = cm instanceof HTMLElement ? EditorView.findFromDOM(cm) : null;
+    let bytes = tab.raw;
+    if (view) {
+      const { from, to } = view.state.selection.main;
+      if (to > from) bytes = latin1ToBytes(view.state.sliceDoc(from, to));
+    }
+    decoder.seed(bytes, false);
+    router.navigate('/decoder');
+  }
+
+  // Panes sit side by side from 1280px; below that they stack.
+  // Initialised synchronously so the first frame already has the right
+  // direction; the effect follows later viewport changes.
+  const STACK_QUERY = '(max-width: 1279px)';
+  const canMatch = typeof window !== 'undefined' && typeof window.matchMedia === 'function';
+  let stacked = $state(canMatch && window.matchMedia(STACK_QUERY).matches);
   $effect(() => {
-    const id = tab.outcome?.exchange_id;
-    resp = null;
-    if (!id) return;
-    const current = id;
-    void (async () => {
-      try {
-        const { bytes } = await apiGetBytes(
-          `/api/v1/exchanges/${encodeURIComponent(current)}/body/resp`,
-        );
-        if (tab.outcome?.exchange_id === current) {
-          resp = { bytes, absent: false, error: null };
-        }
-      } catch (e) {
-        if (tab.outcome?.exchange_id !== current) return;
-        if (e instanceof ApiError && e.status === 404) {
-          resp = { bytes: new Uint8Array(), absent: true, error: null };
-        } else {
-          resp = {
-            bytes: new Uint8Array(),
-            absent: false,
-            error: e instanceof Error ? e.message : 'response body read failed',
-          };
-        }
-      }
-    })();
+    if (!canMatch) return;
+    const mq = window.matchMedia(STACK_QUERY);
+    stacked = mq.matches;
+    const on = (e: MediaQueryListEvent) => (stacked = e.matches);
+    mq.addEventListener('change', on);
+    return () => mq.removeEventListener('change', on);
   });
-
-  function send(): void {
-    void repeater.send(tab.id);
-  }
 </script>
 
 <div class="tab-body" data-testid="repeater-tab-body">
-  <ConnSettings conn={tab.conn} onChange={(patch) => repeater.setConn(tab.id, patch)} />
+  <Splitter
+    direction={stacked ? 'column' : 'row'}
+    storageKey="repeater-split"
+    min={[260, 220]}
+    label="Resize request and response"
+  >
+    {#snippet a()}
+      <section class="request" aria-label="Request">
+        <ConnSettings conn={tab.conn} onChange={(patch) => repeater.setConn(tab.id, patch)} />
 
-  <div class="toolbar">
-    <div class="modes" role="group" aria-label="editor mode">
-      <button
-        type="button"
-        data-testid="mode-assisted"
-        class:active={tab.mode === 'assisted'}
-        aria-pressed={tab.mode === 'assisted'}
-        onclick={() => repeater.setMode(tab.id, 'assisted')}>Assisted</button
-      >
-      <button
-        type="button"
-        data-testid="mode-raw"
-        class:active={tab.mode === 'raw'}
-        aria-pressed={tab.mode === 'raw'}
-        onclick={() => repeater.setMode(tab.id, 'raw')}>Raw</button
-      >
-    </div>
+        <Toolbar label="Request actions" dense>
+          <Button
+            variant="primary"
+            icon="send"
+            kbd="Ctrl+Space"
+            data-testid="send"
+            disabled={tab.sending}
+            onclick={() => onsend(tab.id)}>{tab.sending ? 'Sending…' : 'Send'}</Button
+          >
+          <span class="sep"></span>
+          <Button size="sm" variant="ghost" data-testid="paste-raw" onclick={pasteRaw}>Paste raw</Button>
+          <Button size="sm" variant="ghost" icon="copy" data-testid="copy-draft-raw" onclick={copyRaw}
+            >Copy raw</Button
+          >
+          <Button
+            size="sm"
+            variant="ghost"
+            icon="decoder"
+            data-testid="decode-selection"
+            title="Decode selection (Ctrl+Shift+D)"
+            onclick={decodeSelection}>Decode selection</Button
+          >
+          <span class="spacer"></span>
+          <Segmented
+            size="sm"
+            label="Editor mode"
+            options={MODES}
+            value={tab.mode}
+            onchange={(m: Mode) => repeater.setMode(tab.id, m)}
+          />
+        </Toolbar>
 
-    {#if tab.mode === 'assisted'}
-      <div class="toggles" role="group" aria-label="assisted toggles">
-        <label class="check">
-          <input type="checkbox" data-testid="toggle-content-length" bind:checked={toggles.contentLength} />
-          <span>Content-Length</span>
-        </label>
-        <label class="check">
-          <input type="checkbox" data-testid="toggle-line-endings" bind:checked={toggles.lineEndings} />
-          <span>Line endings</span>
-        </label>
-      </div>
-    {/if}
-
-    <div class="spacer"></div>
-
-    <button type="button" data-testid="paste-raw" onclick={pasteRaw}>Paste raw</button>
-    <button type="button" data-testid="send" class="send" disabled={tab.sending} onclick={send}>
-      {tab.sending ? 'Sending…' : 'Send'}
-    </button>
-  </div>
-
-  {#if pasteError}
-    <p class="warn" data-testid="paste-error" role="status">{pasteError}</p>
-  {/if}
-
-  <!-- REQUEST: editable byte editor bound to the tab's raw bytes. -->
-  <div class="editor-wrap" data-testid="repeater-request">
-    {#key `${tab.id}-${editorEpoch}`}
-      <ByteEditor
-        bind:bytes={() => tab.raw, (v) => repeater.setRaw(tab.id, v)}
-        readonly={false}
-        {chips}
-      />
-    {/key}
-  </div>
-
-  <!-- Distinct error channels: send vs draft-save. -->
-  {#if tab.error}
-    <p class="error" data-testid="tab-error" role="alert">Send failed: {tab.error}</p>
-  {/if}
-  {#if tab.saveError}
-    <p class="warn" data-testid="tab-save-error" role="status">{tab.saveError}</p>
-  {/if}
-
-  <!-- RESULT -->
-  {#if tab.outcome}
-    <ResultHeader outcome={tab.outcome} />
-    <CopyMenu id={tab.outcome.exchange_id} />
-
-    <div class="pane" data-testid="repeater-response">
-      <h4>Response</h4>
-      {#if resp === null}
-        <p class="note">Loading response…</p>
-      {:else if resp.error}
-        <p class="error" role="alert" data-testid="resp-error">{resp.error}</p>
-      {:else if resp.absent}
-        <p class="note" data-testid="resp-empty">No response body.</p>
-      {:else}
-        {#key `${tab.outcome.exchange_id}-${resp.bytes.length}`}
-          <div data-testid="result-resp-body">
-            <ByteEditor bytes={resp.bytes} readonly={true} />
+        {#if tab.mode === 'assisted'}
+          <div class="assist-opts" role="group" aria-label="Assisted options">
+            <span class="opts-label">On send</span>
+            <label class="opt" class:on={toggles.contentLength}>
+              <input type="checkbox" data-testid="toggle-content-length" bind:checked={toggles.contentLength} />
+              <span>Fix Content-Length</span>
+            </label>
+            <label class="opt" class:on={toggles.lineEndings}>
+              <input type="checkbox" data-testid="toggle-line-endings" bind:checked={toggles.lineEndings} />
+              <span>Normalize line endings</span>
+            </label>
           </div>
-        {/key}
-      {/if}
-    </div>
-  {/if}
+        {/if}
+
+        {#if pasteError}
+          <p class="warn" data-testid="paste-error" role="status">{pasteError}</p>
+        {/if}
+        {#if tab.saveError}
+          <p class="warn" data-testid="tab-save-error" role="status">{tab.saveError}</p>
+        {/if}
+
+        <!-- REQUEST: editable byte editor bound to the tab's raw bytes. It stays
+             the first CodeMirror editor in DOM order (the response is pane B). -->
+        <div class="editor-wrap" data-testid="repeater-request" bind:this={editorWrap}>
+          {#key `${tab.id}-${editorEpoch}`}
+            <ByteEditor
+              bind:bytes={() => tab.raw, (v) => repeater.setRaw(tab.id, v)}
+              readonly={false}
+              showCopyRaw={false}
+              {chips}
+            />
+          {/key}
+        </div>
+      </section>
+    {/snippet}
+    {#snippet b()}
+      <RepeaterResponse {tab} />
+    {/snippet}
+  </Splitter>
 </div>
 
 <style>
   .tab-body {
-    display: flex;
-    flex-direction: column;
-    gap: 0.5rem;
+    flex: 1;
+    min-height: 0;
     min-width: 0;
   }
-  .toolbar {
+  .request {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-2);
+    height: 100%;
+    min-height: 0;
+    padding: var(--s-2) var(--s-3) var(--s-2) 0;
+  }
+  .assist-opts {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: 0.5rem;
+    gap: var(--s-1) var(--s-2);
+    font-size: var(--fs-sm);
   }
-  .spacer {
-    flex: 1 1 auto;
+  .opts-label {
+    color: var(--fg-muted);
   }
-  .modes {
+  .opt {
     display: inline-flex;
-    border: 1px solid #3a3a4a;
-    border-radius: 4px;
-    overflow: hidden;
-  }
-  .modes button {
-    background: #22222e;
-    color: #cfd0ff;
-    border: none;
-    padding: 0.25rem 0.6rem;
-    font-size: 0.78rem;
-    cursor: pointer;
-  }
-  .modes button.active {
-    background: #3a3a5a;
-  }
-  .toggles {
-    display: flex;
-    gap: 0.6rem;
-  }
-  .check {
-    display: flex;
     align-items: center;
-    gap: 0.3rem;
-    font-size: 0.76rem;
-  }
-  .toolbar button:not(.modes button) {
-    font-size: 0.78rem;
-    padding: 0.25rem 0.6rem;
-    border: 1px solid #3a3a4a;
-    border-radius: 4px;
-    background: #22222e;
-    color: #cfd0ff;
+    gap: 6px;
+    height: 22px;
+    padding: 0 8px 0 6px;
+    border: 1px solid var(--border);
+    border-radius: var(--r-pill);
+    background: var(--bg-sunken);
+    color: var(--fg-muted);
     cursor: pointer;
   }
-  .toolbar button.send {
-    background: #2a4a2a;
-    color: #cfeccf;
+  .opt.on {
+    border-color: var(--border-strong);
+    background: var(--chip-bg);
+    color: var(--chip-fg);
   }
-  .toolbar button:disabled {
-    opacity: 0.6;
-    cursor: default;
+  .opt input {
+    margin: 0;
+  }
+  .opt:focus-within {
+    outline: 2px solid var(--focus);
+    outline-offset: 1px;
   }
   .editor-wrap {
+    flex: 1;
+    min-height: 120px;
     min-width: 0;
-    border: 1px solid #8883;
-    border-radius: 4px;
+    overflow: auto;
+    border: 1px solid var(--border);
+    border-radius: var(--r-2);
+    background: var(--bg-sunken);
   }
-  .pane {
+  .editor-wrap > :global(.byte-editor) {
+    min-height: 100%;
+  }
+  .editor-wrap :global(.cm-host) {
+    flex: 1;
     display: flex;
     flex-direction: column;
-    gap: 0.3rem;
   }
-  h4 {
-    margin: 0.2rem 0 0;
-    font-size: 0.8rem;
-    opacity: 0.8;
-  }
-  .note {
-    font-size: 0.8rem;
-    opacity: 0.7;
-    margin: 0;
-  }
-  .error {
-    font-size: 0.85rem;
-    color: #ff9b9b;
-    margin: 0;
+  .editor-wrap :global(.cm-editor) {
+    flex: 1;
   }
   .warn {
-    font-size: 0.8rem;
-    color: #ffd9a0;
     margin: 0;
+    font-size: var(--fs-sm);
+    color: var(--warn);
   }
 </style>

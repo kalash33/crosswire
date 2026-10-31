@@ -70,7 +70,10 @@ async function addStep(page: Page, i: number, codec: string, dir: string) {
 
 test('chord_opens_pane_seeded_from_selection', async ({ page }) => {
   await openSeeded(page);
-  await expect(page.getByTestId('decoder-pane')).toHaveAttribute('role', 'dialog');
+  // U1 D6: the pane is the /decoder route's content (a region), no longer a
+  // floating dialog; the chord navigates there.
+  await expect(page).toHaveURL(/\/decoder$/);
+  await expect(page.getByTestId('decoder-pane')).toHaveAttribute('role', 'region');
   await expect(page.getByTestId('decoder-input')).toHaveValue(BODY);
 });
 
@@ -225,4 +228,23 @@ test('unicode_selection_outside_editor_is_utf8', async ({ page }) => {
   await addStep(page, 0, 'hex', 'encode');
   await expect(page.getByTestId('decoder-output-0')).toHaveText('e697a5e69cac');
   await expect(page.getByTestId('decoder-input-chip')).toBeVisible();
+});
+
+test('escape_inside_a_field_keeps_the_route', async ({ page }) => {
+  await openSeeded(page);
+  await page.getByTestId('decoder-input').click();
+  await page.keyboard.press('Escape');
+  await expect(page.getByTestId('decoder-pane')).toBeVisible();
+  await expect(page.getByTestId('decoder-input')).toHaveValue(BODY);
+  await page.getByTestId('decoder-step-add').click();
+  await page.getByTestId('decoder-step-0-codec').focus();
+  await page.keyboard.press('Escape');
+  await expect(page.getByTestId('decoder-pane')).toBeVisible();
+});
+
+test('back_button_returns_to_history', async ({ page }) => {
+  await openSeeded(page);
+  await page.getByTestId('decoder-close').click();
+  await expect(page.getByTestId('decoder-pane')).toHaveCount(0);
+  await expect(page.getByTestId('history-view')).toBeVisible();
 });

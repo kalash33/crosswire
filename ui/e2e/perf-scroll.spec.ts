@@ -48,7 +48,11 @@ test('history scroll frames and filter latency at scale', async ({ page }) => {
     };
     requestAnimationFrame(tick);
   });
-  await page.mouse.move(400, 400);
+  // U1: the page itself no longer scrolls; history-list is the scroll region,
+  // so aim the wheel at its centre.
+  const list = await page.getByTestId('history-list').boundingBox();
+  if (!list) throw new Error('history-list has no layout box');
+  await page.mouse.move(list.x + list.width / 2, list.y + list.height / 2);
   let pages = 0;
   const startMs = Date.now();
   let lastLoad = 0;
@@ -88,7 +92,10 @@ test('history scroll frames and filter latency at scale', async ({ page }) => {
   const over32 = frames.filter((d) => d > MAX_FRAME_MS).length;
 
   // ---- filter: input -> filtered rows rendered ----
-  await page.evaluate(() => window.scrollTo(0, 0));
+  // Back to the top of the scroll region (the window does not scroll).
+  await page.evaluate(() => {
+    document.querySelector('[data-testid="history-list"]')!.scrollTop = 0;
+  });
   await page.getByTestId('filter-host').fill(FILTER_HOST);
   const filterMs = await page.evaluate(async (host) => {
     const rowsAreFiltered = () => {

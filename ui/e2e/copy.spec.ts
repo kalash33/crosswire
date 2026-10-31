@@ -74,11 +74,17 @@ test('copy buttons call the audited routes with redacted=false/true', async ({ p
   await page.getByTestId('history-row').first().click();
   await expect(page.getByTestId('copy-menu')).toBeVisible();
 
-  await page.getByTestId('copy-curl').click();
+  // U1: the copy items live in the detail's Copy dropdown (title line), which
+  // closes after each pick, so open it before every item.
+  const pick = async (item: string) => {
+    await page.getByTestId('copy-menu').click();
+    await page.getByTestId(item).click();
+  };
+  await pick('copy-curl');
   await expect(page.getByTestId('copy-status')).toContainText('Copied curl.');
-  await page.getByTestId('copy-curl-redacted').click();
+  await pick('copy-curl-redacted');
   await expect(page.getByTestId('copy-status')).toContainText('Copied curl (redacted).');
-  await page.getByTestId('copy-request-raw-redacted').click();
+  await pick('copy-request-raw-redacted');
   await expect(page.getByTestId('copy-status')).toContainText('Copied raw (redacted).');
 
   const c = await clip(page);

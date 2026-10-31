@@ -7,6 +7,7 @@
   import { intercept } from '../stores/intercept.svelte';
 
   import { scope } from '../stores/scope.svelte';
+  import { connection } from '../stores/connection.svelte';
 
   let counts = $state<CountsDto | null>(null);
   let failed = $state(false);
@@ -31,6 +32,7 @@
 
   onMount(() => {
     refreshAll();
+    void connection.load();
     // The shared intercept store keeps itself in sync (events + lagged).
     intercept.start();
     const off = events.subscribe((e) => {
@@ -51,13 +53,27 @@
   );
 </script>
 
+<!-- One pinned line in the shell's status row: never wraps, clips instead. -->
 <footer class="statusbar" data-testid="status-bar">
-  <span data-testid="status-api">API {location.host}</span>
-  <!-- TODO: proxy bind address needs a future endpoint (no GET /settings in alpha.2). -->
-  <span data-testid="status-proxy">Proxy n/a</span>
-  <span data-testid="status-intercept" data-enabled={intercept.loaded ? intercept.enabled : ''}>
-    Intercept {intercept.loaded ? (intercept.enabled ? 'ON' : 'OFF') : '…'}{#if intercept.held.length > 0}
-      ({intercept.held.length} held){/if}
+  <span
+    class="item ws"
+    class:live={events.connected}
+    data-testid="status-ws"
+    data-state={events.connected ? 'connected' : 'disconnected'}
+  ><span class="dot" aria-hidden="true"></span>{events.connected ? 'Live' : 'Offline'}</span>
+  <span class="item" data-testid="status-api">API {location.host}</span>
+  <!-- Shown only when the server reports its proxy address (GET /health has
+       no such field yet); never a guessed value. -->
+  {#if connection.proxyAddr}
+    <span class="item" data-testid="status-proxy">Proxy {connection.proxyAddr}</span>
+  {/if}
+  <span
+    class="item intercept"
+    class:on={intercept.loaded && intercept.enabled}
+    data-testid="status-intercept"
+    data-enabled={intercept.loaded ? intercept.enabled : ''}
+  >
+    <span class="dot" aria-hidden="true"></span>Intercept {intercept.loaded ? (intercept.enabled ? 'ON' : 'OFF') : '…'}{#if intercept.held.length > 0}{` (${intercept.held.length} held)`}{/if}
   </span>
   <button
     type="button"
@@ -70,26 +86,76 @@
   >
     {intercept.enabled ? 'Turn intercept off' : 'Turn intercept on'}
   </button>
-  <span data-testid="status-scope">Scope {scopeLabel}{#if scope.strictKnown} · strict {scope.enforceStrict ? 'ON' : 'OFF'}{/if}</span>
-  <span data-testid="status-counts">
+  <span class="item" data-testid="status-scope">Scope {scopeLabel}{#if scope.strictKnown} · strict {scope.enforceStrict ? 'ON' : 'OFF'}{/if}</span>
+  <span class="item counts" data-testid="status-counts">
     {#if counts}History {counts.history} · Repeater {counts.repeater} · Intruder {counts.intruder}{:else}Counts …{/if}
   </span>
-  {#if failed}<span data-testid="status-error">status unavailable</span>{/if}
+  {#if failed}<span class="item error" data-testid="status-error">status unavailable</span>{/if}
 </footer>
 
 <style>
   .statusbar {
+    grid-area: status;
     display: flex;
-    gap: 1.25rem;
-    flex-wrap: wrap;
-    padding: 0.25rem 0.75rem;
-    font-size: 0.8rem;
-    border-top: 1px solid #8884;
     align-items: center;
+    gap: var(--s-4);
+    height: var(--statusbar-h);
+    min-width: 0;
+    padding: 0 var(--s-3);
+    font-size: var(--fs-sm);
+    line-height: 1;
+    color: var(--fg-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    background: var(--bg-elev);
+    border-top: 1px solid var(--border);
+  }
+  .item {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .counts {
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--fg-faint);
+  }
+  .ws .dot {
+    background: var(--danger);
+  }
+  .ws.live .dot {
+    background: var(--ok);
+  }
+  .intercept.on {
+    color: var(--warn);
+  }
+  .intercept.on .dot {
+    background: var(--warn);
   }
   .toggle {
-    font: inherit;
-    font-size: 0.75rem;
+    flex: none;
+    height: 20px;
+    min-height: 0;
+    padding: 0 var(--s-2);
+    font-size: var(--fs-xs);
+    color: var(--fg);
+    background: var(--bg);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--r-1);
     cursor: pointer;
+  }
+  .toggle:hover:not(:disabled) {
+    background: var(--bg-hover);
+  }
+  .error {
+    color: var(--danger);
   }
 </style>
