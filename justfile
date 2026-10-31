@@ -40,7 +40,7 @@ ui-build:
     #!/usr/bin/env bash
     set -euo pipefail
     cd ui
-    npm ci
+    npm ci --ignore-scripts
     npm run build
     dest=../crates/crosswire-server/assets/ui
     rm -rf "$dest"
@@ -66,7 +66,7 @@ ui-test:
 ui-dist-check:
     #!/usr/bin/env bash
     set -euo pipefail
-    (cd ui && npm ci && npm run build)
+    (cd ui && npm ci --ignore-scripts && npm run build)
     if ! diff -r --exclude=.gitkeep ui/dist crates/crosswire-server/assets/ui; then
       echo "error: committed UI bundle is stale; run 'just ui-build' and commit" >&2
       exit 1

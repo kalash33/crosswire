@@ -54,3 +54,15 @@ x509-parser = { workspace = true }
 sha2 = { workspace = true }
 base64 = { workspace = true }
 serde_json = { workspace = true }
+
+# publish = false hides the binary from dist; opt this one package in. Every
+# other workspace package stays out of the release.
+[package.metadata.dist]
+dist = true
+
+# cargo-binstall resolves the cargo package name (crosswire-server) and
+# downloads the dist archive; the binary inside is `crosswire`.
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/crosswire-server-{ target }{ archive-suffix }"
+pkg-fmt = "txz"
+bin-dir = "crosswire-server-{ target }/{ bin }{ binary-ext }"
