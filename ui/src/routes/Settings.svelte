@@ -25,79 +25,82 @@
 
 <div class="settings" data-testid="settings-view">
   <h1>Settings</h1>
+  <div class="col">
+    <section class="card" aria-labelledby="s-appearance">
+      <h2 id="s-appearance">Appearance</h2>
+      <div class="field">
+        <span class="name">Theme</span>
+        <Segmented
+          options={THEMES}
+          value={appearance.theme}
+          onchange={(t) => appearance.set(t)}
+          label="Theme"
+          size="sm"
+        />
+        <span class="hint">Saved in this browser.</span>
+      </div>
+    </section>
 
-  <section class="card" aria-labelledby="s-appearance">
-    <h2 id="s-appearance">Appearance</h2>
-    <div class="field">
-      <span class="name">Theme</span>
-      <Segmented
-        options={THEMES}
-        value={appearance.theme}
-        onchange={(t) => appearance.set(t)}
-        label="Theme"
-        size="sm"
-      />
-      <span class="hint">Saved in this browser.</span>
-    </div>
-  </section>
+    <section class="card" aria-labelledby="s-shortcuts" data-testid="settings-shortcuts">
+      <h2 id="s-shortcuts">Keyboard shortcuts</h2>
+      <table>
+        <tbody>
+          {#each bindings as b (b.action)}
+            <tr>
+              <td>{b.label}</td>
+              <td class="chord"><Kbd keys={formatChord(b.chord)} /></td>
+            </tr>
+          {/each}
+        </tbody>
+      </table>
+    </section>
+  </div>
 
-  <section class="card" aria-labelledby="s-connection" data-testid="settings-connection">
-    <h2 id="s-connection">Connection</h2>
-    <dl>
-      <dt>API</dt>
-      <dd><CopyValue value={connection.apiOrigin} what="the API address" testid="settings-api" /></dd>
-      <dt>Proxy</dt>
-      <dd>
-        <CopyValue value={connection.proxyAddrOrDefault} what="the proxy address" testid="settings-proxy" />
-        {#if !connection.proxyAddr}
-          <span class="hint">The server does not report its proxy address; this is the <code>crosswire serve</code> default.</span>
-        {/if}
-      </dd>
-      <dt>CA page</dt>
-      <dd>
-        <CopyValue value={caPageUrl(connection.proxyAddrOrDefault)} what="the CA page address" testid="settings-ca" />
-        <span class="hint">Serves <code>ca.der</code> and <code>ca.pem</code>.</span>
-      </dd>
-    </dl>
-  </section>
-
-  <section class="card" aria-labelledby="s-shortcuts" data-testid="settings-shortcuts">
-    <h2 id="s-shortcuts">Keyboard shortcuts</h2>
-    <table>
-      <tbody>
-        {#each bindings as b (b.action)}
-          <tr>
-            <td>{b.label}</td>
-            <td class="chord"><Kbd keys={formatChord(b.chord)} /></td>
-          </tr>
-        {/each}
-      </tbody>
-    </table>
-  </section>
-
-  <section class="card" aria-labelledby="s-about" data-testid="settings-about">
-    <h2 id="s-about">About</h2>
-    {#if connection.health}
+  <div class="col">
+    <section class="card" aria-labelledby="s-connection" data-testid="settings-connection">
+      <h2 id="s-connection">Connection</h2>
       <dl>
-        {#if connection.health.version}
-          <dt>Version</dt>
-          <dd class="mono" data-testid="about-version">{connection.health.version}</dd>
-        {/if}
-        <dt>Schema version</dt>
-        <dd class="mono" data-testid="about-schema-version">{connection.health.schemaVersion}</dd>
-        <dt>Project format</dt>
-        <dd class="mono" data-testid="about-format-version">{connection.health.formatVersion}</dd>
+        <dt>API</dt>
+        <dd><CopyValue value={connection.apiOrigin} what="the API address" testid="settings-api" /></dd>
+        <dt>Proxy</dt>
+        <dd>
+          <CopyValue value={connection.proxyAddrOrDefault} what="the proxy address" testid="settings-proxy" />
+          {#if !connection.proxyAddr}
+            <span class="hint">The server does not report its proxy address; this is the <code>crosswire serve</code> default.</span>
+          {/if}
+        </dd>
+        <dt>CA page</dt>
+        <dd>
+          <CopyValue value={caPageUrl(connection.proxyAddrOrDefault)} what="the CA page address" testid="settings-ca" />
+          <span class="hint">Serves <code>ca.der</code> and <code>ca.pem</code>.</span>
+        </dd>
       </dl>
-    {:else if connection.error}
-      <p class="hint" role="alert">Could not read server details: {connection.error}</p>
-    {:else}
-      <p class="hint">Loading…</p>
-    {/if}
-    <p class="links">
-      <a href="https://github.com/kalash33/crosswire" target="_blank" rel="noopener noreferrer">Source on GitHub</a>
-      <a href="https://github.com/kalash33/crosswire/issues" target="_blank" rel="noopener noreferrer">Report an issue</a>
-    </p>
-  </section>
+    </section>
+
+    <section class="card" aria-labelledby="s-about" data-testid="settings-about">
+      <h2 id="s-about">About</h2>
+      {#if connection.health}
+        <dl>
+          {#if connection.health.version}
+            <dt>Version</dt>
+            <dd class="mono" data-testid="about-version">{connection.health.version}</dd>
+          {/if}
+          <dt>Schema version</dt>
+          <dd class="mono" data-testid="about-schema-version">{connection.health.schemaVersion}</dd>
+          <dt>Project format</dt>
+          <dd class="mono" data-testid="about-format-version">{connection.health.formatVersion}</dd>
+        </dl>
+      {:else if connection.error}
+        <p class="hint" role="alert">Could not read server details: {connection.error}</p>
+      {:else}
+        <p class="hint">Loading…</p>
+      {/if}
+      <p class="links">
+        <a href="https://github.com/kalash33/crosswire" target="_blank" rel="noopener noreferrer">Source on GitHub</a>
+        <a href="https://github.com/kalash33/crosswire/issues" target="_blank" rel="noopener noreferrer">Report an issue</a>
+      </p>
+    </section>
+  </div>
 </div>
 
 <style>
@@ -115,7 +118,14 @@
     font-size: var(--fs-xl);
     font-weight: 600;
   }
-  @media (max-width: 960px) {
+  /* Two independent column stacks, so a short card never leaves a gap. */
+  .col {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-4);
+    min-width: 0;
+  }
+  @media (max-width: 900px) {
     .settings {
       grid-template-columns: minmax(0, 1fr);
     }

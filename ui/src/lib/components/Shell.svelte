@@ -35,7 +35,11 @@
 
   // The ONE keydown dispatch for the whole app.
   onMount(() => {
-    const on = (e: KeyboardEvent) => keymap.dispatch(e);
+    // While the cheat sheet is open the page behind it is inert: no global
+    // chord (Ctrl+T, Ctrl+Shift+D, …) may act on it.
+    const on = (e: KeyboardEvent) => {
+      if (!shortcutsOpen) keymap.dispatch(e);
+    };
     window.addEventListener('keydown', on);
     // Every route gets the live socket (status dot, counts, intercept queue).
     events.start();

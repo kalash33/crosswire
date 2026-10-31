@@ -8,6 +8,10 @@
   import { bytesToLatin1 } from '../editor/encoding';
   import { fromTextareaText, toTextareaText } from '../decode/textarea';
   import HexPane from '../editor/HexPane.svelte';
+  import Button from '../ui/Button.svelte';
+  import IconButton from '../ui/IconButton.svelte';
+  import Select from '../ui/Select.svelte';
+  import Toolbar from '../ui/Toolbar.svelte';
 
   let {
     initial,
@@ -78,13 +82,17 @@
     }
   }
 
-  // The dialog's own dismiss; app chords stay in the keymap.
+  // The pane's own dismiss; app chords stay in the keymap. Embedded in the
+  // /decoder route, Escape typed inside a field (input, textarea, select,
+  // CodeMirror) is left to the field so a stray Escape never discards the
+  // chain; Escape anywhere else in the pane still goes back.
   function onKeydown(e: KeyboardEvent) {
-    if (e.key === 'Escape') {
-      e.stopPropagation();
-      onClose();
-    }
+    if (e.key !== 'Escape') return;
+    if (embedded && e.target instanceof Element && e.target.closest(FIELD)) return;
+    e.stopPropagation();
+    onClose();
   }
+  const FIELD = 'input, textarea, select, [contenteditable]:not([contenteditable="false"])';
 
   // Take focus so Escape works right after the chord; give it back on close.
   onMount(() => {
@@ -106,53 +114,61 @@
   bind:this={root}
   onkeydown={onKeydown}
 >
-  <div class="head">
-    <strong>Decoder</strong>
-    <button
-      type="button"
-      aria-label={embedded ? 'Close the decoder and go back' : 'Close'}
-      title={embedded ? 'Back (Esc)' : 'Close (Esc)'}
-      data-testid="decoder-close"
-      onclick={onClose}>×</button
-    >
-  </div>
+  <Toolbar label="Decoder">
+    {#if embedded}
+      <Button size="sm" variant="ghost" icon="chevron-right" class="back" kbd="Esc" data-testid="decoder-close" onclick={onClose}
+        >Back</Button
+      >
+    {:else}
+      <strong class="title">Decoder</strong>
+    {/if}
+    <span class="spacer"></span>
+    <span class="hint">Chain codecs; each step reads the previous output.</span>
+    {#if !embedded}
+      <IconButton icon="close" size="sm" label="Close" kbd="Esc" data-testid="decoder-close" onclick={onClose} />
+    {/if}
+  </Toolbar>
 
-  <textarea
-    class="mono input"
-    data-testid="decoder-input"
-    aria-label="Decoder input"
-    rows="3"
-    spellcheck="false"
-    value={text}
-    oninput={onInput}
-  ></textarea>
-  {#if nonLatin1}
-    <div class="chip" data-testid="decoder-input-chip">non-Latin-1 text re-encoded as UTF-8</div>
-  {/if}
-
-  {#if notice}
-    <div class="chip" data-testid="decoder-copy-error">{notice}</div>
-  {/if}
+  <section class="block" aria-labelledby="decoder-input-label">
+    <div class="lbl" id="decoder-input-label">Input</div>
+    <textarea
+      class="mono input"
+      data-testid="decoder-input"
+      aria-labelledby="decoder-input-label"
+      rows="5"
+      spellcheck="false"
+      value={text}
+      oninput={onInput}
+    ></textarea>
+    {#if nonLatin1}
+      <div class="note" data-testid="decoder-input-chip">non-Latin-1 text re-encoded as UTF-8</div>
+    {/if}
+    {#if notice}
+      <div class="note error" data-testid="decoder-copy-error">{notice}</div>
+    {/if}
+  </section>
 
   {#if jwt}
-    <div class="jwt" data-testid="decoder-jwt">
+    <section class="block jwt" data-testid="decoder-jwt" aria-label="JWT">
       <div class="banner" data-testid="decoder-jwt-banner">{jwt.warnings[0]}</div>
       {#each jwt.warnings.slice(1) as w (w)}
-        <div class="warn">{w}</div>
+        <div class="note warn">{w}</div>
       {/each}
       <div class="lbl">Header</div>
-      <pre class="mono">{jwt.header}</pre>
+      <pre class="mono out">{jwt.header}</pre>
       <div class="lbl">Payload</div>
-      <pre class="mono">{jwt.payload}</pre>
+      <pre class="mono out">{jwt.payload}</pre>
       <div class="lbl">Signature</div>
-      <pre class="mono">{jwt.signature}</pre>
-    </div>
+      <pre class="mono out">{jwt.signature}</pre>
+    </section>
   {/if}
 
   {#each steps as step, i (i)}
-    <div class="step">
+    <section class="block step" aria-label={`Step ${i + 1}`}>
       <div class="row">
-        <select
+        <span class="lbl n">Step {i + 1}</span>
+        <Select
+          size="sm"
           aria-label="Codec"
           data-testid={`decoder-step-${i}-codec`}
           value={step.codec}
@@ -161,8 +177,9 @@
           {#each CODECS as c (c)}
             <option value={c}>{c}</option>
           {/each}
-        </select>
-        <select
+        </Select>
+        <Select
+          size="sm"
           aria-label="Direction"
           data-testid={`decoder-step-${i}-dir`}
           value={step.dir}
@@ -170,42 +187,58 @@
         >
           <option value="encode">encode</option>
           <option value="decode">decode</option>
-        </select>
-        <button type="button" data-testid={`decoder-copy-${i}`} onclick={() => copy(i)}>Copy</button>
-        <button type="button" data-testid={`decoder-hex-toggle-${i}`} onclick={() => (hexOpen[i] = !hexOpen[i])}>
-          Hex
-        </button>
-        <button type="button" data-testid={`decoder-step-${i}-remove`} onclick={() => removeStep(i)}>Remove</button>
+        </Select>
+        <span class="spacer"></span>
+        <Button size="sm" icon="copy" data-testid={`decoder-copy-${i}`} onclick={() => copy(i)}>Copy</Button>
+        <Button
+          size="sm"
+          icon="hex"
+          aria-pressed={!!hexOpen[i]}
+          data-testid={`decoder-hex-toggle-${i}`}
+          onclick={() => (hexOpen[i] = !hexOpen[i])}>Hex</Button
+        >
+        <IconButton
+          icon="close"
+          size="sm"
+          label={`Remove step ${i + 1}`}
+          data-testid={`decoder-step-${i}-remove`}
+          onclick={() => removeStep(i)}
+        />
       </div>
-      <pre class="mono out" data-testid={`decoder-output-${i}`}>{bytesToLatin1(outputs[i].bytes)}</pre>
+      <div class="lbl" id={`decoder-out-label-${i}`}>Output</div>
+      <pre class="mono out" aria-labelledby={`decoder-out-label-${i}`} data-testid={`decoder-output-${i}`}>{bytesToLatin1(outputs[i].bytes)}</pre>
       {#if outputs[i].warning}
-        <div class="warn" data-testid={`decoder-warning-${i}`}>{outputs[i].warning}</div>
+        <div class="note warn" data-testid={`decoder-warning-${i}`}>{outputs[i].warning}</div>
       {/if}
       {#if hexOpen[i]}
-        <div data-testid={`decoder-hex-${i}`}><HexPane bytes={outputs[i].bytes} /></div>
+        <div class="hex" data-testid={`decoder-hex-${i}`}><HexPane bytes={outputs[i].bytes} /></div>
       {/if}
-    </div>
+    </section>
   {/each}
 
-  <button type="button" data-testid="decoder-step-add" onclick={addStep}>Add step</button>
+  <div class="add">
+    <Button size="sm" icon="plus" data-testid="decoder-step-add" onclick={addStep}>Add step</Button>
+  </div>
 </div>
 
 <style>
   .decoder {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-3);
     position: fixed;
     right: var(--s-3);
-    /* Float just above the pinned status bar row of the shell grid. */
     bottom: calc(var(--statusbar-h) + var(--s-2));
     z-index: var(--z-overlay);
     width: min(36rem, 92vw);
     max-height: 70vh;
     overflow: auto;
+    padding: var(--s-2) var(--s-3);
+    font-size: var(--fs-sm);
     background: var(--bg-overlay);
     border: 1px solid var(--border-strong);
-    border-radius: 6px;
-    padding: 0.5rem 0.65rem;
+    border-radius: var(--r-2);
     box-shadow: var(--shadow-pop);
-    font-size: 0.8rem;
   }
   /* Route-hosted: fill the main area, no floating chrome. */
   .decoder.embedded {
@@ -215,67 +248,96 @@
     max-height: none;
     overflow: visible;
     padding: 0;
+    font-size: var(--fs-md);
     background: transparent;
     border: none;
     box-shadow: none;
-    font-size: var(--fs-md);
   }
-  .decoder.embedded:focus {
+  .decoder:focus {
     outline: none;
   }
-  .decoder.embedded .input {
-    min-height: 8rem;
+  .decoder :global(.back .icon) {
+    transform: rotate(180deg);
   }
-  .head {
+  .title {
+    font-weight: 600;
+  }
+  .hint {
+    font-size: var(--fs-sm);
+    color: var(--fg-muted);
+  }
+  .block {
     display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 0.35rem;
+    flex-direction: column;
+    gap: var(--s-2);
+    padding: var(--s-3);
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    border-radius: var(--r-2);
   }
-  .head button {
-    background: none;
-    border: none;
-    color: inherit;
-    cursor: pointer;
-    font-size: 1rem;
-    line-height: 1;
+  .lbl {
+    font-size: var(--fs-xs);
+    font-weight: 600;
+    color: var(--fg-muted);
+  }
+  .lbl.n {
+    min-width: 3.5rem;
   }
   .mono {
     font-family: var(--font-mono);
   }
   .input {
     width: 100%;
+    min-height: 6rem;
     box-sizing: border-box;
     resize: vertical;
+    padding: var(--s-2);
+    font-size: var(--fs-sm);
+    color: var(--fg);
+    background: var(--bg-sunken);
+    border: 1px solid var(--border);
+    border-radius: var(--r-1);
   }
-  .chip,
-  .warn {
-    margin: 0.25rem 0;
-    opacity: 0.85;
-  }
-  .banner {
-    background: var(--warn-bg);
-    color: var(--warn-fg);
-    padding: 0.2rem 0.4rem;
-    border-radius: 4px;
-    margin: 0.35rem 0 0.2rem;
-  }
-  .lbl {
-    opacity: 0.7;
-  }
-  pre {
-    margin: 0.15rem 0 0.4rem;
+  .out {
+    margin: 0;
+    min-height: 1.5em;
+    max-height: 24rem;
+    overflow: auto;
+    padding: var(--s-2);
+    font-size: var(--fs-sm);
     white-space: pre-wrap;
     word-break: break-all;
-  }
-  .step {
-    border-top: 1px solid var(--border-strong);
-    margin-top: 0.4rem;
-    padding-top: 0.35rem;
+    color: var(--fg);
+    background: var(--bg-sunken);
+    border: 1px solid var(--border-faint);
+    border-radius: var(--r-1);
   }
   .row {
     display: flex;
-    gap: 0.35rem;
+    flex-wrap: wrap;
     align-items: center;
+    gap: var(--s-2);
+  }
+  .spacer {
+    flex: 1 1 auto;
+  }
+  .note {
+    font-size: var(--fs-sm);
+    color: var(--fg-muted);
+  }
+  .note.warn {
+    color: var(--warn);
+  }
+  .note.error {
+    color: var(--danger);
+  }
+  .banner {
+    padding: var(--s-1) var(--s-2);
+    color: var(--warn-fg);
+    background: var(--warn-bg);
+    border-radius: var(--r-1);
+  }
+  .add {
+    display: flex;
   }
 </style>

@@ -114,3 +114,22 @@ test('ws dot follows the socket; one toast per transition', async ({ page }) => 
   await expect(page.getByTestId('toast').filter({ hasText: 'Live updates reconnected' })).toHaveCount(1);
   await expect(page.getByTestId('toast').filter({ hasText: 'Live updates lost' })).toHaveCount(1);
 });
+
+test('global chords do not fire while the shortcuts sheet is open', async ({ page }) => {
+  await mockEvents(page);
+  let puts = 0;
+  await page.route(/\/api\/v1\/intercept\/enabled$/, async (r) => {
+    puts += 1;
+    await r.fulfill({ status: 204 });
+  });
+  await page.goto('/');
+  await expect(page.getByTestId('topbar-intercept')).toBeEnabled();
+  await page.getByTestId('shortcuts-button').click();
+  await expect(page.getByTestId('shortcuts-dialog')).toBeVisible();
+  await page.keyboard.press('Control+t');
+  await page.keyboard.press('Control+Shift+D');
+  await expect(page.getByTestId('shortcuts-dialog')).toBeVisible();
+  await expect(page).toHaveURL(/\/$/);
+  expect(puts).toBe(0);
+  await expect(page.getByTestId('status-intercept')).toContainText('Intercept OFF');
+});

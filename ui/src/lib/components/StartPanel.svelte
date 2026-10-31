@@ -6,7 +6,7 @@
   import CopyValue from './CopyValue.svelte';
   import Button from '../ui/Button.svelte';
   import Icon from '../ui/Icon.svelte';
-  import { browserCommand, caPageUrl } from './start';
+  import { browserCommand, caPageUrl, PROJECT_PLACEHOLDER } from './start';
 
   let {
     proxyAddr,
@@ -65,6 +65,9 @@
       <h3><Icon name="play" size={14} />Launch a wired browser</h3>
       <p>Or skip both steps: this starts Chromium in its own profile with the proxy and CA already set.</p>
       <CopyValue value={command} what="the browser command" testid="start-browser-command" wrap />
+      {#if !projectHint}
+        <p class="note">Replace <code>{PROJECT_PLACEHOLDER}</code> with your project directory.</p>
+      {/if}
     </div>
   </div>
 
@@ -134,6 +137,9 @@
   }
   .row {
     display: flex;
+  }
+  .step p.note {
+    font-size: var(--fs-xs);
   }
   .foot {
     margin: var(--s-5) 0 0;

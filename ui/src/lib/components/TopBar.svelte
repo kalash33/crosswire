@@ -50,8 +50,8 @@
     data-testid="ws-dot"
     data-state={events.connected ? 'connected' : 'disconnected'}
     role="img"
-    aria-label={events.connected ? 'Live updates connected' : 'Live updates disconnected'}
-    title={events.connected ? 'Live updates connected' : 'Live updates disconnected, retrying'}
+    aria-label={events.connected ? 'Live connection: connected' : 'Live connection: disconnected'}
+    title={events.connected ? 'Live connection: connected' : 'Live connection: disconnected'}
   ></span>
   <IconButton
     icon="keyboard"

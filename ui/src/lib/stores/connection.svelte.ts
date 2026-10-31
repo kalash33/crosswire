@@ -16,7 +16,7 @@ export interface HealthInfo {
 
 type HealthWire = HealthResponse & { proxy_addr?: unknown; version?: unknown };
 
-function createConnection() {
+export function createConnection() {
   let health = $state<HealthInfo | null>(null);
   let proxyAddr = $state<string | null>(null);
   let error = $state<string | null>(null);
@@ -34,6 +34,7 @@ function createConnection() {
       error = null;
     } catch (e) {
       error = e instanceof Error ? e.message : 'health check failed';
+      inflight = null; // let the next caller retry
     }
   }
 

@@ -14,8 +14,9 @@ test('an empty project shows the Start panel with the three setup steps', async 
   await expect(panel).toContainText('ca.pem');
   await expect(panel).toContainText('ca.der');
   await expect(page.getByTestId('start-browser-command')).toHaveText(
-    'crosswire browser --project <project> --proxy 127.0.0.1:8080',
+    'crosswire browser --project PROJECT_DIR --proxy 127.0.0.1:8080',
   );
+  await expect(panel).toContainText('Replace PROJECT_DIR with your project directory.');
   // No href anywhere in the panel: the CA page opens via a button handler.
   await expect(panel.locator('a[href]')).toHaveCount(0);
 });
