@@ -1,6 +1,12 @@
 <script lang="ts">
   import { scope } from '../stores/scope.svelte';
   import { HOST_TYPES, PATH_TYPES } from '../api/scope';
+  import Button from '../ui/Button.svelte';
+  import EmptyState from '../ui/EmptyState.svelte';
+  import IconButton from '../ui/IconButton.svelte';
+  import Input from '../ui/Input.svelte';
+  import Select from '../ui/Select.svelte';
+  import { toasts } from '../ui/toasts.svelte';
   import {
     blankRow,
     draftFromScope,
@@ -51,8 +57,12 @@
       }
       throw e;
     }
-    await scope.save(next);
+    const ok = await scope.save(next);
+    if (ok) toasts.push({ kind: 'success', text: 'Scope saved' });
+    else toasts.push({ kind: 'error', text: scope.error ?? 'Could not save scope' });
   }
+
+  const dirty = $derived(JSON.stringify(draft) !== JSON.stringify(draftFromScope(scope.scope)));
 
   const lists: { key: List; title: string }[] = [
     { key: 'include', title: 'Include' },
@@ -60,92 +70,165 @@
   ];
 </script>
 
-<div class="rules" data-testid="scope-rules">
-  {#each lists as l (l.key)}
-    <section data-testid={`scope-${l.key}`}>
-      <h3>{l.title}</h3>
-      {#each draft[l.key] as row, i (row)}
-        <div class="rule" data-testid="rule-row" data-list={l.key}>
-          <select data-testid="rule-host-type" aria-label="host pattern type" bind:value={row.hostType}>
-            {#each HOST_TYPES as t (t)}<option value={t}>{t}</option>{/each}
-          </select>
-          <input
-            data-testid="rule-host-value"
-            aria-label={row.hostType === 'suffix' ? 'suffix domain' : 'host value'}
-            placeholder={row.hostType === 'suffix' ? 'example.com' : row.hostType}
-            bind:value={row.hostValue}
+{#each lists as l (l.key)}
+  <section class="card" data-testid={`scope-${l.key}`}>
+    <h2>{l.title}</h2>
+    {#each draft[l.key] as row, i (row)}
+      <div class="rule" data-testid="rule-row" data-list={l.key}>
+        <Select data-testid="rule-host-type" aria-label="host pattern type" bind:value={row.hostType}>
+          {#each HOST_TYPES as t (t)}<option value={t}>{t}</option>{/each}
+        </Select>
+        <Input
+          data-testid="rule-host-value"
+          class="host-value"
+          aria-label={row.hostType === 'suffix' ? 'suffix domain' : 'host value'}
+          placeholder={row.hostType === 'suffix' ? 'example.com' : row.hostType}
+          bind:value={row.hostValue}
+        />
+        {#if row.hostType === 'suffix'}
+          <label class="apex"
+            ><input type="checkbox" data-testid="rule-also-apex" bind:checked={row.alsoApex} /> apex</label
+          >
+        {/if}
+        <Input
+          data-testid="rule-ports"
+          class="ports"
+          aria-label="ports"
+          placeholder="ports (any)"
+          bind:value={row.portsText}
+        />
+        <Select data-testid="rule-scheme" aria-label="scheme" bind:value={row.scheme}>
+          <option value="">any scheme</option>
+          <option value="http">http</option>
+          <option value="https">https</option>
+        </Select>
+        <Select data-testid="rule-path-type" aria-label="path match type" bind:value={row.pathType}>
+          <option value="">any path</option>
+          {#each PATH_TYPES as t (t)}<option value={t}>path {t}</option>{/each}
+        </Select>
+        {#if row.pathType}
+          <Input
+            data-testid="rule-path-value"
+            aria-label="path value"
+            placeholder="/"
+            bind:value={row.pathValue}
           />
-          {#if row.hostType === 'suffix'}
-            <label
-              ><input type="checkbox" data-testid="rule-also-apex" bind:checked={row.alsoApex} /> apex</label
-            >
-          {/if}
-          <input
-            data-testid="rule-ports"
-            class="ports"
-            aria-label="ports"
-            placeholder="ports (any)"
-            bind:value={row.portsText}
+        {/if}
+        <span class="row-actions">
+          <IconButton
+            icon="chevron-down"
+            label="Move rule up"
+            class="flip"
+            data-testid="rule-up"
+            disabled={i === 0}
+            onclick={() => move(l.key, i, -1)}
           />
-          <select data-testid="rule-scheme" aria-label="scheme" bind:value={row.scheme}>
-            <option value="">any scheme</option>
-            <option value="http">http</option>
-            <option value="https">https</option>
-          </select>
-          <select data-testid="rule-path-type" aria-label="path match type" bind:value={row.pathType}>
-            <option value="">any path</option>
-            {#each PATH_TYPES as t (t)}<option value={t}>path {t}</option>{/each}
-          </select>
-          {#if row.pathType}
-            <input
-              data-testid="rule-path-value"
-              aria-label="path value"
-              placeholder="/"
-              bind:value={row.pathValue}
-            />
-          {/if}
-          <button type="button" data-testid="rule-up" aria-label="move up" disabled={i === 0} onclick={() => move(l.key, i, -1)}>↑</button>
-          <button type="button" data-testid="rule-down" aria-label="move down" disabled={i === draft[l.key].length - 1} onclick={() => move(l.key, i, 1)}>↓</button>
-          <button type="button" data-testid="rule-remove" aria-label="remove rule" onclick={() => remove(l.key, i)}>✕</button>
-        </div>
+          <IconButton
+            icon="chevron-down"
+            label="Move rule down"
+            data-testid="rule-down"
+            disabled={i === draft[l.key].length - 1}
+            onclick={() => move(l.key, i, 1)}
+          />
+          <IconButton icon="close" label="Remove rule" data-testid="rule-remove" onclick={() => remove(l.key, i)} />
+        </span>
+      </div>
+    {:else}
+      {#if l.key === 'include'}
+        <EmptyState
+          icon="scope"
+          title="No include rules"
+          body="Everything is out of scope until you add an include rule."
+        />
       {:else}
-        <p class="empty">No {l.key} rules.</p>
-      {/each}
-      <button type="button" data-testid={`add-${l.key}`} onclick={() => add(l.key)}>Add {l.key} rule</button>
-    </section>
-  {/each}
+        <p class="empty">No exclude rules. Excludes win over includes.</p>
+      {/if}
+    {/each}
+    <Button size="sm" icon="plus" data-testid={`add-${l.key}`} onclick={() => add(l.key)}>Add {l.key} rule</Button>
+  </section>
+{/each}
 
-  {#if localError}<p class="error" role="alert" data-testid="scope-local-error">{localError}</p>{/if}
-  {#if scope.error}<p class="error" role="alert" data-testid="scope-error">{scope.error}</p>{/if}
-  <div><button type="button" data-testid="scope-save" disabled={!scope.loaded} onclick={() => void save()}>Save scope</button></div>
+{#if localError}<p class="alert" role="alert" data-testid="scope-local-error">{localError}</p>{/if}
+{#if scope.error}<p class="alert" role="alert" data-testid="scope-error">{scope.error}</p>{/if}
+
+<div class="savebar" data-testid="scope-rules">
+  <span class="dirty" class:on={dirty}>{dirty ? 'Unsaved changes' : 'All changes saved'}</span>
+  <Button variant="primary" data-testid="scope-save" disabled={!scope.loaded} onclick={() => void save()}>Save scope</Button>
 </div>
 
 <style>
-  .rules {
+  .card {
+    padding: var(--s-3) var(--s-4);
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    border-radius: var(--r-2);
     display: flex;
     flex-direction: column;
-    gap: 0.75rem;
+    align-items: flex-start;
+    gap: var(--s-2);
   }
-  h3 {
-    margin: 0 0 0.3rem;
-    font-size: 0.9rem;
+  h2 {
+    margin: 0;
+    font-size: var(--fs-md);
+    font-weight: 600;
   }
   .rule {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.35rem;
+    gap: var(--s-2);
     align-items: center;
-    margin-bottom: 0.3rem;
+    align-self: stretch;
   }
-  .ports {
+  .rule :global(.host-value) {
+    flex: 1 1 12rem;
+  }
+  .rule :global(.ports) {
     width: 8rem;
   }
-  .empty {
-    opacity: 0.6;
-    margin: 0 0 0.3rem;
+  .rule :global(.flip svg) {
+    transform: rotate(180deg);
   }
-  .error {
-    color: var(--danger);
+  .apex {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--s-1);
+    color: var(--fg-muted);
+  }
+  .row-actions {
+    display: inline-flex;
+    gap: var(--s-1);
+  }
+  .empty {
     margin: 0;
+    color: var(--fg-muted);
+  }
+  .alert {
+    margin: 0;
+    padding: var(--s-2) var(--s-3);
+    color: var(--danger-fg);
+    background: var(--danger-bg);
+    border-radius: var(--r-1);
+  }
+  .savebar {
+    order: 10;
+    position: sticky;
+    bottom: 0;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--s-3);
+    padding: var(--s-2) var(--s-4);
+    background: var(--bg-overlay);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--r-2);
+    box-shadow: var(--shadow-pop);
+    z-index: 1;
+  }
+  .dirty {
+    color: var(--fg-muted);
+  }
+  .dirty.on {
+    color: var(--warn-fg);
+    font-weight: 600;
   }
 </style>

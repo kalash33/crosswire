@@ -11,22 +11,24 @@
 </script>
 
 <div class="scope" data-testid="scope-view">
-  <label class="strict">
-    <input
-      type="checkbox"
-      role="switch"
-      data-testid="strict-toggle"
-      checked={scope.enforceStrict}
-      onchange={(e) => void scope.setEnforceStrict(e.currentTarget.checked)}
-    />
-    Enforce scope strictly
-    {#if !scope.strictKnown}<span class="hint">(current server state unknown; the API has no read)</span>{/if}
-  </label>
+  <header class="top">
+    <label class="switch">
+      <input
+        type="checkbox"
+        role="switch"
+        data-testid="strict-toggle"
+        checked={scope.enforceStrict}
+        onchange={(e) => void scope.setEnforceStrict(e.currentTarget.checked)}
+      />
+      <span class="track" aria-hidden="true"><span class="thumb"></span></span>
+      <span class="name">Enforce scope strictly</span>
+    </label>
+    {#if !scope.strictKnown}
+      <span class="hint">Current server state unknown; the API has no read.</span>
+    {/if}
+  </header>
 
-  <h2>Rules</h2>
   <ScopeRules />
-
-  <h2>Import program list</h2>
   <ScopeImport />
 </div>
 
@@ -34,15 +36,66 @@
   .scope {
     display: flex;
     flex-direction: column;
-    gap: 0.75rem;
+    gap: var(--s-3);
     max-width: 60rem;
+    padding: var(--s-4);
   }
-  h2 {
-    font-size: 1rem;
-    margin: 0.5rem 0 0;
+  .top {
+    display: flex;
+    align-items: center;
+    gap: var(--s-3);
+    padding: var(--s-3) var(--s-4);
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    border-radius: var(--r-2);
+  }
+  .switch {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--s-3);
+    cursor: pointer;
+  }
+  .switch input {
+    position: absolute;
+    opacity: 0;
+    width: 1px;
+    height: 1px;
+  }
+  .track {
+    position: relative;
+    width: 40px;
+    height: 22px;
+    border-radius: 11px;
+    background: var(--bg-active);
+    border: 1px solid var(--border-strong);
+  }
+  .thumb {
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: var(--fg-muted);
+    transition: transform 0.12s;
+  }
+  .switch input:checked + .track {
+    background: var(--ok-bg);
+    border-color: var(--ok);
+  }
+  .switch input:checked + .track .thumb {
+    transform: translateX(18px);
+    background: var(--ok);
+  }
+  .switch input:focus-visible + .track {
+    outline: 2px solid var(--focus);
+    outline-offset: 2px;
+  }
+  .name {
+    font-weight: 600;
   }
   .hint {
-    opacity: 0.6;
-    font-size: 0.75rem;
+    color: var(--fg-faint);
+    font-size: var(--fs-sm);
   }
 </style>
