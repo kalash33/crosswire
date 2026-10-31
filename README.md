@@ -81,7 +81,7 @@ provenance is covered by the attestations below).
    ```
 
    `latest` resolves only to a full release. To install a pre-release, replace
-   `latest/download` with `download/<tag>` (for example `download/v0.1.0-rc.1`).
+   `latest/download` with `download/<tag>` (for example `download/v0.1.0-rc.2`).
 
 3. **Tarball.** Download `crosswire-server-<target>.tar.xz` from the
    [releases page](https://github.com/kalash33/crosswire/releases) for your
