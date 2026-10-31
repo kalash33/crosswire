@@ -6,12 +6,11 @@ import {
   newTabId,
   deriveTitle,
   responseView,
-  hexWindow,
-  HEX_PAGE_BYTES,
   type RepeaterApi,
   type RepeaterTab,
 } from './repeater.svelte';
 import { ApiError } from '../api/errors';
+import { hexPage, HEX_PAGE } from '../editor/hex-window';
 import { bytesToLatin1 } from '../editor/encoding';
 import type { SendOutcomeDto } from '../api/repeater';
 
@@ -375,23 +374,23 @@ describe('response pane state', () => {
 
 describe('hex paging', () => {
   it('pages are 64 KiB', () => {
-    expect(HEX_PAGE_BYTES).toBe(65536);
+    expect(HEX_PAGE).toBe(65536);
   });
 
   it('an empty buffer has one empty page', () => {
-    expect(hexWindow(0, 0)).toEqual({ page: 0, pages: 1, start: 0, end: 0 });
+    expect(hexPage(0, 0)).toEqual({ page: 0, pages: 1, start: 0, end: 0 });
   });
 
   it('a 2 MB buffer is windowed, never whole', () => {
     const n = 2 * 1024 * 1024 + 5;
-    expect(hexWindow(n, 0)).toEqual({ page: 0, pages: 33, start: 0, end: 65536 });
-    expect(hexWindow(n, 32)).toEqual({ page: 32, pages: 33, start: 32 * 65536, end: n });
+    expect(hexPage(n, 0)).toEqual({ page: 0, pages: 33, start: 0, end: 65536 });
+    expect(hexPage(n, 32)).toEqual({ page: 32, pages: 33, start: 32 * 65536, end: n });
   });
 
   it('clamps out-of-range and non-integer pages', () => {
-    expect(hexWindow(100, -3).page).toBe(0);
-    expect(hexWindow(100, 9)).toEqual({ page: 0, pages: 1, start: 0, end: 100 });
-    expect(hexWindow(65536 * 2, 1.7).page).toBe(1);
-    expect(hexWindow(65536 * 2, Number.NaN).page).toBe(0);
+    expect(hexPage(100, -3).page).toBe(0);
+    expect(hexPage(100, 9)).toEqual({ page: 0, pages: 1, start: 0, end: 100 });
+    expect(hexPage(65536 * 2, 1.7).page).toBe(1);
+    expect(hexPage(65536 * 2, Number.NaN).page).toBe(0);
   });
 });

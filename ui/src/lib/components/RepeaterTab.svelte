@@ -85,10 +85,14 @@
   }
 
   // Panes sit side by side from 1280px; below that they stack.
-  let stacked = $state(false);
+  // Initialised synchronously so the first frame already has the right
+  // direction; the effect follows later viewport changes.
+  const STACK_QUERY = '(max-width: 1279px)';
+  const canMatch = typeof window !== 'undefined' && typeof window.matchMedia === 'function';
+  let stacked = $state(canMatch && window.matchMedia(STACK_QUERY).matches);
   $effect(() => {
-    if (typeof window.matchMedia !== 'function') return;
-    const mq = window.matchMedia('(max-width: 1279px)');
+    if (!canMatch) return;
+    const mq = window.matchMedia(STACK_QUERY);
     stacked = mq.matches;
     const on = (e: MediaQueryListEvent) => (stacked = e.matches);
     mq.addEventListener('change', on);
@@ -167,6 +171,7 @@
             <ByteEditor
               bind:bytes={() => tab.raw, (v) => repeater.setRaw(tab.id, v)}
               readonly={false}
+              showCopyRaw={false}
               {chips}
             />
           {/key}
@@ -243,10 +248,6 @@
     flex: 1;
     display: flex;
     flex-direction: column;
-  }
-  /* The toolbar's Copy raw replaces the editor's own inline copy button. */
-  .editor-wrap :global(.raw-actions) {
-    display: none;
   }
   .editor-wrap :global(.cm-editor) {
     flex: 1;

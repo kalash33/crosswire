@@ -5,7 +5,8 @@
   import HeadersTable from './HeadersTable.svelte';
   import ResultHeader from './ResultHeader.svelte';
   import { parseHeadLines, type HeaderLine } from '../http/headers';
-  import { responseView, hexWindow, type RepeaterTab } from '../stores/repeater.svelte';
+  import { hexPage } from '../editor/hex-window';
+  import { responseView, type RepeaterTab } from '../stores/repeater.svelte';
   import type { ExchangeDto } from '../stores/history.svelte';
   import { latin1ToBytes, bytesToLatin1 } from '../editor/encoding';
   import { apiGet, apiGetBytes } from '../api/client';
@@ -37,37 +38,48 @@
   // ---- Response head (status line + headers) -------------------------------
   // From GET /exchanges/{id}. Best effort: a failure only empties the Headers
   // tab, it never hides the body.
+  // `bytes` is set for a byte-exact HTTP/1 head (HeadersTable parses it and
+  // renders the status line and any malformed lines itself); `structured` for
+  // a normalized head, whose `:status` is shown here as the start line.
   interface HeadState {
+    bytes: Uint8Array | null;
+    structured: HeaderLine[] | null;
     start: string;
-    headers: HeaderLine[];
-    malformed: boolean;
+    count: number;
     note: string | null;
   }
   let head = $state<HeadState | null>(null);
-  let hexPage = $state(0);
+  let pageNo = $state(0);
 
   function b64ToBytes(b64: string): Uint8Array {
     return latin1ToBytes(atob(b64));
   }
 
+  function noteOnly(note: string): HeadState {
+    return { bytes: null, structured: null, start: '', count: 0, note };
+  }
+
   function headFrom(ex: ExchangeDto): HeadState {
     const h = ex.response?.head;
-    if (!h) return { start: '', headers: [], malformed: false, note: 'No response head was recorded.' };
+    if (!h) return noteOnly('No response head was recorded.');
     if (h.type === 'http1-raw') {
-      const p = parseHeadLines(b64ToBytes(h.bytes));
-      return { start: p.start, headers: p.headers, malformed: p.malformed, note: null };
+      const bytes = b64ToBytes(h.bytes);
+      const p = parseHeadLines(bytes);
+      return { bytes, structured: null, start: p.start, count: p.headers.length, note: null };
     }
     if (h.type === 'normalized') {
       const all = (h.map ?? []).map(([name, v]) => ({ name, value: bytesToLatin1(b64ToBytes(v)) }));
       const status = all.find((x) => x.name === ':status');
+      const structured = all.filter((x) => x.name !== ':status');
       return {
+        bytes: null,
+        structured,
         start: status ? `:status ${status.value}` : '',
-        headers: all.filter((x) => x.name !== ':status'),
-        malformed: false,
+        count: structured.length,
         note: null,
       };
     }
-    return { start: '', headers: [], malformed: false, note: `Opaque tunnel (${h.reason}).` };
+    return noteOnly(`Opaque tunnel (${h.reason}).`);
   }
 
   // Status code from the start line ("HTTP/1.1 200 OK" or ":status 200").
@@ -80,7 +92,7 @@
     const id = tab.outcome?.exchange_id;
     resp = null;
     head = null;
-    hexPage = 0;
+    pageNo = 0;
     if (!id) return;
     const current = id;
     const enc = encodeURIComponent(current);
@@ -108,7 +120,7 @@
       } catch (e) {
         if (tab.outcome?.exchange_id !== current) return;
         const msg = e instanceof Error ? e.message : 'request failed';
-        head = { start: '', headers: [], malformed: false, note: `Headers unavailable: ${msg}` };
+        head = noteOnly(`Headers unavailable: ${msg}`);
       }
     })();
   });
@@ -118,13 +130,13 @@
   type Sub = 'headers' | 'raw' | 'hex';
   let sub = $state<Sub>('raw');
   const subTabs = $derived([
-    { id: 'headers', label: 'Headers', badge: head?.headers.length, testid: 'resp-tab-headers' },
+    { id: 'headers', label: 'Headers', badge: head?.count, testid: 'resp-tab-headers' },
     { id: 'raw', label: 'Raw', testid: 'resp-tab-raw' },
     { id: 'hex', label: 'Hex', testid: 'resp-tab-hex' },
   ]);
 
   // ---- Hex paging: never more than one 64 KiB window in the DOM ----------------
-  const win = $derived(hexWindow(resp?.bytes.length ?? 0, hexPage));
+  const win = $derived(hexPage(resp?.bytes.length ?? 0, pageNo));
   const hexBytes = $derived(resp ? resp.bytes.subarray(win.start, win.end) : new Uint8Array());
 </script>
 
@@ -171,10 +183,14 @@
         {#if head === null}
           <p class="note">Loading headers…</p>
         {:else}
-          {#if head.start}<p class="start-line" data-testid="resp-start-line">{head.start}</p>{/if}
-          {#if head.note}<p class="note" data-testid="resp-headers-note">{head.note}</p>{/if}
-          {#if head.malformed}<p class="note">Some header lines could not be parsed.</p>{/if}
-          {#if head.headers.length > 0}<HeadersTable headers={head.headers} />{/if}
+          {#if head.note}
+            <p class="note" data-testid="resp-headers-note">{head.note}</p>
+          {:else if head.bytes}
+            <HeadersTable bytes={head.bytes} testid="resp-headers" />
+          {:else}
+            {#if head.start}<p class="start-line" data-testid="resp-start-line">{head.start}</p>{/if}
+            <HeadersTable structured={head.structured} testid="resp-headers" />
+          {/if}
         {/if}
       {:else if resp === null}
         <p class="note">Loading response…</p>
@@ -199,7 +215,7 @@
                 label="Previous 64 KiB"
                 data-testid="hex-prev"
                 disabled={win.page === 0}
-                onclick={() => (hexPage = win.page - 1)}
+                onclick={() => (pageNo = win.page - 1)}
               />
               <span class="range" data-testid="hex-range"
                 >{`Bytes ${win.start}–${win.end - 1} of ${resp.bytes.length} (${humanBytes(resp.bytes.length)}), page ${win.page + 1} of ${win.pages}`}</span
@@ -210,7 +226,7 @@
                 label="Next 64 KiB"
                 data-testid="hex-next"
                 disabled={win.page >= win.pages - 1}
-                onclick={() => (hexPage = win.page + 1)}
+                onclick={() => (pageNo = win.page + 1)}
               />
             </div>
           {/if}

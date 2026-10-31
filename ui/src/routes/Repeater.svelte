@@ -43,6 +43,29 @@
     return () => offs.forEach((off) => off());
   });
 
+  // ---- Tab strip keyboard: roving focus (Left/Right wrap, Home/End), F2 renames ----
+  let tabList = $state<HTMLElement>();
+
+  async function onTabKey(e: KeyboardEvent, id: string): Promise<void> {
+    if (e.key === 'F2') {
+      e.preventDefault();
+      void startRename(id);
+      return;
+    }
+    const tabs = repeater.tabs;
+    const i = tabs.findIndex((t) => t.id === id);
+    let next = -1;
+    if (e.key === 'ArrowRight') next = (i + 1) % tabs.length;
+    else if (e.key === 'ArrowLeft') next = (i - 1 + tabs.length) % tabs.length;
+    else if (e.key === 'Home') next = 0;
+    else if (e.key === 'End') next = tabs.length - 1;
+    if (next < 0 || i < 0) return;
+    e.preventDefault();
+    repeater.selectTab(tabs[next].id);
+    await tick();
+    tabList?.querySelectorAll<HTMLElement>('[role="tab"]')[next]?.focus();
+  }
+
   // ---- Inline rename (double-click or F2; Enter commits, Escape cancels) ----
   let editingId = $state<string | null>(null);
   let draftTitle = $state('');
@@ -81,7 +104,7 @@
 
 <div class="repeater" data-testid="repeater-view">
   <div class="tabstrip">
-    <div class="tabs" data-testid="repeater-tabs" role="tablist" aria-label="Repeater tabs">
+    <div class="tabs" data-testid="repeater-tabs" role="tablist" aria-label="Repeater tabs" bind:this={tabList}>
       {#each repeater.tabs as tab (tab.id)}
         {@const title = repeater.titleFor(tab)}
         {@const active = tab.id === repeater.activeTabId}
@@ -109,12 +132,7 @@
               data-testid="repeater-tab-select"
               onclick={() => repeater.selectTab(tab.id)}
               ondblclick={() => void startRename(tab.id)}
-              onkeydown={(e) => {
-                if (e.key === 'F2') {
-                  e.preventDefault();
-                  void startRename(tab.id);
-                }
-              }}
+              onkeydown={(e) => onTabKey(e, tab.id)}
             >
               {#if tab.sending}<span class="dot" aria-hidden="true"></span>{/if}
               <span class="text">{title}</span>

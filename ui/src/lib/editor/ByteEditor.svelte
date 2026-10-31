@@ -21,11 +21,14 @@
     readonly = true,
     diagnostic = null,
     chips = [],
+    showCopyRaw = true,
   }: {
     bytes?: Uint8Array;
     readonly?: boolean;
     diagnostic?: string | null;
     chips?: Chip[];
+    /** Show the inline "Copy raw" button (editable mode only). Off when a host toolbar provides it. */
+    showCopyRaw?: boolean;
   } = $props();
 
   let host: HTMLDivElement;
@@ -135,7 +138,7 @@
       <button type="button" aria-label="Dismiss" onclick={() => (pasteChip = null)}>×</button>
     </div>
   {/if}
-  {#if !readonly}
+  {#if !readonly && showCopyRaw}
     <div class="raw-actions">
       <button type="button" data-testid="copy-raw" onclick={copyRaw}>Copy raw</button>
     </div>

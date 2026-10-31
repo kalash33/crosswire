@@ -140,25 +140,6 @@ export function responseView(tab: RepeaterTab): ResponseView {
   return 'empty';
 }
 
-/** Hex view page size: the pane never renders more than this many bytes. */
-export const HEX_PAGE_BYTES = 64 * 1024;
-
-export interface HexWindow {
-  page: number;
-  pages: number;
-  start: number;
-  end: number;
-}
-
-/** The byte window for `page` of a `length`-byte buffer, clamped to valid pages. */
-export function hexWindow(length: number, page: number): HexWindow {
-  const len = Math.max(0, Math.floor(length) || 0);
-  const pages = Math.max(1, Math.ceil(len / HEX_PAGE_BYTES));
-  const p = Math.min(pages - 1, Math.max(0, Math.floor(page) || 0));
-  const start = p * HEX_PAGE_BYTES;
-  return { page: p, pages, start, end: Math.min(len, start + HEX_PAGE_BYTES) };
-}
-
 // ---- tab <-> draft json ----
 
 const FOLLOWS: readonly Follow[] = ['off', 'in-scope', 'always'];

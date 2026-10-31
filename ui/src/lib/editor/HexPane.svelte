@@ -2,8 +2,8 @@
   // A classic hex dump of the SAME bytes the editor holds: offset, up to 16 hex
   // columns, and a Latin-1/ASCII gutter. It reads the raw Uint8Array directly
   // (never a lossy string), so it matches the editor byte for byte.
-  // `base` is the offset of `bytes[0]` in a larger buffer, so a windowed page
-  // (e.g. the repeater's 64 KiB hex pages) shows true offsets.
+  // `base` is the absolute offset of bytes[0], for a paged window over a larger
+  // buffer (the History Hex tab); offsets print as base + index.
   let { bytes = new Uint8Array(), base = 0 }: { bytes?: Uint8Array; base?: number } = $props();
 
   const BYTES_PER_ROW = 16;
