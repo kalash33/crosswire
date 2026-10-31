@@ -25,6 +25,7 @@ commit_parsers = [
   { message = "^perf", group = "Performance" },
   { message = "^docs", group = "Documentation" },
   { message = "^(refactor|chore|ci|test|build|style)", group = "Internal" },
+  { message = "^Merge", skip = true },
   { message = ".*", group = "Internal" },
 ]
 
