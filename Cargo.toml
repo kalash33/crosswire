@@ -4,6 +4,7 @@ exclude = ["crates/crosswire-h1/fuzz"]
 resolver = "2"
 
 [workspace.package]
+version = "0.1.0-rc.1"
 edition = "2021"
 license = "Apache-2.0 OR MIT"
 rust-version = "1.88"
@@ -48,3 +49,8 @@ rand = "0.9"
 subtle = "2"
 http = "1"
 url = "2"
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"

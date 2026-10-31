@@ -1,0 +1,41 @@
+# release-plz configuration. release-plz opens the release PR (version bump and
+# CHANGELOG.md) and, when that PR merges, cuts the single `v<version>` tag on
+# crosswire-server. Nothing is published to crates.io: every crate is
+# `publish = false`. The `v*` tag is what starts the cargo-dist release build.
+#
+# Git-only mode is required. In registry mode release-plz skips every
+# `publish = false` crate (no bump, no changelog, no tag); in git-only mode it
+# reads versions from git tags instead and still tags unpublished crates.
+
+[workspace]
+git_only = true
+release = false          # only crosswire-server is processed (see [[package]])
+release_always = false   # tag only when a release PR merges, not on every push
+git_release_enable = false
+git_tag_enable = false
+changelog_update = false
+dependencies_update = false
+semver_check = false
+pr_labels = ["release"]
+
+[changelog]
+commit_parsers = [
+  { message = "^feat", group = "Added" },
+  { message = "^fix", group = "Fixed" },
+  { message = "^perf", group = "Performance" },
+  { message = "^docs", group = "Documentation" },
+  { message = "^(refactor|chore|ci|test|build|style)", group = "Internal" },
+  { message = "^Merge", skip = true },
+  { message = ".*", group = "Internal" },
+]
+
+# One workspace version, one tag: the server crate carries the tag and the one
+# changelog; the other crates' commits appear in its notes via changelog_include.
+[[package]]
+name = "crosswire-server"
+release = true
+git_tag_enable = true
+git_tag_name = "v{{ version }}"
+changelog_update = true
+changelog_path = "CHANGELOG.md"
+changelog_include = ["crosswire-api", "crosswire-ca", "crosswire-client", "crosswire-core", "crosswire-h1", "crosswire-model", "crosswire-proxy", "crosswire-recorder-tests", "crosswire-scope", "crosswire-store", "crosswire-tools"]

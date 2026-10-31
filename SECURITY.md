@@ -20,6 +20,14 @@ In scope: anything a hostile HTTP peer, a hostile project file or import, or a m
 
 Out of scope: findings in the *targets* you test with Crosswire, and intentional behaviour such as the ability to send malformed HTTP (that is the tool's purpose).
 
+## Verifying releases
+
+Each release archive (`crosswire-server-<target>.tar.xz`) carries a GitHub build-provenance attestation; the installer script and checksum files do not. Verify a download with:
+
+```
+gh attestation verify <file> --repo kalash33/crosswire
+```
+
 ## Supported versions
 
 Pre-1.0: only the `main` branch and the latest tagged release receive fixes.

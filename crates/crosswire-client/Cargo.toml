@@ -1,6 +1,6 @@
 [package]
 name = "crosswire-client"
-version = "0.0.0"
+version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
@@ -16,13 +16,13 @@ tokio = { workspace = true }
 rustls = { workspace = true }
 tokio-rustls = { workspace = true }
 webpki-roots = { workspace = true }
-crosswire-h1 = { path = "../crosswire-h1", version = "0.0.0" }
-crosswire-core = { path = "../crosswire-core", version = "0.0.0" }
-crosswire-model = { path = "../crosswire-model", version = "0.0.0" }
+crosswire-h1 = { path = "../crosswire-h1" }
+crosswire-core = { path = "../crosswire-core" }
+crosswire-model = { path = "../crosswire-model" }
 rustls-pki-types = { workspace = true }
 thiserror = { workspace = true }
 bytes = { version = "1", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-crosswire-ca = { path = "../crosswire-ca", version = "0.0.0" }
+crosswire-ca = { path = "../crosswire-ca" }

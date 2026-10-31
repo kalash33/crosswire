@@ -1,6 +1,6 @@
 [package]
 name = "crosswire-api"
-version = "0.0.0"
+version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
@@ -12,16 +12,16 @@ publish = false
 workspace = true
 
 [dependencies]
-crosswire-model = { path = "../crosswire-model", version = "0.0.0" }
-crosswire-store = { path = "../crosswire-store", version = "0.0.0" }
-crosswire-scope = { path = "../crosswire-scope", version = "0.0.0" }
-crosswire-proxy = { path = "../crosswire-proxy", version = "0.0.0" }
-crosswire-tools = { path = "../crosswire-tools", version = "0.0.0" }
-crosswire-ca = { path = "../crosswire-ca", version = "0.0.0" }
+crosswire-model = { path = "../crosswire-model" }
+crosswire-store = { path = "../crosswire-store" }
+crosswire-scope = { path = "../crosswire-scope" }
+crosswire-proxy = { path = "../crosswire-proxy" }
+crosswire-tools = { path = "../crosswire-tools" }
+crosswire-ca = { path = "../crosswire-ca" }
 # Needed to construct a `SendRequest` for `POST /repeater/send`: its `raw`
 # field is `bytes::Bytes` and its `verify` field is `crosswire_client::VerifyMode`.
 # The scaffolded manifest omitted both; `publish = false` keeps this allowed.
-crosswire-client = { path = "../crosswire-client", version = "0.0.0" }
+crosswire-client = { path = "../crosswire-client" }
 bytes = { version = "1", default-features = false, features = ["std"] }
 axum = { workspace = true }
 tower = { workspace = true }
@@ -42,4 +42,4 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-crosswire-h1 = { path = "../crosswire-h1", version = "0.0.0" }
+crosswire-h1 = { path = "../crosswire-h1" }
