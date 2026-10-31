@@ -34,16 +34,16 @@ store writes it, the API will serve it, the proxy will fill it.
 | `Body` | `None`, `Inline` (raw framed bytes) or `Blob` (SHA-256, length, `truncated_at`, `capture_dropped`) |
 | `ConnectionInfo`, `ChainResult` | target address and port, SNI, ALPN, TLS version and cipher, upstream chain result (`NotTls`, `Valid`, `Invalid`, `Overridden`), connection id and reuse flag |
 | `Marker`, `MarkerKind` | gap, limit-exceeded and error rows; a `Gap` carries a ULID time window |
-| `Event` | `Received`, `Committed`, `Marker`, `Error`, `LimitExceeded`, `Lagged`; every variant has a monotonic `seq` |
+| `Event` | `Received`, `Committed`, `Marker`, `Error`, `LimitExceeded`, `Lagged`; every known variant has a monotonic `seq` (0 when absent, and for `Unknown`) |
 | `ExchangeSink`, `SinkError` | `submit(&self, Exchange) -> Result<(), SinkError>`; `Full` or `Closed` |
 | `RedactionPolicy` | header names redacted whole plus value patterns (`Bearer `, `access_token=`, `api_key=`, JWT shape); `default_policy()` |
-| `SCHEMA_VERSION` | `1` |
+| `SCHEMA_VERSION` | `2` |
 
 ## Defaults and constants
 
 | name | value | where |
 | --- | --- | --- |
-| `SCHEMA_VERSION` | 1 | `lib.rs` |
+| `SCHEMA_VERSION` | 2 (the 0.1.0 freeze) | `lib.rs` |
 | `HTTP1_PARSER_VERSION` | 1 (recorded beside every `Http1Raw` head, so spans can be re-derived if the parser changes) | `message.rs` |
 | `RedactionPolicy::JWT_PATTERN` | `"@jwt"` | `redact.rs` |
 
@@ -51,13 +51,25 @@ store writes it, the API will serve it, the proxy will fill it.
 
 - Additive-only from the 0.1.0 tag: fields and variants may be added, never
   removed or renamed, and readers ignore unknown fields (no type uses
-  `deny_unknown_fields`). Until that tag the schema is at version 1 but has not
-  been released; a deliberate break would bump `SCHEMA_VERSION`.
-- Every enum is `#[non_exhaustive]` with kebab-case wire names. The plain
-  string enums (`Fidelity`, `MessageKind`, `MarkerKind`, `TunnelReason`) read an
-  unrecognised name as `Unknown`. The tagged enums (`Head`, `Body`,
-  `ChainResult`, `Event`) fail to deserialise a variant they do not know, so a
-  reader must be upgraded before data that uses a new variant reaches it.
+  `deny_unknown_fields`). The frozen schema is version 2; a deliberate break
+  would bump `SCHEMA_VERSION`.
+- Every enum is `#[non_exhaustive]` and has an `Unknown` variant that an
+  unrecognised code reads as, so a newer writer's variants never fail a read.
+  The plain string enums (`Fidelity`, `MessageKind`, `MarkerKind`,
+  `TunnelReason`, `ExchangeState`, `ScopeState`, `NamespaceKind`, and
+  `crosswire-core`'s `ChangeOp`, `ChangeReason`, `EncodingHint`, `Severity`,
+  `DiagnosticCode`) do so on an unknown string (`ChangeReason` also on an
+  unknown single-key object, payload skipped). The enums tagged by a `type` key
+  (`Head`, `Body`, `ChainResult`, `Event`, `StartLineSpans`, `FramingRecord`) do
+  so on an unknown `type`.
+- Codes are kebab-case, except `Severity` and `DiagnosticCode`, whose snake_case
+  wire codes equal their `as_str()` names (the corpus `.expect.json` names).
+- Optional fields default when absent, including `Http1Raw.parser_version`
+  (`HTTP1_PARSER_VERSION`), every `Event` `seq` and the tunnel counters (0).
+  `ConnectionInfo` stores no `cert_override`; `cert_override()` is derived from
+  `ChainResult::Overridden`.
+- `tests/fixtures/exchange.v2.json` must round-trip byte-identically
+  (`tests/freeze.rs`); changing the wire means editing it on purpose.
 - Byte payloads are base64 strings under the default `std` feature and byte
   sequences without it. Both ends of a stored document must agree on the
   feature; project files and the API use `std`.
@@ -92,7 +104,7 @@ The recipe that records a live exchange (send, read, build, submit) is
 ## Status
 
 Pre-alpha, `publish = false`. Only the schema is held additive-only (at schema
-version 1, from the 0.1.0 tag); the Rust API around it can still change.
+version 2, from the 0.1.0 tag); the Rust API around it can still change.
 `crosswire-core` and `crosswire-h1` are path dependencies that are not
 published, so `cargo package -p crosswire-model` fails (`no matching package
 named crosswire-core found`) until they are.

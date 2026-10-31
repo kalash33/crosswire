@@ -67,6 +67,20 @@
           "end": 6,
           "start": 6
         }
+      },
+      {
+        "after": "",
+        "before": "eA==",
+        "op": "delete",
+        "reason": {
+          "match-replace": {
+            "rule": "strip-x"
+          }
+        },
+        "span": {
+          "end": 7,
+          "start": 6
+        }
       }
     ],
     "fidelity": "raw",

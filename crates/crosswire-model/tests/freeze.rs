@@ -66,6 +66,13 @@ fn frozen_exchange_fixture_round_trips_byte_identical() {
     );
     assert_eq!(req.diffs()[0].reason(), &ChangeReason::IntruderPosition(3));
     assert_eq!(req.diffs()[0].op(), ChangeOp::Insert);
+    assert_eq!(
+        req.diffs()[1].reason(),
+        &ChangeReason::MatchReplace {
+            rule: "strip-x".into()
+        }
+    );
+    assert_eq!(req.diffs()[1].op(), ChangeOp::Delete);
 
     let resp = ex.response().expect("response");
     assert_eq!(resp.kind(), MessageKind::Tunnel);
@@ -123,10 +130,18 @@ fn every_wire_enum_reads_unknown_codes() {
     assert_eq!(read::<ChangeOp>(r#""delete""#), ChangeOp::Delete);
     assert_eq!(read::<ChangeOp>(r#""replace""#), ChangeOp::Replace);
 
-    assert_eq!(
-        read::<ChangeReason>(r#""no-such-code""#),
-        ChangeReason::Unknown
-    );
+    for unknown in [
+        r#""no-such-code""#,
+        r#"{"no-such-code":{"a":1}}"#,
+        r#"{"no-such-code":1}"#,
+        r#"{"no-such-code":[1,{"b":null}]}"#,
+    ] {
+        assert_eq!(
+            read::<ChangeReason>(unknown),
+            ChangeReason::Unknown,
+            "{unknown}"
+        );
+    }
     assert_eq!(
         read::<ChangeReason>(r#""hop-by-hop""#),
         ChangeReason::HopByHop
@@ -323,4 +338,22 @@ fn cert_override_is_derived_from_chain_result() {
         r#"{"target_addr":"x","port":443,"upstream_chain_result":{"type":"valid"},"cert_override":true}"#,
     );
     assert!(!old.cert_override());
+}
+
+#[test]
+fn change_reason_known_codes_round_trip_byte_identical() {
+    for json in [
+        r#""hop-by-hop""#,
+        r#""content-length""#,
+        r#""intercept-edit""#,
+        r#"{"match-replace":{"rule":"strip-cookies"}}"#,
+        r#"{"intruder-position":3}"#,
+        r#"{"custom":"why"}"#,
+    ] {
+        let r: ChangeReason = read(json);
+        assert_ne!(r, ChangeReason::Unknown, "{json}");
+        assert_eq!(serde_json::to_string(&r).unwrap(), json);
+    }
+    // A malformed payload under a known code is still an error.
+    assert!(serde_json::from_str::<ChangeReason>(r#"{"intruder-position":"x"}"#).is_err());
 }
