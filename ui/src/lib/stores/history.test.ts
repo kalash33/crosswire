@@ -140,4 +140,64 @@ describe('history store', () => {
     h.patchRow('ZZ', { tags: ['x'] });
     expect(h.rows).toBe(before);
   });
+
+  it('bulkTag issues one PATCH per id, in order, appending to and deduping each row', async () => {
+    const get = vi.fn().mockResolvedValue(
+      page([row('A', { tags: ['x'] }), row('B', { tags: ['keep', 'x'] }), row('C', { tags: [] })]),
+    );
+    const calls: [string, unknown][] = [];
+    const patch = vi.fn(async (id: string, body: unknown) => {
+      calls.push([id, body]);
+    });
+    const h = createHistory({ get, subscribe: noSub, patch });
+    await h.applyFilter({});
+
+    const res = await h.bulkTag(['C', 'A', 'B'], ' x ');
+
+    expect(calls).toEqual([
+      ['C', { tags: ['x'] }],
+      ['A', { tags: ['x'] }],
+      ['B', { tags: ['keep', 'x'] }],
+    ]);
+    expect(res).toEqual({ ok: ['C', 'A', 'B'], failed: [] });
+    expect(h.rows.find((r) => r.id === 'C')?.tags).toEqual(['x']);
+  });
+
+  it('bulkTag waits for each PATCH before the next and reports failures without stopping', async () => {
+    const get = vi.fn().mockResolvedValue(page([row('A'), row('B')]));
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const patch = vi.fn(async (id: string) => {
+      inFlight++;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await new Promise((r) => setTimeout(r, 1));
+      inFlight--;
+      if (id === 'A') throw new Error('nope');
+    });
+    const h = createHistory({ get, subscribe: noSub, patch });
+    await h.applyFilter({});
+    const res = await h.bulkTag(['A', 'B'], 'y');
+    expect(maxInFlight).toBe(1);
+    expect(res).toEqual({ ok: ['B'], failed: [{ id: 'A', error: 'nope' }] });
+    expect(h.rows.find((r) => r.id === 'A')?.tags).toEqual([]);
+    expect(h.rows.find((r) => r.id === 'B')?.tags).toEqual(['y']);
+  });
+
+  it('bulkTag rejects an invalid tag without any PATCH', async () => {
+    const patch = vi.fn();
+    const h = createHistory({ get: vi.fn().mockResolvedValue(page([row('A')])), subscribe: noSub, patch });
+    await h.applyFilter({});
+    await expect(h.bulkTag(['A'], '   ')).rejects.toThrow('tag is empty');
+    expect(patch).not.toHaveBeenCalled();
+  });
+
+  it('bulkAddHosts returns the unique hosts of the given rows in first-seen order', async () => {
+    const get = vi.fn().mockResolvedValue(
+      page([row('A', { host: 'b.test' }), row('B', { host: 'a.test' }), row('C', { host: 'b.test' }), row('D', { host: null })]),
+    );
+    const h = createHistory({ get, subscribe: noSub });
+    await h.applyFilter({});
+    expect(h.bulkAddHosts(['A', 'B', 'C', 'D', 'ZZ'])).toEqual(['b.test', 'a.test']);
+  });
 });
+

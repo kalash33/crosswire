@@ -12,6 +12,9 @@
 // toggles (a `received` event marks it, a `committed` event clears it).
 
 import { apiGet, type QueryParams } from '../api/client';
+import { patchExchange } from '../api/exchanges';
+import type { PatchBody } from '../api/types';
+import { addTag } from '../tags';
 import { events, type Event } from './events.svelte';
 
 /** One history row, exactly the fields alpha.2 provides (no mime/tls/ms). */
@@ -65,6 +68,14 @@ export interface HistoryOptions {
   pageSize?: number;
   /** Upper bound on retained rows under a live-event flood. */
   maxRows?: number;
+  /** Injectable `PATCH /exchanges/{id}` (defaults to the API helper). */
+  patch?: (id: string, body: PatchBody) => Promise<void>;
+}
+
+/** The outcome of a bulk tag: ids saved, and ids that failed with the reason. */
+export interface BulkTagResult {
+  ok: string[];
+  failed: { id: string; error: string }[];
 }
 
 const EXCHANGES = '/api/v1/exchanges';
@@ -94,6 +105,7 @@ export function createHistory(opts: HistoryOptions = {}) {
   const subscribe = opts.subscribe ?? ((oe, ol) => events.subscribe(oe, ol));
   const pageSize = opts.pageSize ?? 100;
   const maxRows = opts.maxRows ?? 5_000;
+  const patch = opts.patch ?? patchExchange;
 
   let rows = $state<Row[]>([]);
   let activeFilter = $state<ExchangeFilter>({});
@@ -210,6 +222,56 @@ export function createHistory(opts: HistoryOptions = {}) {
       next[idx] = { ...next[idx], ...(patch.tags !== undefined ? { tags: patch.tags } : {}) };
       rows = next;
     },
+    /**
+     * Add `tag` to every id, one PATCH at a time in the given order. The PATCH
+     * REPLACES the whole tag list, so each list is the row's current tags plus
+     * the new one (deduped). A failure is recorded and the run continues. An
+     * invalid tag (empty, too long, control characters) throws before any
+     * request.
+     */
+    async bulkTag(ids: readonly string[], tag: string): Promise<BulkTagResult> {
+      const probe = addTag([], tag);
+      if (!probe.ok) throw new Error(probe.error);
+      const clean = probe.tags[0];
+      const res: BulkTagResult = { ok: [], failed: [] };
+      for (const id of ids) {
+        const found = rows.find((r) => r.id === id)?.tags ?? [];
+        const current = found.filter((t, i) => found.indexOf(t) === i);
+        let next: string[];
+        if (current.includes(clean)) next = current;
+        else {
+          const added = addTag(current, clean);
+          if (!added.ok) {
+            res.failed.push({ id, error: added.error });
+            continue;
+          }
+          next = added.tags;
+        }
+        try {
+          await patch(id, { tags: next });
+        } catch (e) {
+          res.failed.push({ id, error: e instanceof Error ? e.message : 'failed to save tags' });
+          continue;
+        }
+        res.ok.push(id);
+        const idx = rows.findIndex((r) => r.id === id);
+        if (idx >= 0) {
+          const copy = rows.slice();
+          copy[idx] = { ...copy[idx], tags: next };
+          rows = copy;
+        }
+      }
+      return res;
+    },
+    /** The distinct hosts of the given rows, in first-seen order (for scope). */
+    bulkAddHosts(ids: readonly string[]): string[] {
+      const hosts: string[] = [];
+      for (const id of ids) {
+        const host = rows.find((r) => r.id === id)?.host;
+        if (host && !hosts.includes(host)) hosts.push(host);
+      }
+      return hosts;
+    },
     applyFilter,
     reload,
     loadMore,
@@ -277,6 +339,16 @@ export interface MessageDto {
   head: HeadDto;
   diagnostics?: DiagnosticDto[];
   body: BodyDto;
+  /** Connection facts (crosswire_model::ConnectionInfo); absent on old records. */
+  connection?: ConnectionDto;
+}
+
+/** The subset of ConnectionInfo the UI reads (Copy URL, send to Repeater). */
+export interface ConnectionDto {
+  target_addr?: string;
+  port?: number;
+  sni?: string | null;
+  tls_version?: string | null;
 }
 
 /** The full exchange returned by `GET /exchanges/{id}`. */
