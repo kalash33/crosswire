@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### R1: schema freeze
+
+#### Changed
+
+- **Breaking, wire format** (`SCHEMA_VERSION` 2): enum codes are frozen
+  (kebab-case or snake_case, no PascalCase), tagged unions use a `type` tag, and
+  defaults are fixed. Unknown enum codes read back as an `Unknown` variant
+  instead of failing, so a newer project stays readable. `cert_override` is no
+  longer on the wire.
+- **Breaking, project format 6**: a fresh project is created at `user_version`
+  6. Projects written by pre-release builds (`user_version` 1 to 5) are refused
+  on open, before any migration or snapshot; re-record the traffic.
+
+#### Added
+
+- **crosswire-api**: every gated response carries `Crosswire-Schema-Version: 2`,
+  including the gate's own `401`, `421` and `404` refusals. `GET /api/v1/health`
+  adds `schema_version` and `format_version` (`crosswire-store` exports
+  `FORMAT_VERSION`).
+
 ### alpha.2: the sidecar backend (no UI yet)
 
 The backend of `0.1.0-alpha.2`. Everything the web UI will drive exists and is

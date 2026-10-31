@@ -1044,9 +1044,23 @@
         "type": "object",
         "description": "The health response body.",
         "required": [
-          "status"
+          "status",
+          "schema_version",
+          "format_version"
         ],
         "properties": {
+          "format_version": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The project database format (`user_version`) this build reads and writes.",
+            "minimum": 0
+          },
+          "schema_version": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The wire-format version of recorded Messages and Exchanges\n(`crosswire_model::SCHEMA_VERSION`).",
+            "minimum": 0
+          },
           "status": {
             "type": "string",
             "description": "Always `\"ok\"` while the API is serving."

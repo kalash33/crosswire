@@ -84,16 +84,15 @@ impl Project {
     ///
     /// Refuses a database whose `application_id` is not Crosswire's, or whose
     /// `user_version` is 0 ([`StoreError::NotAProject`]) or above
-    /// the newest version this build supports ([`StoreError::NewerFormat`]), and (before taking the
+    /// the newest version this build supports ([`StoreError::NewerFormat`]), a
+    /// project from a pre-release build, format 1 to 5
+    /// ([`StoreError::PreReleaseProject`], refused before any write), and (before taking the
     /// lock) a project whose `project.db`, `-wal`, `-shm` or `audit.jsonl` is
     /// a symlink ([`StoreError::Corrupt`]). Runs `PRAGMA integrity_check` only
     /// when the previous run did not shut down cleanly.
     ///
-    /// An older project is migrated up to the current version in place. Before the
-    /// first upgrade step the pre-migration database is copied to
-    /// `project.db.v<n>.bak` (a plain file copy taken while the project is held
-    /// exclusively under the lock), so a mistaken or interrupted upgrade can be
-    /// rolled back by hand.
+    /// There is no migration path: a project older than the current format is
+    /// refused (see above), so `open` never rewrites a project's schema.
     pub fn open(dir: &Path) -> Result<Project, StoreError> {
         refuse_symlinked_files(dir)?;
         if !dir.join(DB_FILE).is_file() {
@@ -120,6 +119,10 @@ impl Project {
         }
         if version > USER_VERSION {
             return Err(StoreError::NewerFormat(version));
+        }
+        if version < USER_VERSION {
+            // Before any migration, snapshot or write.
+            return Err(StoreError::PreReleaseProject { version });
         }
         refuse_hostile_schema(&db)?;
         if lock.previous_unclean() {

@@ -36,3 +36,7 @@ pub use store::{OpenReport, Store, StoreConfig};
 pub use sweep::{sweep, SweepReport};
 #[cfg(feature = "synthetic")]
 pub use synthetic::generate;
+
+/// The project database format (`PRAGMA user_version`) this build creates and
+/// opens; reported by the API health endpoint.
+pub const FORMAT_VERSION: u32 = schema::USER_VERSION;

@@ -6,7 +6,7 @@ use rusqlite::Connection;
 /// The `application_id` of a Crosswire project (`CWPR`).
 pub(crate) const APPLICATION_ID: i64 = 0x4357_5052;
 /// The schema version this build reads and writes.
-pub(crate) const USER_VERSION: u32 = 5;
+pub(crate) const USER_VERSION: u32 = 6;
 
 /// Rows backfilled into `exchange_tags` per statement during the v3→v4
 /// migration, so a million-row project is not one unbounded insert.
@@ -104,6 +104,16 @@ pub(crate) fn migrate(conn: &mut Connection, from: u32) -> Result<(), StoreError
         tx.pragma_update(None, "user_version", 5)?;
         tx.commit()?;
         version = 5;
+    }
+    if version == 5 {
+        // Format 6 changes the message wire format (schema_version 2), not the
+        // tables, so this step only stamps the version. Projects older than 6
+        // are refused at open and never reach here; the arm exists so the
+        // version chain stays total.
+        let tx = conn.transaction()?;
+        tx.pragma_update(None, "user_version", 6)?;
+        tx.commit()?;
+        version = 6;
     }
     if version != USER_VERSION {
         return Err(StoreError::Corrupt(format!(

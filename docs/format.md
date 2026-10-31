@@ -1,4 +1,4 @@
-# Crosswire project format, version 5
+# Crosswire project format, version 6
 
 A project is a directory. Everything Crosswire records lives in it. This document is the on-disk contract; `crosswire-store` is its implementation.
 
@@ -30,7 +30,7 @@ reset-profile` deletes it.
 ## Database
 
 - `PRAGMA application_id = 0x43575052` (`CWPR`). A database with another value is not a project.
-- `PRAGMA user_version = 5`. `0` means an uninitialised database (not a project). A value above 5 is refused as a newer format; a value of 1, 2, 3 or 4 is an older project, migrated up to 5 on open (see [Migrations](#migrations)).
+- `PRAGMA user_version = 6`. `0` means an uninitialised database (not a project). A value above 6 is refused as a newer format. A value of 1 to 5 is a project from a pre-release build and is refused (`PreReleaseProject`): "project was created by a pre-release build of Crosswire (format N); re-record it with 0.1.0". The refusal happens before any migration, snapshot or write. Format 6 is paired with the message `schema_version` 2 (`crosswire_model::SCHEMA_VERSION`): `schema_version 2 ↔ user_version 6`.
 - `PRAGMA journal_mode = WAL`, `synchronous = NORMAL`, `checkpoint_fullfsync = ON` (checkpoint syncs use `F_FULLFSYNC` on macOS; no effect elsewhere), `busy_timeout = 5000` on the writer connection. `Store::open` also sets `journal_size_limit` to 1 MiB so the WAL file does not stay at its high-water size.
 - The project is opened with `SQLITE_DBCONFIG_DEFENSIVE` on and `trusted_schema = OFF`, so a hostile project file cannot run SQL functions from its schema or write to shadow tables.
 - One writer connection (the store's writer thread) and any number of read-only connections (`query_only = ON`, `busy_timeout = 5000`, `cache_size = -16384` (16 MiB), `mmap_size = 268435456` (256 MiB)). There is also at most one *control* connection per [`Control`](#control-tables-0002_sidecarsql) handle: a second write connection, hardened and configured like the writer's (WAL, `synchronous = NORMAL`, `busy_timeout = 5000`), used only for the small, rare writes to the `settings`, `tokens` and `drafts` tables and for patching an exchange's `tags`/`notes`. It never writes bodies or packs, so it never contends with the writer for long; the 5 s busy timeout lets it wait out a batch commit.
@@ -38,13 +38,14 @@ reset-profile` deletes it.
 
 #### Migrations
 
-A fresh project is created at the current `user_version` with every migration applied in one transaction. An existing project at an older `user_version` is migrated up on open, one step per transaction (each step also advances `user_version`, so an interrupted upgrade leaves a consistent earlier version). Before the first upgrade step, the pre-migration database is copied to `project.db.v<n>.bak` in the project directory (a plain file copy taken under the project lock, after a `wal_checkpoint(TRUNCATE)` folds the WAL into the main file and the write connection is closed), so a mistaken or interrupted upgrade can be rolled back by hand. A symlinked `.bak` path is refused rather than followed. The `.bak` is an ordinary regular file and is not part of the live project: opening a project with one present succeeds and never re-snapshots an already-current project.
+A fresh project is created at the current `user_version` (6) with every migration applied in one transaction. A project at an older `user_version` (1 to 5) is a pre-release project: `open` refuses it before running any migration or taking any snapshot, because the message wire format changed incompatibly for 0.1.0 and nothing earlier is supported. Re-record the traffic with 0.1.0. From version 6 on, projects are migrated up on open, one step per transaction (each step also advances `user_version`, so an interrupted upgrade leaves a consistent earlier version), after a pre-migration copy to `project.db.v<n>.bak` (a plain file copy taken under the project lock, after a `wal_checkpoint(TRUNCATE)`; a symlinked `.bak` path is refused). The migrations below are the history a fresh project replays; the steps before 6 never run on an existing project.
 
 - `0001_init.sql` → `user_version` 1: `exchanges`, `bodies`, `blobs`, `packs`, `markers`, `meta`.
 - `0002_sidecar.sql` → `user_version` 2: `settings`, `tokens`, `drafts` (additive; see [Control tables](#control-tables-0002_sidecarsql)).
-- `0003_history_indexes.sql` → `user_version` 3: the four structured-query indexes (additive; see [Indexes](#indexes)). The upgrade step also runs `ANALYZE` so the planner has statistics for the new indexes on an existing (populated) project — without them an open-ended range such as `resp_len >= ?` is served by a primary-key scan rather than the index.
-- `0004_tag_index.sql` → `user_version` 4: the normalized `exchange_tags` side table (additive; see [Indexes](#indexes)). The upgrade step backfills it, in bounded chunks, from the `tags` JSON of every existing row — so a project created before version 4 answers the `tag = ?` query from the table immediately after open.
-- `0005_method_status_order.sql` → `user_version` 5: rebuilds `idx_exchanges_method_status` and `idx_exchanges_resp_len` as covering indexes with `ulid` in order (see [Indexes](#indexes)); the upgrade step runs `ANALYZE`.
+- `0003_history_indexes.sql` → `user_version` 3: the four structured-query indexes (additive; see [Indexes](#indexes)). Historically (no longer run on user data) the upgrade step also ran `ANALYZE` so the planner has statistics for the new indexes on an existing (populated) project — without them an open-ended range such as `resp_len >= ?` is served by a primary-key scan rather than the index.
+- `0004_tag_index.sql` → `user_version` 4: the normalized `exchange_tags` side table (additive; see [Indexes](#indexes)). Historically (no longer run on user data) the upgrade step backfilled it, in bounded chunks, from the `tags` JSON of every existing row — so a project created before version 4 answers the `tag = ?` query from the table immediately after open.
+- `0005_method_status_order.sql` → `user_version` 5: rebuilds `idx_exchanges_method_status` and `idx_exchanges_resp_len` as covering indexes with `ulid` in order (see [Indexes](#indexes)) (historical: the upgrade step ran `ANALYZE`, no longer run on user data).
+- `user_version` 6: a version stamp only, no data migration and no new table. It marks the frozen message wire format (`schema_version` 2, see [Message wire format](#message-wire-format)). Projects older than 6 are refused rather than migrated.
 
 ### Tables (`0001_init.sql`)
 
@@ -186,6 +187,57 @@ From `0003_history_indexes.sql`, for the structured history queries (§13). Each
 From `0004_tag_index.sql`, the normalized tag index:
 
 - `exchange_tags` (`WITHOUT ROWID`), `(ulid TEXT, tag TEXT, PRIMARY KEY (tag, ulid))` — one row per `(exchange, tag)`. The `(tag, ulid)` primary key is a `tag → ulids` range already ordered for the newest-first keyset, so the tag query searches it by its primary key (`SEARCH exchange_tags USING PRIMARY KEY (tag=?)`) instead of scanning every row's `json_each`. The writer fills it in the ingest transaction and the control connection replaces an exchange's rows when its tags change, both in lockstep with the `tags` column.
+
+## Message wire format
+
+This section is the published schema of the JSON that `crosswire-model` writes into the `json` column, the journal and the API (`schema_version` 2). From 0.1.0 it is additive-only: fields and codes may be added, never removed or renamed.
+
+### Tagging and code style
+
+- **`type`-tagged** families are objects with a `"type"` key naming the variant: `StartLineSpans`, `FramingRecord`, `Head`, `Body`, `ChainResult` and `Event`. Their `type` codes are kebab-case.
+- Every other enum is a **plain string** (its code). Codes are kebab-case, except `Severity` and `DiagnosticCode`, which are snake_case.
+- `ChangeReason` is the one mixed case: a unit reason is a plain string (`"hop-by-hop"`), a reason with data is a single-key object (`{"match-replace":{"rule":"strip-x"}}`, `{"intruder-position":3}`, `{"custom":"text"}`).
+
+### Codes
+
+| enum | style | codes |
+|---|---|---|
+| `Fidelity` | kebab-case string | `raw`, `decoded-ordered`, `normalized`, `opaque`, `generated`, `unknown` |
+| `MessageKind` | kebab-case string | `http1-raw`, `http2-frames`, `normalized`, `ws-frames`, `tunnel`, `unknown` |
+| `MarkerKind` | kebab-case string | `gap`, `limit-exceeded`, `error`, `unknown` |
+| `TunnelReason` | kebab-case string | `ws`, `sni-passthrough`, `auto-passthrough`, `undelimitable`, `unknown` |
+| `ExchangeState` | kebab-case string | `received`, `committed`, `error`, `unknown` |
+| `ScopeState` | kebab-case string | `in`, `out`, `empty`, `host-mismatch`, `unknown` |
+| `NamespaceKind` | kebab-case string | `history`, `repeater`, `intruder`, `unknown` |
+| `ChangeOp` | kebab-case string | `insert`, `delete`, `replace`, `unknown` |
+| `ChangeReason` | kebab-case string or single-key object | `hop-by-hop`, `content-length`, `intercept-edit`, `match-replace` (`{"rule": string}`), `intruder-position` (integer), `custom` (string), `unknown` |
+| `EncodingHint` | kebab-case string | `indexed`, `literal-with-indexing`, `literal-without-indexing`, `never-indexed`, `unknown` |
+| `Severity` | snake_case string | `info`, `warning`, `error`, `unknown` |
+| `DiagnosticCode` | snake_case string | `duplicate_content_length`, `conflicting_framing`, `obs_fold`, `bare_lf`, `bare_cr`, `whitespace_before_colon`, `trailing_space_in_name`, `leading_whitespace_before_start_line`, `non_canonical_header_case`, `invalid_token_char_in_name`, `invalid_char_in_value`, `missing_host`, `duplicate_host`, `absolute_form_target`, `chunk_extension_present`, `trailer_present`, `chunk_size_leading_zeros`, `invalid_chunk_size`, `content_length_non_numeric`, `content_length_leading_plus`, `unknown_transfer_coding`, `body_after_no_body_status`, `expect_100_continue`, `http_0_9_request`, `version_unusual`, `chunk_size_whitespace`, `unknown` |
+| `StartLineSpans` | `type`-tagged | `request` (`method`, `target`, `version` spans), `response` (`version`, `status`, `reason` spans), `unknown` |
+| `FramingRecord` | `type`-tagged | `none`, `content-length` (`len`), `chunked`, `until-close`, `upgrade`, `ambiguous` (`resolved`, `candidates`, `rule`), `unknown` |
+| `Head` | `type`-tagged | `http1-raw` (`bytes`, `spans`, `parser_version`), `normalized` (`map`), `tunnel` (`bytes_in`, `bytes_out`, `duration_ms`, `reason`), `unknown` |
+| `Body` | `type`-tagged | `none`, `inline` (`bytes`, `truncated_at`, `capture_dropped`, `relay`), `blob` (`hash`, `len`, `truncated_at`, `capture_dropped`, `relay`), `unknown` |
+| `ChainResult` | `type`-tagged | `not-tls`, `valid`, `invalid` (`reason`), `overridden` (`reason`), `unknown` |
+| `Event` | `type`-tagged | `received`, `committed`, `marker`, `error`, `limit-exceeded`, `lagged`, `unknown` |
+
+The `Ambiguous` framing `rule` is a kebab-case string: `transfer-encoding-wins`, `first-content-length`, `no-body-status`, `head-method`, `connect-success`, `invalid-content-length`, or `unknown` for a rule newer than the writer.
+
+### The `Unknown` rule
+
+An unrecognised code never fails a read. A plain string enum reads an unknown string as `Unknown`; a `type`-tagged enum reads an unknown `type` as `Unknown`; `ChangeReason` reads an unknown string, and an unknown object key with any payload (the payload is skipped), as `Unknown`. Unknown struct fields are ignored. `Unknown` is a value a reader can see, not a code a writer should emit.
+
+### Defaults
+
+A field absent from the JSON reads as its default: `Head::Http1Raw.parser_version` is `HTTP1_PARSER_VERSION` (the current parser version), `Event.seq` is 0, and a tunnel's `bytes_in`, `bytes_out` and `duration_ms` are 0. The rest of the optional fields default as listed under [Exchange JSON](#exchange-json) (empty arrays, null options, `false`, `""`).
+
+### Derived and removed fields
+
+`ConnectionInfo.cert_override` is not on the wire. It is derived: true exactly when `upstream_chain_result` is `{"type":"overridden"}`. Older JSON that carries a `cert_override` key still loads; the key is ignored. The repeater API's `cert_override` field is a value derived the same way.
+
+### Top-level `Message` keys
+
+Existing keys: `kind`, `fidelity`, `head`, `framing`, `diagnostics`, `body`, `diffs`, `connection` and `interim` (an array of base64 strings, default `[]`). Reserved for future use, not yet written and ignored by readers today: `truncation` and `error_detail`. A future version may add them; no other use of those names is permitted.
 
 ## Lock file
 

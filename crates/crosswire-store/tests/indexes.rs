@@ -1,5 +1,5 @@
 //! Structured secondary indexes (§13 history queries), the `min_resp_len`
-//! size filter, and the v2→v3 migration that introduces them.
+//! size filter.
 //!
 //! What each test pins:
 //!
@@ -14,13 +14,10 @@
 //!   equality-led queries (host / method+status / scope) use their index on a
 //!   fresh project. The open-ended `resp_len >= ?` range only uses its index
 //!   once the planner has statistics for the (skewed) size distribution, which
-//!   the migration's `ANALYZE` provides — so its plan is asserted on a
-//!   migrated, populated project (the §13 scenario), in `migration_*`.
+//!   an `ANALYZE` provides — so its plan is asserted on an analysed, populated
+//!   project (the §13 scenario), in `analysed_*`.
 //! * **keyset paging** — a filtered result paged to exhaustion via
 //!   `next_cursor` yields every matching id exactly once, descending.
-//! * **migration** — the v2→v3 step recreates the four indexes idempotently,
-//!   advances `user_version` to 3, analyses the populated table, and preserves
-//!   query results.
 
 use bytes::Bytes;
 use crosswire_h1::{Parser, ParserConfig, Progress, ResponseContext};
@@ -344,22 +341,15 @@ fn keyset_paging_a_filtered_host_is_exhaustive() {
     assert_uses(&store, &filter, "idx_exchanges_host");
 }
 
-/// Simulates a pre-index (v2) project by dropping the four indexes and setting
-/// `user_version` back to 2, so the next open runs the real v2→v3 migration.
-fn downgrade_to_v2(db: &Path) {
+/// Gathers planner statistics on a closed project, as the retired v2→v3
+/// migration did, so the open-ended `resp_len >= ?` range can pick its index.
+fn analyse(db: &Path) {
     let conn = rusqlite::Connection::open(db).unwrap();
-    conn.execute_batch(
-        "DROP INDEX idx_exchanges_host;
-         DROP INDEX idx_exchanges_method_status;
-         DROP INDEX idx_exchanges_resp_len;
-         DROP INDEX idx_exchanges_scope;
-         PRAGMA user_version = 2;",
-    )
-    .unwrap();
+    conn.execute_batch("ANALYZE;").unwrap();
 }
 
 #[test]
-fn migration_recreates_indexes_analyses_and_preserves_results() {
+fn analysed_populated_project_serves_size_query_from_its_index() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path().join("p");
     let db = dir.join("project.db");
@@ -375,16 +365,14 @@ fn migration_recreates_indexes_analyses_and_preserves_results() {
     };
     assert_eq!(before.len(), 5, "every 50th of 250 rows is over 1 MiB");
 
-    // Pretend it predates the indexes, then reopen to drive the migration.
-    downgrade_to_v2(&db);
+    analyse(&db);
     let store = reopen(&dir);
 
-    // The migration brought the schema back to v3 with all four indexes.
     let conn = store.reader().unwrap();
     let version: u32 = conn
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 5, "user_version advanced to current (5)");
+    assert_eq!(version, 6, "project stays at the current format (6)");
     let mut stmt = conn
         .prepare("SELECT name FROM sqlite_master WHERE type='index' AND name LIKE 'idx_exchanges_%' ORDER BY name")
         .unwrap();
@@ -401,19 +389,14 @@ fn migration_recreates_indexes_analyses_and_preserves_results() {
             "idx_exchanges_resp_len",
             "idx_exchanges_scope",
         ],
-        "all four indexes recreated"
+        "all four indexes present"
     );
 
-    // Results are unchanged by the migration (same rows, same order).
     let want = expected(&attrs, |a| a.resp_len >= OVER_1_MIB);
     assert_eq!(list_all(&store, &size_filter()), want, "size parity");
-    assert_eq!(
-        list_all(&store, &size_filter()),
-        before,
-        "size == pre-migration"
-    );
+    assert_eq!(list_all(&store, &size_filter()), before);
 
-    // And the migration's ANALYZE makes the selective range use its index
-    // rather than scanning the whole table (the §13 performance contract).
+    // With statistics the selective range uses its index rather than scanning
+    // the whole table (the §13 performance contract).
     assert_uses(&store, &size_filter(), "idx_exchanges_resp_len");
 }

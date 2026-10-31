@@ -1348,8 +1348,7 @@ async fn connect(shared: &Shared, dest: &Dest, peer: &str) -> Result<Upstream, C
     let (io, up, connect_ms, tls_ms) = conn.into_parts();
     let mut info = ConnectionInfo::new(&dest.host, dest.port)
         .with_client_addr(peer)
-        .with_chain_result(up.upstream_chain_result().clone())
-        .with_cert_override(up.cert_override());
+        .with_chain_result(up.upstream_chain_result().clone());
     if let Some(p) = up.peer_addr() {
         info = info.with_peer_addr(p);
     }

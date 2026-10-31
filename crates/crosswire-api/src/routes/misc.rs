@@ -19,6 +19,11 @@ use crate::error::{ApiError, ApiResult};
 pub struct HealthResponse {
     /// Always `"ok"` while the API is serving.
     pub status: &'static str,
+    /// The wire-format version of recorded Messages and Exchanges
+    /// (`crosswire_model::SCHEMA_VERSION`).
+    pub schema_version: u32,
+    /// The project database format (`user_version`) this build reads and writes.
+    pub format_version: u32,
 }
 
 /// Liveness probe.
@@ -28,7 +33,11 @@ pub struct HealthResponse {
     responses((status = 200, description = "The API is serving", body = HealthResponse))
 )]
 pub async fn health() -> Json<HealthResponse> {
-    Json(HealthResponse { status: "ok" })
+    Json(HealthResponse {
+        status: "ok",
+        schema_version: crosswire_model::SCHEMA_VERSION,
+        format_version: crosswire_store::FORMAT_VERSION,
+    })
 }
 
 /// The OpenAPI document for the API.

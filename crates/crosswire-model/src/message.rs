@@ -17,8 +17,10 @@ pub const HTTP1_PARSER_VERSION: u32 = 1;
 
 /// The start line of an HTTP/1 head, as spans into the head bytes. A
 /// serde-able mirror of [`crosswire_h1::StartLine`].
+///
+/// Serialised internally tagged by `type`.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(tag = "type", rename_all = "kebab-case")]
 #[non_exhaustive]
 pub enum StartLineSpans {
     /// A request line.
@@ -39,6 +41,9 @@ pub enum StartLineSpans {
         /// The reason phrase (possibly empty).
         reason: Span,
     },
+    /// A start-line shape written by a newer version of Crosswire.
+    #[serde(other)]
+    Unknown,
 }
 
 /// One header field's spans. A serde-able mirror of
@@ -79,8 +84,10 @@ impl HeaderSpanRecord {
 /// The resolved body framing. A serde-able mirror of
 /// [`crosswire_h1::BodyFraming`] that stores the resolution rule by its
 /// stable name, so the stored form does not depend on the h1 crate's enum.
+///
+/// Serialised internally tagged by `type`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(tag = "type", rename_all = "kebab-case")]
 #[non_exhaustive]
 pub enum FramingRecord {
     /// No body.
@@ -110,6 +117,9 @@ pub enum FramingRecord {
         /// crate).
         rule: String,
     },
+    /// A framing written by a newer version of Crosswire.
+    #[serde(other)]
+    Unknown,
 }
 
 fn rule_name(rule: &ResolutionRule) -> &'static str {
@@ -264,7 +274,8 @@ pub enum Head {
         /// Spans into `bytes`.
         spans: HeadSpans,
         /// The parser version that produced `spans`
-        /// ([`HTTP1_PARSER_VERSION`]).
+        /// ([`HTTP1_PARSER_VERSION`] when absent).
+        #[serde(default = "default_parser_version")]
         parser_version: u32,
     },
     /// A translated header list (frames absent, hints null).
@@ -276,14 +287,24 @@ pub enum Head {
     /// An opaque tunnel.
     Tunnel {
         /// Bytes relayed client to upstream.
+        #[serde(default)]
         bytes_in: u64,
         /// Bytes relayed upstream to client.
+        #[serde(default)]
         bytes_out: u64,
         /// Tunnel lifetime in milliseconds.
+        #[serde(default)]
         duration_ms: u64,
         /// Why the connection is tunnelled.
         reason: TunnelReason,
     },
+    /// A head shape written by a newer version of Crosswire.
+    #[serde(other)]
+    Unknown,
+}
+
+fn default_parser_version() -> u32 {
+    HTTP1_PARSER_VERSION
 }
 
 /// The length and SHA-256 of a whole body as it passed through the relay
@@ -342,6 +363,9 @@ pub enum Body {
         #[serde(default)]
         relay: Option<Capture>,
     },
+    /// A body representation written by a newer version of Crosswire.
+    #[serde(other)]
+    Unknown,
 }
 
 impl Body {
@@ -456,6 +480,9 @@ pub enum ChainResult {
         #[serde(default)]
         reason: String,
     },
+    /// A result written by a newer version of Crosswire.
+    #[serde(other)]
+    Unknown,
 }
 
 /// Connection facts recorded with each message.
@@ -471,7 +498,6 @@ pub struct ConnectionInfo {
     tls_version: Option<String>,
     cipher: Option<String>,
     upstream_chain_result: ChainResult,
-    cert_override: bool,
     conn_id: u64,
     reused: bool,
 }
@@ -531,13 +557,6 @@ impl ConnectionInfo {
     #[must_use]
     pub fn with_chain_result(mut self, v: ChainResult) -> Self {
         self.upstream_chain_result = v;
-        self
-    }
-
-    /// Marks a per-host certificate override.
-    #[must_use]
-    pub fn with_cert_override(mut self, v: bool) -> Self {
-        self.cert_override = v;
         self
     }
 
@@ -604,10 +623,11 @@ impl ConnectionInfo {
         &self.upstream_chain_result
     }
 
-    /// Whether a per-host certificate override applied.
+    /// Whether a per-host certificate override applied: derived from the
+    /// chain result ([`ChainResult::Overridden`]), not stored separately.
     #[must_use]
     pub fn cert_override(&self) -> bool {
-        self.cert_override
+        matches!(self.upstream_chain_result, ChainResult::Overridden { .. })
     }
 
     /// The connection id.

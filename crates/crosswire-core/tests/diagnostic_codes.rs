@@ -31,3 +31,22 @@ fn severities_follow_spec_table() {
         Severity::Error
     );
 }
+#[test]
+fn unknown_is_a_fallback_not_a_catalogue_code() {
+    assert!(!DiagnosticCode::ALL.contains(&DiagnosticCode::Unknown));
+    assert_eq!(DiagnosticCode::Unknown.as_str(), "unknown");
+    assert_eq!(
+        DiagnosticCode::Unknown.default_severity(Profile::Strict),
+        Severity::Unknown
+    );
+    let names: Vec<&str> = [
+        Severity::Info,
+        Severity::Warning,
+        Severity::Error,
+        Severity::Unknown,
+    ]
+    .iter()
+    .map(Severity::as_str)
+    .collect();
+    assert_eq!(names, ["info", "warning", "error", "unknown"]);
+}

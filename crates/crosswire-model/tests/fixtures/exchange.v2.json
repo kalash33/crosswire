@@ -1,0 +1,273 @@
+{
+  "id": "01HF0000000000000000000000",
+  "namespace": {
+    "kind": "history",
+    "owner": null
+  },
+  "notes": "frozen 0.1.0 wire fixture",
+  "request": {
+    "body": {
+      "bytes": "aGk=",
+      "capture_dropped": false,
+      "relay": null,
+      "truncated_at": null,
+      "type": "inline"
+    },
+    "connection": {
+      "alpn": "http/1.1",
+      "cipher": "TLS13_AES_128_GCM_SHA256",
+      "client_addr": "127.0.0.1:50000",
+      "conn_id": 7,
+      "peer_addr": "192.0.2.1",
+      "port": 443,
+      "reused": false,
+      "sni": "x",
+      "target_addr": "x",
+      "tls_version": "TLSv1_3",
+      "upstream_chain_result": {
+        "reason": "UnknownIssuer",
+        "type": "overridden"
+      }
+    },
+    "diagnostics": [
+      {
+        "code": "non_canonical_header_case",
+        "severity": "info",
+        "span": {
+          "end": 22,
+          "start": 18
+        }
+      },
+      {
+        "code": "duplicate_content_length",
+        "severity": "warning",
+        "span": {
+          "end": 65,
+          "start": 46
+        }
+      },
+      {
+        "code": "expect_100_continue",
+        "severity": "error",
+        "span": {
+          "end": 87,
+          "start": 65
+        }
+      }
+    ],
+    "diffs": [
+      {
+        "after": "eA==",
+        "before": "",
+        "op": "insert",
+        "reason": {
+          "intruder-position": 3
+        },
+        "span": {
+          "end": 6,
+          "start": 6
+        }
+      },
+      {
+        "after": "",
+        "before": "eA==",
+        "op": "delete",
+        "reason": {
+          "match-replace": {
+            "rule": "strip-x"
+          }
+        },
+        "span": {
+          "end": 7,
+          "start": 6
+        }
+      }
+    ],
+    "fidelity": "raw",
+    "framing": {
+      "candidates": [
+        {
+          "len": 2,
+          "type": "content-length"
+        },
+        {
+          "len": 2,
+          "type": "content-length"
+        }
+      ],
+      "resolved": {
+        "len": 2,
+        "type": "content-length"
+      },
+      "rule": "first-content-length",
+      "type": "ambiguous"
+    },
+    "head": {
+      "bytes": "UE9TVCAvYSBIVFRQLzEuMQ0KaG9zdDogeA0KQ29udGVudC1MZW5ndGg6IDINCkNvbnRlbnQtTGVuZ3RoOiAyDQpFeHBlY3Q6IDEwMC1jb250aW51ZQ0KDQo=",
+      "parser_version": 1,
+      "spans": {
+        "framing": {
+          "candidates": [
+            {
+              "len": 2,
+              "type": "content-length"
+            },
+            {
+              "len": 2,
+              "type": "content-length"
+            }
+          ],
+          "resolved": {
+            "len": 2,
+            "type": "content-length"
+          },
+          "rule": "first-content-length",
+          "type": "ambiguous"
+        },
+        "headers": [
+          {
+            "line": {
+              "end": 27,
+              "start": 18
+            },
+            "name": {
+              "end": 22,
+              "start": 18
+            },
+            "value": {
+              "end": 25,
+              "start": 24
+            }
+          },
+          {
+            "line": {
+              "end": 46,
+              "start": 27
+            },
+            "name": {
+              "end": 41,
+              "start": 27
+            },
+            "value": {
+              "end": 44,
+              "start": 43
+            }
+          },
+          {
+            "line": {
+              "end": 65,
+              "start": 46
+            },
+            "name": {
+              "end": 60,
+              "start": 46
+            },
+            "value": {
+              "end": 63,
+              "start": 62
+            }
+          },
+          {
+            "line": {
+              "end": 87,
+              "start": 65
+            },
+            "name": {
+              "end": 71,
+              "start": 65
+            },
+            "value": {
+              "end": 85,
+              "start": 73
+            }
+          }
+        ],
+        "start_line": {
+          "method": {
+            "end": 4,
+            "start": 0
+          },
+          "target": {
+            "end": 7,
+            "start": 5
+          },
+          "type": "request",
+          "version": {
+            "end": 16,
+            "start": 8
+          }
+        }
+      },
+      "type": "http1-raw"
+    },
+    "interim": [],
+    "kind": "http1-raw"
+  },
+  "response": {
+    "body": {
+      "capture_dropped": true,
+      "hash": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+      "len": 99,
+      "relay": {
+        "len": 99,
+        "sha256": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8="
+      },
+      "truncated_at": 50,
+      "type": "blob"
+    },
+    "connection": {
+      "alpn": "http/1.1",
+      "cipher": "TLS13_AES_128_GCM_SHA256",
+      "client_addr": "127.0.0.1:50000",
+      "conn_id": 7,
+      "peer_addr": "192.0.2.1",
+      "port": 443,
+      "reused": false,
+      "sni": "x",
+      "target_addr": "x",
+      "tls_version": "TLSv1_3",
+      "upstream_chain_result": {
+        "reason": "UnknownIssuer",
+        "type": "overridden"
+      }
+    },
+    "diagnostics": [],
+    "diffs": [
+      {
+        "after": "Yg==",
+        "before": "YQ==",
+        "op": "replace",
+        "reason": "intercept-edit",
+        "span": {
+          "end": 1,
+          "start": 0
+        }
+      }
+    ],
+    "fidelity": "opaque",
+    "framing": {
+      "type": "upgrade"
+    },
+    "head": {
+      "bytes_in": 10,
+      "bytes_out": 20,
+      "duration_ms": 30,
+      "reason": "ws",
+      "type": "tunnel"
+    },
+    "interim": [],
+    "kind": "tunnel"
+  },
+  "scope_state": "in",
+  "state": "committed",
+  "tags": [
+    "login",
+    "idor"
+  ],
+  "timing": {
+    "connect_ms": 1,
+    "tls_ms": 2,
+    "total_ms": 4,
+    "ttfb_ms": 3
+  }
+}

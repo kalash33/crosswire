@@ -70,3 +70,41 @@ fn unknown_simple_enum_variants_read_as_unknown() {
         Fidelity::Raw
     );
 }
+
+#[test]
+fn missing_parser_version_and_seq_default() {
+    let mut v = serde_json::to_value(sample_exchange()).unwrap();
+    v["request"]["head"]
+        .as_object_mut()
+        .unwrap()
+        .remove("parser_version")
+        .expect("parser_version is written");
+    let back: Exchange = serde_json::from_value(v).unwrap();
+    let Head::Http1Raw { parser_version, .. } = back.request().head() else {
+        panic!("http1-raw expected")
+    };
+    assert_eq!(*parser_version, HTTP1_PARSER_VERSION);
+
+    let id = r#""01HF0000000000000000000000""#;
+    for json in [
+        format!(r#"{{"type":"received","id":{id}}}"#),
+        r#"{"type":"committed"}"#.to_string(),
+        r#"{"type":"error"}"#.to_string(),
+        r#"{"type":"limit-exceeded"}"#.to_string(),
+        r#"{"type":"lagged","missed":1}"#.to_string(),
+    ] {
+        let ev: Event = serde_json::from_str(&json).unwrap_or_else(|e| panic!("{json}: {e}"));
+        assert_eq!(ev.seq(), 0, "{json}");
+    }
+
+    let h: Head = serde_json::from_str(r#"{"type":"tunnel","reason":"ws"}"#).unwrap();
+    assert!(matches!(
+        h,
+        Head::Tunnel {
+            bytes_in: 0,
+            bytes_out: 0,
+            duration_ms: 0,
+            ..
+        }
+    ));
+}

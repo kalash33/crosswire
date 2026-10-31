@@ -30,7 +30,7 @@ deliberate edit.
 | D-a `ExchangeState::Error` | undocumented meaning | documented contract: "the exchange did not complete normally (relay failure, client gone, operator drop); the recorded heads/bodies are whatever was received" — no new field |
 | D-b `Marker.detail` | free text | documented as human-readable, non-contractual; `MarkerKind` stays the contract |
 | D-d `TunnelReason` | already a dedicated enum | no change; the `Capture` Rust type is not on the wire — not renamed |
-| D7 reserved names | — | `docs/format.md` reserves `truncation`, `error_detail`, `interim` as future top-level `Message` keys (readers ignore unknown keys today; the reservation is documentation) |
+| D7 reserved names | — | `docs/format.md` reserves `truncation` and `error_detail` as future top-level `Message` keys (readers ignore unknown keys today; the reservation is documentation). `interim` is not reserved: it is already a live `Message` field |
 | Versions | `SCHEMA_VERSION = 1` never emitted; project `USER_VERSION = 5` | `SCHEMA_VERSION = 2`; `USER_VERSION = 6`; both emitted (see §4, §5) |
 
 ## 3. Forward compatibility (the evolution rule, made testable)

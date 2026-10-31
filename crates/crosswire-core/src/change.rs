@@ -7,6 +7,7 @@ use bytes::Bytes;
 /// The kind of edit.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "kebab-case"))]
 #[non_exhaustive]
 pub enum ChangeOp {
     /// Bytes were inserted.
@@ -15,11 +16,20 @@ pub enum ChangeOp {
     Delete,
     /// Bytes were replaced.
     Replace,
+    /// An edit kind written by a newer version of Crosswire.
+    #[cfg_attr(feature = "serde", serde(other))]
+    Unknown,
 }
 
 /// Why an edit was made.
+///
+/// On the wire the unit reasons are kebab-case strings and the data reasons
+/// are externally tagged objects (`{"intruder-position": 3}`). Reading is
+/// hand-written so that any unrecognised code, bare or carrying a payload
+/// (`{"rule-group": {...}}`), reads as [`ChangeReason::Unknown`].
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "kebab-case"))]
 #[non_exhaustive]
 pub enum ChangeReason {
     /// A hop-by-hop header was removed.
@@ -37,6 +47,67 @@ pub enum ChangeReason {
     InterceptEdit,
     /// Any other reason.
     Custom(String),
+    /// A reason written by a newer version of Crosswire (an unrecognised
+    /// code, with or without a payload; the payload is skipped).
+    Unknown,
+}
+
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for ChangeReason {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<ChangeReason, D::Error> {
+        use core::fmt;
+        use serde::de::{self, IgnoredAny, MapAccess, Visitor};
+
+        /// The `match-replace` payload, as the derived `Serialize` writes it.
+        #[derive(serde::Deserialize)]
+        struct MatchReplace {
+            rule: String,
+        }
+
+        fn unit(code: &str) -> ChangeReason {
+            match code {
+                "hop-by-hop" => ChangeReason::HopByHop,
+                "content-length" => ChangeReason::ContentLength,
+                "intercept-edit" => ChangeReason::InterceptEdit,
+                _ => ChangeReason::Unknown,
+            }
+        }
+
+        struct V;
+        impl<'de> Visitor<'de> for V {
+            type Value = ChangeReason;
+
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("a change reason code or a single-key object")
+            }
+
+            fn visit_str<E: de::Error>(self, v: &str) -> Result<ChangeReason, E> {
+                Ok(unit(v))
+            }
+
+            fn visit_map<A: MapAccess<'de>>(self, mut m: A) -> Result<ChangeReason, A::Error> {
+                let Some(key) = m.next_key::<String>()? else {
+                    return Ok(ChangeReason::Unknown);
+                };
+                let reason = match key.as_str() {
+                    "match-replace" => ChangeReason::MatchReplace {
+                        rule: m.next_value::<MatchReplace>()?.rule,
+                    },
+                    "intruder-position" => ChangeReason::IntruderPosition(m.next_value()?),
+                    "custom" => ChangeReason::Custom(m.next_value()?),
+                    other => {
+                        m.next_value::<IgnoredAny>()?;
+                        unit(other)
+                    }
+                };
+                // Entries after the first (none are written) are skipped.
+                while m.next_entry::<IgnoredAny, IgnoredAny>()?.is_some() {}
+                Ok(reason)
+            }
+        }
+
+        d.deserialize_any(V)
+    }
 }
 
 /// A single edit applied to a message.
