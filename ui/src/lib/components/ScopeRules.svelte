@@ -58,7 +58,10 @@
       throw e;
     }
     const ok = await scope.save(next);
-    if (ok) toasts.push({ kind: 'success', text: 'Scope saved' });
+    if (ok) {
+      draft = draftFromScope(scope.scope); // canonical text, so the bar reads clean
+      toasts.push({ kind: 'success', text: 'Scope saved' });
+    }
     else toasts.push({ kind: 'error', text: scope.error ?? 'Could not save scope' });
   }
 

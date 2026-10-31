@@ -226,12 +226,17 @@
     align-items: center;
     gap: var(--s-3);
     cursor: pointer;
+    position: relative;
   }
   .switch input {
     position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    margin: 0;
     opacity: 0;
-    width: 1px;
-    height: 1px;
+    cursor: pointer;
+    z-index: 1;
   }
   .track {
     position: relative;
