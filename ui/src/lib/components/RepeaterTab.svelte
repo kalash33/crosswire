@@ -196,20 +196,20 @@
   }
   .modes {
     display: inline-flex;
-    border: 1px solid #3a3a4a;
+    border: 1px solid var(--border-strong);
     border-radius: 4px;
     overflow: hidden;
   }
   .modes button {
-    background: #22222e;
-    color: #cfd0ff;
+    background: var(--bg-elev);
+    color: var(--fg);
     border: none;
     padding: 0.25rem 0.6rem;
     font-size: 0.78rem;
     cursor: pointer;
   }
   .modes button.active {
-    background: #3a3a5a;
+    background: var(--bg-active);
   }
   .toggles {
     display: flex;
@@ -224,15 +224,16 @@
   .toolbar button:not(.modes button) {
     font-size: 0.78rem;
     padding: 0.25rem 0.6rem;
-    border: 1px solid #3a3a4a;
+    border: 1px solid var(--border-strong);
     border-radius: 4px;
-    background: #22222e;
-    color: #cfd0ff;
+    background: var(--bg-elev);
+    color: var(--fg);
     cursor: pointer;
   }
-  .toolbar button.send {
-    background: #2a4a2a;
-    color: #cfeccf;
+  /* :not() matches the generic toolbar-button rule's specificity so this wins. */
+  .toolbar button.send:not(.modes button) {
+    background: var(--accent);
+    color: var(--accent-fg);
   }
   .toolbar button:disabled {
     opacity: 0.6;
@@ -240,7 +241,7 @@
   }
   .editor-wrap {
     min-width: 0;
-    border: 1px solid #8883;
+    border: 1px solid var(--border);
     border-radius: 4px;
   }
   .pane {
@@ -260,12 +261,12 @@
   }
   .error {
     font-size: 0.85rem;
-    color: #ff9b9b;
+    color: var(--danger);
     margin: 0;
   }
   .warn {
     font-size: 0.8rem;
-    color: #ffd9a0;
+    color: var(--warn);
     margin: 0;
   }
 </style>

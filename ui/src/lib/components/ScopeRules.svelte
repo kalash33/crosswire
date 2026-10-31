@@ -145,7 +145,7 @@
     margin: 0 0 0.3rem;
   }
   .error {
-    color: #e06060;
+    color: var(--danger);
     margin: 0;
   }
 </style>

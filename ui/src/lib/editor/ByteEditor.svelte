@@ -159,13 +159,13 @@
     font-size: 0.75rem;
     padding: 0.1rem 0.4rem;
     border-radius: 3px;
-    background: #22333a;
-    color: #bfe3ef;
+    background: var(--info-bg);
+    color: var(--info-fg);
   }
   .diagnostic-banner {
     padding: 0.4rem 0.6rem;
-    background: #4a2b00;
-    color: #ffd9a0;
+    background: var(--warn-bg);
+    color: var(--warn-fg);
     font-size: 0.85rem;
   }
   .paste-chip {
@@ -173,8 +173,8 @@
     align-items: center;
     gap: 0.5rem;
     padding: 0.3rem 0.6rem;
-    background: #2a2a3a;
-    color: #cfd0ff;
+    background: var(--chip-bg);
+    color: var(--fg);
     font-size: 0.8rem;
   }
   .paste-chip button {
@@ -193,22 +193,41 @@
   .raw-actions button {
     font-size: 0.75rem;
     padding: 0.15rem 0.5rem;
-    border: 1px solid #3a3a4a;
+    border: 1px solid var(--border-strong);
     border-radius: 3px;
-    background: #22222e;
-    color: #cfd0ff;
+    background: var(--bg-elev);
+    color: var(--fg);
     cursor: pointer;
   }
   .cm-host {
     min-height: 6rem;
     overflow: auto;
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-family: var(--font-mono);
+  }
+  /* CodeMirror chrome on theme tokens. Its base theme ships light-mode caret
+     and selection colours with compound selectors, hence the specificity. */
+  .cm-host :global(.cm-editor) {
+    color: var(--fg);
+    background: var(--bg-sunken);
+  }
+  .cm-host :global(.cm-editor .cm-scroller) {
+    font-family: var(--font-mono);
+  }
+  .cm-host :global(.cm-editor.cm-focused) {
+    outline: 1px solid var(--focus);
+  }
+  .cm-host :global(.cm-editor .cm-cursor) {
+    border-left-color: var(--fg);
+  }
+  .cm-host :global(.cm-editor .cm-selectionLayer .cm-selectionBackground),
+  .cm-host :global(.cm-editor.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground) {
+    background: var(--accent-soft);
   }
   /* Non-printable placeholder glyphs (rendered by CodeMirror decorations). */
   .cm-host :global(.cm-nonprintable) {
     opacity: 0.55;
     border-radius: 2px;
     padding: 0 1px;
-    background: rgba(128, 128, 160, 0.25);
+    background: var(--nonprintable-bg);
   }
 </style>

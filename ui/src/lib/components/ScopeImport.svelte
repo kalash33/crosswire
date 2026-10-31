@@ -43,7 +43,7 @@
     gap: 0.5rem;
   }
   textarea {
-    font-family: monospace;
+    font-family: var(--font-mono);
     width: 100%;
     box-sizing: border-box;
   }

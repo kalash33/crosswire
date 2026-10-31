@@ -1,6 +1,10 @@
 import { mount } from 'svelte';
 import './app.css';
 import App from './App.svelte';
+import { applyStoredTheme } from './lib/theme';
+
+// Before the first mount so the app paints in the chosen theme.
+applyStoredTheme();
 
 const target = document.getElementById('app');
 if (!target) {

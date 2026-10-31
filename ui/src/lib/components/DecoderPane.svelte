@@ -179,17 +179,18 @@
 <style>
   .decoder {
     position: fixed;
-    right: 0.75rem;
-    bottom: 2.5rem;
-    z-index: 20;
+    right: var(--s-3);
+    /* Float just above the pinned status bar row of the shell grid. */
+    bottom: calc(var(--statusbar-h) + var(--s-2));
+    z-index: var(--z-overlay);
     width: min(36rem, 92vw);
     max-height: 70vh;
     overflow: auto;
-    background: #1c1c28;
-    border: 1px solid #3a3a4a;
+    background: var(--bg-overlay);
+    border: 1px solid var(--border-strong);
     border-radius: 6px;
     padding: 0.5rem 0.65rem;
-    box-shadow: 0 6px 24px #0008;
+    box-shadow: var(--shadow-pop);
     font-size: 0.8rem;
   }
   .head {
@@ -207,7 +208,7 @@
     line-height: 1;
   }
   .mono {
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-family: var(--font-mono);
   }
   .input {
     width: 100%;
@@ -220,7 +221,8 @@
     opacity: 0.85;
   }
   .banner {
-    background: #5a3a00;
+    background: var(--warn-bg);
+    color: var(--warn-fg);
     padding: 0.2rem 0.4rem;
     border-radius: 4px;
     margin: 0.35rem 0 0.2rem;
@@ -234,7 +236,7 @@
     word-break: break-all;
   }
   .step {
-    border-top: 1px solid #3a3a4a;
+    border-top: 1px solid var(--border-strong);
     margin-top: 0.4rem;
     padding-top: 0.35rem;
   }

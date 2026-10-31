@@ -381,7 +381,7 @@
   td {
     text-align: left;
     padding: 0.2rem 0.4rem;
-    border-bottom: 1px solid #8883;
+    border-bottom: 1px solid var(--border);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -407,14 +407,14 @@
     width: 1.5rem;
   }
   tr.selected {
-    background: #26263a;
+    background: var(--selection);
   }
   tr.uncommitted td {
     font-style: italic;
     opacity: 0.85;
   }
   .dot {
-    color: #ffb454;
+    color: var(--warn);
     margin-right: 0.25rem;
   }
   .tag {
@@ -422,8 +422,8 @@
     margin-right: 0.2rem;
     padding: 0 0.3rem;
     border-radius: 3px;
-    background: #223322;
-    color: #bfe9bf;
+    background: var(--chip-bg);
+    color: var(--chip-fg);
     font-size: 0.72rem;
   }
   .empty,
@@ -450,20 +450,20 @@
     font-size: 0.75rem;
   }
   .error {
-    color: #ff9b9b;
+    color: var(--danger);
     margin: 0;
     font-size: 0.85rem;
   }
   .detail-pane {
     min-width: 0;
-    border-left: 1px solid #8883;
+    border-left: 1px solid var(--border);
     padding-left: 0.75rem;
   }
   @media (max-width: 860px) {
     .detail-pane {
       border-left: none;
       padding-left: 0;
-      border-top: 1px solid #8883;
+      border-top: 1px solid var(--border);
       padding-top: 0.75rem;
     }
   }

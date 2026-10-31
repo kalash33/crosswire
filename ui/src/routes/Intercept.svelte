@@ -155,12 +155,12 @@
   }
   .badge {
     font-size: 0.75rem;
-    border: 1px solid #b9770e;
-    color: #e0a040;
+    border: 1px solid var(--warn);
+    color: var(--warn);
     border-radius: 3px;
     padding: 0.05rem 0.4rem;
   }
   .error {
-    color: #e06060;
+    color: var(--danger);
   }
 </style>

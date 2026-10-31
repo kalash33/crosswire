@@ -39,7 +39,7 @@
     list-style: none;
     margin: 0;
     padding: 0;
-    border: 1px solid #8884;
+    border: 1px solid var(--border);
     border-radius: 4px;
     max-height: 14rem;
     overflow: auto;
@@ -58,7 +58,7 @@
     cursor: pointer;
   }
   .row.sel {
-    background: #26263a;
+    background: var(--selection);
   }
   .method {
     font-weight: 600;
@@ -75,8 +75,8 @@
   }
   .badge {
     font-size: 0.7rem;
-    border: 1px solid #b9770e;
-    color: #e0a040;
+    border: 1px solid var(--warn);
+    color: var(--warn);
     border-radius: 3px;
     padding: 0 0.3rem;
   }

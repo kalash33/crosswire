@@ -45,7 +45,7 @@
 
 <style>
   .hex-pane {
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-family: var(--font-mono);
     font-size: 0.8rem;
     line-height: 1.4;
     white-space: pre;
@@ -56,16 +56,16 @@
     gap: 1rem;
   }
   .hex-offset {
-    color: #888;
+    color: var(--hex-offset);
   }
   .hex-cells {
     display: inline-flex;
     gap: 0.35rem;
   }
   .hex-ascii {
-    color: #9ab;
+    color: var(--hex-ascii);
   }
   .hex-empty {
-    color: #888;
+    color: var(--hex-offset);
   }
 </style>

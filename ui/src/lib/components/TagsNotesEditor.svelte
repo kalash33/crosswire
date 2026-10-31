@@ -236,8 +236,8 @@
     font-size: 0.75rem;
     padding: 0.1rem 0.4rem;
     border-radius: 3px;
-    background: #223322;
-    color: #bfe9bf;
+    background: var(--chip-bg);
+    color: var(--chip-fg);
   }
   .rm {
     margin-left: 0.25rem;

@@ -90,19 +90,19 @@
     flex-wrap: wrap;
     align-items: center;
     gap: 0.3rem;
-    border-bottom: 1px solid #8883;
+    border-bottom: 1px solid var(--border);
     padding-bottom: 0.3rem;
   }
   .tab {
     display: inline-flex;
     align-items: center;
-    border: 1px solid #3a3a4a;
+    border: 1px solid var(--border-strong);
     border-radius: 4px;
     overflow: hidden;
   }
   .tab.active {
-    border-color: #6a6aaa;
-    background: #26263a;
+    border-color: var(--accent);
+    background: var(--bg-active);
   }
   .tab .label {
     background: none;
@@ -130,16 +130,16 @@
     opacity: 1;
   }
   .new {
-    background: #22222e;
-    color: #cfd0ff;
-    border: 1px solid #3a3a4a;
+    background: var(--bg-elev);
+    color: var(--fg);
+    border: 1px solid var(--border-strong);
     border-radius: 4px;
     padding: 0.25rem 0.5rem;
     font-size: 0.78rem;
     cursor: pointer;
   }
   .error {
-    color: #ff9b9b;
+    color: var(--danger);
     margin: 0;
     font-size: 0.85rem;
   }

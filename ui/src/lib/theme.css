@@ -1,0 +1,185 @@
+/*
+ * Crosswire design tokens (U1 spec D1). The ONLY file in ui/src that may hold
+ * colour literals (pinned by src/lib/no-hex.test.ts); everything else styles
+ * itself with var(--token).
+ *
+ * Direction: a graphite workbench. Cool blue-grey surfaces in three depths
+ * (sunken editors, base canvas, raised chrome), hairline borders, one restrained
+ * teal accent reserved for focus, selection and the primary action. Semantic
+ * and protocol colours (methods, status classes) carry the information; nothing
+ * is decorative. Dark is the default; light overrides colours only.
+ */
+:root {
+  color-scheme: dark;
+
+  /* Surfaces */
+  --bg: #16181d;
+  --bg-elev: #1d2027;
+  --bg-sunken: #111317;
+  --bg-hover: #252933;
+  --bg-active: #2c3240;
+  --bg-overlay: #1f232b;
+  --backdrop: #0a0c1099;
+
+  /* Lines */
+  --border: #2a2f39;
+  --border-strong: #3a4150;
+  --border-faint: #22262e;
+
+  /* Text */
+  --fg: #dde1e8;
+  --fg-muted: #a0a7b3;
+  --fg-faint: #6b7280;
+  --fg-on-strong: #0e1013;
+
+  /* Accent: focus, selection, primary action */
+  --accent: #4fb3bf;
+  --accent-hover: #67c3ce;
+  --accent-fg: #0b1416;
+  --accent-soft: #4fb3bf24;
+  --selection: #4fb3bf1f;
+  --focus: #7fd0da;
+
+  /* Semantic */
+  --ok: #5fb878;
+  --ok-bg: #1d2f24;
+  --ok-fg: #b9e6c5;
+  --warn: #e0a040;
+  --warn-bg: #3a2a0f;
+  --warn-fg: #f5d9a6;
+  --danger: #e5645c;
+  --danger-hover: #ee7b74;
+  --danger-bg: #3a1d1c;
+  --danger-fg: #f6b5b0;
+  --info: #6aa5e8;
+  --info-bg: #1b2a3c;
+  --info-fg: #bcd6f5;
+
+  /* Neutral chips (tags, assisted chips, meta) */
+  --chip-bg: #262b35;
+  --chip-fg: #c9ced8;
+
+  /* HTTP methods */
+  --method-get: #6aa5e8;
+  --method-post: #5fb878;
+  --method-put: #d9a441;
+  --method-delete: #e5645c;
+  --method-patch: #b48ae0;
+  --method-other: #a0a7b3;
+
+  /* HTTP status classes */
+  --status-1xx: #a0a7b3;
+  --status-2xx: #5fb878;
+  --status-3xx: #6aa5e8;
+  --status-4xx: #e0a040;
+  --status-5xx: #e5645c;
+
+  /* Byte views */
+  --hex-offset: #6b7280;
+  --hex-ascii: #8fb3c4;
+  --nonprintable-bg: #8080a040;
+
+  /* Captured HTML preview always renders on white, as a browser would */
+  --preview-bg: #ffffff;
+
+  --shadow-pop: 0 8px 28px #00000073, 0 0 0 1px #00000040;
+
+  /* Shape */
+  --r-1: 4px;
+  --r-2: 6px;
+  --r-pill: 999px;
+
+  /* Spacing */
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 20px;
+  --s-6: 24px;
+
+  /* Type */
+  --font-ui: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;
+  --fs-xs: 11px;
+  --fs-sm: 12px;
+  --fs-md: 13px;
+  --fs-lg: 14px;
+  --fs-xl: 16px;
+  --lh: 1.45;
+
+  /* Shell geometry */
+  --rail-w: 56px;
+  --topbar-h: 44px;
+  --statusbar-h: 28px;
+  --control-h-sm: 24px;
+  --control-h-md: 28px;
+
+  /* Layers */
+  --z-pop: 40;
+  --z-toast: 50;
+  --z-overlay: 30;
+}
+
+:root[data-theme='light'] {
+  color-scheme: light;
+
+  --bg: #f6f7f9;
+  --bg-elev: #ffffff;
+  --bg-sunken: #eef0f3;
+  --bg-hover: #e8ebef;
+  --bg-active: #dde2e9;
+  --bg-overlay: #ffffff;
+  --backdrop: #1a1d2433;
+
+  --border: #d9dde3;
+  --border-strong: #bcc3cd;
+  --border-faint: #e6e9ed;
+
+  --fg: #1b1f27;
+  --fg-muted: #535b68;
+  --fg-faint: #8a919c;
+  --fg-on-strong: #ffffff;
+
+  --accent: #137a86;
+  --accent-hover: #0f6a75;
+  --accent-fg: #ffffff;
+  --accent-soft: #137a861f;
+  --selection: #137a861a;
+  --focus: #1590a0;
+
+  --ok: #2f8a4c;
+  --ok-bg: #e3f3e8;
+  --ok-fg: #1e5c33;
+  --warn: #a8670c;
+  --warn-bg: #fbefd9;
+  --warn-fg: #6e4300;
+  --danger: #c43c33;
+  --danger-hover: #a8322a;
+  --danger-bg: #fbe5e3;
+  --danger-fg: #8a2620;
+  --info: #2f6fbf;
+  --info-bg: #e2edfa;
+  --info-fg: #1d4a82;
+
+  --chip-bg: #e7eaef;
+  --chip-fg: #39404c;
+
+  --method-get: #2f6fbf;
+  --method-post: #2f8a4c;
+  --method-put: #9a6a07;
+  --method-delete: #c43c33;
+  --method-patch: #7a4fb3;
+  --method-other: #535b68;
+
+  --status-1xx: #535b68;
+  --status-2xx: #2f8a4c;
+  --status-3xx: #2f6fbf;
+  --status-4xx: #a8670c;
+  --status-5xx: #c43c33;
+
+  --hex-offset: #8a919c;
+  --hex-ascii: #3d6f86;
+  --nonprintable-bg: #6060a033;
+
+  --shadow-pop: 0 8px 24px #1a1d2429, 0 0 0 1px #1a1d241a;
+}

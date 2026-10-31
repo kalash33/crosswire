@@ -289,8 +289,8 @@
     font-size: 0.75rem;
     padding: 0.1rem 0.4rem;
     border-radius: 3px;
-    background: #2a2a3a;
-    color: #cfd0ff;
+    background: var(--chip-bg);
+    color: var(--fg);
   }
   .pane {
     display: flex;
@@ -314,14 +314,14 @@
   }
   .error {
     font-size: 0.85rem;
-    color: #ff9b9b;
+    color: var(--danger);
     margin: 0;
   }
   .structured {
     margin: 0;
     padding: 0.4rem 0.6rem;
-    background: #1b1b24;
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    background: var(--bg-sunken);
+    font-family: var(--font-mono);
     font-size: 0.8rem;
     white-space: pre-wrap;
     word-break: break-all;
@@ -329,13 +329,13 @@
   iframe {
     width: 100%;
     height: 20rem;
-    border: 1px solid #333;
-    background: #fff;
+    border: 1px solid var(--border);
+    background: var(--preview-bg);
   }
   .diags {
     margin: 0;
     padding-left: 1rem;
     font-size: 0.78rem;
-    color: #ffd9a0;
+    color: var(--warn);
   }
 </style>

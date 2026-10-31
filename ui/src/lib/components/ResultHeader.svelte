@@ -62,9 +62,9 @@
     flex-direction: column;
     gap: 0.4rem;
     padding: 0.4rem 0.6rem;
-    border: 1px solid #8884;
+    border: 1px solid var(--border);
     border-radius: 4px;
-    background: #1b1b24;
+    background: var(--bg-sunken);
   }
   .timings {
     display: flex;
@@ -83,8 +83,8 @@
     font-size: 0.72rem;
     padding: 0.1rem 0.4rem;
     border-radius: 3px;
-    background: #4a2b00;
-    color: #ffd9a0;
+    background: var(--warn-bg);
+    color: var(--warn-fg);
   }
   .chips {
     display: flex;
@@ -95,12 +95,12 @@
     font-size: 0.75rem;
     padding: 0.1rem 0.4rem;
     border-radius: 3px;
-    background: #22333a;
-    color: #bfe3ef;
+    background: var(--info-bg);
+    color: var(--info-fg);
   }
   .chip.skip {
-    background: #333022;
-    color: #efe3bf;
+    background: var(--warn-bg);
+    color: var(--warn-fg);
   }
   .redirects {
     font-size: 0.78rem;
