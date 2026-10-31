@@ -11,6 +11,26 @@ properties that are tested are listed in [security-gates.md](security-gates.md).
 
 The API is **not frozen** before v0.1.0.
 
+## Envelope and versions
+
+Every response that passes through the API gate carries a
+`Crosswire-Schema-Version` header, including the gate's own refusals (`401`,
+`421`, `404`, `429`). Its value is the wire-format version of recorded Messages
+and Exchanges (currently `2`). The header is not repeated per route in the
+OpenAPI document. `GET /api/v1/health` reports the same number and the project
+database format:
+
+```json
+{"status":"ok","schema_version":2,"format_version":6}
+```
+
+`schema_version` is the shape of the Messages and Exchanges the API returns and
+accepts (enum wire codes, tagging, defaults); `format_version` is the project
+database's `PRAGMA user_version`. Today `schema_version` 2 pairs with
+`format_version` 6. A project written by a pre-release build (`user_version` 1
+to 5) is refused on open rather than migrated; re-record the traffic. See
+[format.md](format.md) for the wire and on-disk details.
+
 ## Two sockets
 
 | Socket | Default | What it carries |

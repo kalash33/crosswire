@@ -53,6 +53,10 @@ export interface ForwardBody {
 export interface HealthResponse {
   /** Always `"ok"` while the API is serving. */
   status: string;
+  /** The wire-format version of recorded Messages and Exchanges. */
+  schema_version: number;
+  /** The project database format (`user_version`) this build reads and writes. */
+  format_version: number;
 }
 
 /** The `POST /scope/import` body. */

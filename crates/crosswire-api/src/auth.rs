@@ -326,9 +326,24 @@ pub fn authenticate_token(state: &AppState, token: &str) -> Result<AuthCtx, ApiE
     }
 }
 
+/// The response header carrying [`crosswire_model::SCHEMA_VERSION`].
+const SCHEMA_VERSION_HEADER: &str = "crosswire-schema-version";
+
 /// The top-level gate: Host check, route allowlist, then the credential and
-/// idle-refresh step for authenticated routes.
-pub async fn gate(State(state): State<AppState>, mut req: Request, next: Next) -> Response {
+/// idle-refresh step for authenticated routes. Every response it returns,
+/// including its own early refusals, carries the `Crosswire-Schema-Version`
+/// header.
+pub async fn gate(State(state): State<AppState>, req: Request, next: Next) -> Response {
+    let mut resp = gate_inner(state, req, next).await;
+    resp.headers_mut().insert(
+        http::HeaderName::from_static(SCHEMA_VERSION_HEADER),
+        http::HeaderValue::from(crosswire_model::SCHEMA_VERSION),
+    );
+    resp
+}
+
+/// The gate's decision logic; [`gate`] stamps the version header on its result.
+async fn gate_inner(state: AppState, mut req: Request, next: Next) -> Response {
     let path = req.uri().path().to_string();
     // The `Host` is read once; the two verdicts are computed before `req` is
     // moved so the header borrow ends here.

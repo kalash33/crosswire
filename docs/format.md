@@ -42,9 +42,9 @@ A fresh project is created at the current `user_version` (6) with every migratio
 
 - `0001_init.sql` → `user_version` 1: `exchanges`, `bodies`, `blobs`, `packs`, `markers`, `meta`.
 - `0002_sidecar.sql` → `user_version` 2: `settings`, `tokens`, `drafts` (additive; see [Control tables](#control-tables-0002_sidecarsql)).
-- `0003_history_indexes.sql` → `user_version` 3: the four structured-query indexes (additive; see [Indexes](#indexes)). The upgrade step also runs `ANALYZE` so the planner has statistics for the new indexes on an existing (populated) project — without them an open-ended range such as `resp_len >= ?` is served by a primary-key scan rather than the index.
-- `0004_tag_index.sql` → `user_version` 4: the normalized `exchange_tags` side table (additive; see [Indexes](#indexes)). The upgrade step backfills it, in bounded chunks, from the `tags` JSON of every existing row — so a project created before version 4 answers the `tag = ?` query from the table immediately after open.
-- `0005_method_status_order.sql` → `user_version` 5: rebuilds `idx_exchanges_method_status` and `idx_exchanges_resp_len` as covering indexes with `ulid` in order (see [Indexes](#indexes)); the upgrade step runs `ANALYZE`.
+- `0003_history_indexes.sql` → `user_version` 3: the four structured-query indexes (additive; see [Indexes](#indexes)). Historically (no longer run on user data) the upgrade step also ran `ANALYZE` so the planner has statistics for the new indexes on an existing (populated) project — without them an open-ended range such as `resp_len >= ?` is served by a primary-key scan rather than the index.
+- `0004_tag_index.sql` → `user_version` 4: the normalized `exchange_tags` side table (additive; see [Indexes](#indexes)). Historically (no longer run on user data) the upgrade step backfilled it, in bounded chunks, from the `tags` JSON of every existing row — so a project created before version 4 answers the `tag = ?` query from the table immediately after open.
+- `0005_method_status_order.sql` → `user_version` 5: rebuilds `idx_exchanges_method_status` and `idx_exchanges_resp_len` as covering indexes with `ulid` in order (see [Indexes](#indexes)) (historical: the upgrade step ran `ANALYZE`, no longer run on user data).
 - `user_version` 6: a version stamp only, no data migration and no new table. It marks the frozen message wire format (`schema_version` 2, see [Message wire format](#message-wire-format)). Projects older than 6 are refused rather than migrated.
 
 ### Tables (`0001_init.sql`)
