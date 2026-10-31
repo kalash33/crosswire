@@ -1,6 +1,6 @@
 [package]
 name = "crosswire-model"
-version = "0.0.0"
+version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
@@ -12,8 +12,8 @@ publish = false
 workspace = true
 
 [dependencies]
-crosswire-core = { path = "../crosswire-core", version = "0.0.0", default-features = false, features = ["serde"] }
-crosswire-h1 = { path = "../crosswire-h1", version = "0.0.0", default-features = false, features = ["serde"] }
+crosswire-core = { path = "../crosswire-core", default-features = false, features = ["serde"] }
+crosswire-h1 = { path = "../crosswire-h1", default-features = false, features = ["serde"] }
 bytes = { version = "1", default-features = false }
 serde = { workspace = true }
 ulid = { version = "1", default-features = false }

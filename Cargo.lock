@@ -478,7 +478,7 @@ dependencies = [
 
 [[package]]
 name = "crosswire-api"
-version = "0.0.0"
+version = "0.1.0-rc.1"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -510,7 +510,7 @@ dependencies = [
 
 [[package]]
 name = "crosswire-ca"
-version = "0.0.0"
+version = "0.1.0-rc.1"
 dependencies = [
  "lru",
  "rcgen",
@@ -525,7 +525,7 @@ dependencies = [
 
 [[package]]
 name = "crosswire-client"
-version = "0.0.0"
+version = "0.1.0-rc.1"
 dependencies = [
  "bytes",
  "crosswire-ca",
@@ -543,7 +543,7 @@ dependencies = [
 
 [[package]]
 name = "crosswire-core"
-version = "0.0.0"
+version = "0.1.0-rc.1"
 dependencies = [
  "bytes",
  "serde",
@@ -551,7 +551,7 @@ dependencies = [
 
 [[package]]
 name = "crosswire-h1"
-version = "0.0.0"
+version = "0.1.0-rc.1"
 dependencies = [
  "bytes",
  "criterion",
@@ -565,7 +565,7 @@ dependencies = [
 
 [[package]]
 name = "crosswire-model"
-version = "0.0.0"
+version = "0.1.0-rc.1"
 dependencies = [
  "bytes",
  "crosswire-core",
@@ -577,7 +577,7 @@ dependencies = [
 
 [[package]]
 name = "crosswire-proxy"
-version = "0.0.0"
+version = "0.1.0-rc.1"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -605,7 +605,7 @@ dependencies = [
 
 [[package]]
 name = "crosswire-recorder-tests"
-version = "0.0.0"
+version = "0.1.0-rc.1"
 dependencies = [
  "bytes",
  "crosswire-ca",
@@ -625,7 +625,7 @@ dependencies = [
 
 [[package]]
 name = "crosswire-scope"
-version = "0.0.0"
+version = "0.1.0-rc.1"
 dependencies = [
  "ipnet",
  "regex",
@@ -637,7 +637,7 @@ dependencies = [
 
 [[package]]
 name = "crosswire-server"
-version = "0.0.0"
+version = "0.1.0-rc.1"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -671,7 +671,7 @@ dependencies = [
 
 [[package]]
 name = "crosswire-store"
-version = "0.0.0"
+version = "0.1.0-rc.1"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -696,7 +696,7 @@ dependencies = [
 
 [[package]]
 name = "crosswire-tools"
-version = "0.0.0"
+version = "0.1.0-rc.1"
 dependencies = [
  "bytes",
  "crosswire-ca",

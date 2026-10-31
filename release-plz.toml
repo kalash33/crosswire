@@ -1,0 +1,29 @@
+# release-plz configuration. release-plz opens the release PR (version bump and
+# CHANGELOG.md) and, when that PR merges, cuts the single `v<version>` tag on
+# crosswire-server. Nothing is published to crates.io: every crate is
+# `publish = false`. The `v*` tag is what starts the cargo-dist release build.
+
+[workspace]
+publish = false
+git_release_enable = false
+git_tag_enable = false
+changelog_update = true
+changelog_path = "CHANGELOG.md"
+dependencies_update = false
+semver_check = false
+pr_labels = ["release"]
+
+[changelog]
+commit_parsers = [
+  { message = "^feat", group = "Added" },
+  { message = "^fix", group = "Fixed" },
+  { message = "^perf", group = "Performance" },
+  { message = "^docs", group = "Documentation" },
+  { message = "^(refactor|chore|ci|test|build)", group = "Internal" },
+]
+
+# One workspace version, one tag: only the server crate carries the tag.
+[[package]]
+name = "crosswire-server"
+git_tag_enable = true
+git_tag_name = "v{{ version }}"

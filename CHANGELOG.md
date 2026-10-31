@@ -7,27 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### R1: schema freeze
+### Added
 
-#### Changed
-
-- **Breaking, wire format** (`SCHEMA_VERSION` 2): enum codes are frozen
-  (kebab-case or snake_case, no PascalCase), tagged unions use a `type` tag, and
-  defaults are fixed. Unknown enum codes read back as an `Unknown` variant
-  instead of failing, so a newer project stays readable. `cert_override` is no
-  longer on the wire.
-- **Breaking, project format 6**: a fresh project is created at `user_version`
-  6. Projects written by pre-release builds (`user_version` 1 to 5) are refused
-  on open, before any migration or snapshot; re-record the traffic.
-
-#### Added
-
+- **Web UI beta-1**: tags and a notes editor on each exchange, and a decoder
+  pane for the selected message.
+- **Preview zero-egress layer**: the previewed content cannot make a network
+  request of its own.
 - **crosswire-api**: every gated response carries `Crosswire-Schema-Version: 2`,
   including the gate's own `401`, `421` and `404` refusals. `GET /api/v1/health`
   adds `schema_version` and `format_version` (`crosswire-store` exports
   `FORMAT_VERSION`).
+- **Release pipeline and governance** (R2): one workspace version, release-plz
+  opening the release PR and cutting the `v<version>` tag, and the governance
+  documents.
 
-### alpha.2: the sidecar backend (no UI yet)
+### Changed
+
+- **Breaking, wire format** (`SCHEMA_VERSION` 2): enum codes are frozen
+  (kebab-case or snake_case, no PascalCase), tagged unions use a `type` tag, and
+  defaults are fixed. Unknown enum codes read back as an `Unknown` variant
+  instead of failing, so a newer project stays readable.
+- **Breaking, project format 6**: a fresh project is created at `user_version`
+  6. Projects written by pre-release builds (`user_version` 1 to 5) are refused
+  on open, before any migration or snapshot; re-record the traffic.
+- All crates now share one workspace version, `0.1.0-rc.1`.
+
+### Removed
+
+- `cert_override` is no longer on the wire.
+
+## [0.1.0-alpha.2] - 2026-10-26
+
+_No git tag was cut for this milestone._
 
 The backend of `0.1.0-alpha.2`. Everything the web UI will drive exists and is
 tested; the UI itself (Plan 5) does not. The API and the project format are not
@@ -35,7 +46,7 @@ frozen. Nothing here phones home: the launcher opens only the proxy's own CA
 page or the URL you pass, and an idle sidecar makes no upstream connection
 (the idle-egress gate).
 
-#### Added
+### Added
 
 - **crosswire-h1**: `apply_edits` with re-parse (`Edit`, `Edited`, `EditError`),
   plus the `content_length_edit` and `crlf_edits` helpers. An edit addresses
@@ -86,7 +97,7 @@ page or the URL you pass, and an idle sidecar makes no upstream connection
 - **docs**: the API guide (`docs/api.md`), ADR-0004 (API credentials), the
   security-gates map, and `docs/format.md` for schema version 2.
 
-#### Changed
+### Changed
 
 - `Handler` and `ProxyDeps` changed shape (an async `on_request`, a `holds`
   method, and a `scope` in `ProxyDeps`); `crosswire_client::Transport` gained
@@ -94,7 +105,7 @@ page or the URL you pass, and an idle sidecar makes no upstream connection
 - Projects at schema version 1 are migrated to 2 on open. A project written by
   this version cannot be opened by an alpha.1 binary.
 
-#### Not yet built
+### Not yet built
 
 - The web UI (Plan 5) and the three gates that need it or the export tooling:
   the XSS corpus, preview zero-egress and the redaction golden.
@@ -103,13 +114,15 @@ page or the URL you pass, and an idle sidecar makes no upstream connection
 - OS-keychain storage, CA installation, pack-writer streaming, and the
   1,000,000-exchange memory check (Plan 6).
 
-### alpha.1: a headless recorder
+## [0.1.0-alpha.1] - 2026-10-24
+
+_No git tag was cut for this milestone._
 
 The first release, `0.1.0-alpha.1`: a headless recorder. A browser pointed at
 `crosswire serve` is recorded byte for byte into a project directory. There is
 no UI yet. The minimum supported Rust version is 1.88.
 
-#### Added
+### Added
 
 - **crosswire-core**: shared types (byte spans, the 26-code
   `DiagnosticCode` catalogue, profiles, change records); `no_std` + `alloc`
@@ -148,3 +161,5 @@ no UI yet. The minimum supported Rust version is 1.88.
   CA install guide and the h1 diagnostics catalogue.
 
 [Unreleased]: https://github.com/kalash33/crosswire/commits/main
+[0.1.0-alpha.2]: https://github.com/kalash33/crosswire/commits/main
+[0.1.0-alpha.1]: https://github.com/kalash33/crosswire/commits/main

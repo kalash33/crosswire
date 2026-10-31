@@ -1,6 +1,6 @@
 [package]
 name = "crosswire-store"
-version = "0.0.0"
+version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
@@ -23,14 +23,14 @@ rustix = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
 regex = { workspace = true }
-crosswire-model = { path = "../crosswire-model", version = "0.0.0" }
+crosswire-model = { path = "../crosswire-model" }
 # The event stream is a broadcast channel; nothing else of tokio is needed.
 tokio = { version = "1", default-features = false, features = ["sync"] }
 # Used by the kill -9 test child to build bodies.
 bytes = "1"
 # Only the synthetic generator builds HTTP/1 heads (the model already depends
 # on this crate, so it adds nothing to the dependency graph or `cargo deny`).
-crosswire-h1 = { path = "../crosswire-h1", version = "0.0.0", optional = true }
+crosswire-h1 = { path = "../crosswire-h1", optional = true }
 
 [features]
 # The deterministic bulk generator for the history benchmarks (`generate`).
@@ -43,8 +43,8 @@ tokio = { workspace = true }
 # `cargo deny`); the index tests use it to drive raw SQL — simulate an older
 # project and read back `user_version`/`sqlite_master`.
 rusqlite = { workspace = true }
-crosswire-core = { path = "../crosswire-core", version = "0.0.0" }
-crosswire-h1 = { path = "../crosswire-h1", version = "0.0.0" }
+crosswire-core = { path = "../crosswire-core" }
+crosswire-h1 = { path = "../crosswire-h1" }
 criterion = { version = "0.5", default-features = false }
 
 # `phys_footprint` for the bench/test RSS probe (src/rss.rs). Linux reads

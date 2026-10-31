@@ -1,6 +1,6 @@
 [package]
 name = "crosswire-tools"
-version = "0.0.0"
+version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
@@ -12,11 +12,11 @@ publish = false
 workspace = true
 
 [dependencies]
-crosswire-core = { path = "../crosswire-core", version = "0.0.0" }
-crosswire-h1 = { path = "../crosswire-h1", version = "0.0.0" }
-crosswire-model = { path = "../crosswire-model", version = "0.0.0" }
-crosswire-client = { path = "../crosswire-client", version = "0.0.0" }
-crosswire-scope = { path = "../crosswire-scope", version = "0.0.0" }
+crosswire-core = { path = "../crosswire-core" }
+crosswire-h1 = { path = "../crosswire-h1" }
+crosswire-model = { path = "../crosswire-model" }
+crosswire-client = { path = "../crosswire-client" }
+crosswire-scope = { path = "../crosswire-scope" }
 tokio = { workspace = true }
 bytes = { version = "1", default-features = false, features = ["std"] }
 thiserror = { workspace = true }
@@ -24,7 +24,7 @@ ulid = { workspace = true }
 sha2 = { workspace = true }
 
 [dev-dependencies]
-crosswire-ca = { path = "../crosswire-ca", version = "0.0.0" }
+crosswire-ca = { path = "../crosswire-ca" }
 rustls = { workspace = true }
 tokio-rustls = { workspace = true }
 rustls-pki-types = { workspace = true }
