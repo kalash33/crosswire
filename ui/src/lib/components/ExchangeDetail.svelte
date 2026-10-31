@@ -379,7 +379,7 @@
         >
       </div>
       <div class="meta">
-        {#if row?.host}<span class="host">{row.host}</span>{/if}
+        {#if row?.host}<span class="host" title={row.host}>{row.host}</span>{/if}
         {#if row?.status !== null && row?.status !== undefined}<Badge kind="status" value={row.status} />{/if}
         <Badge kind="state" value={exchange.state ?? 'unknown'} />
         <span class="scope"><span class="dim">scope</span><Badge kind="scope" value={exchange.scope_state ?? 'unknown'} /></span>
@@ -438,12 +438,22 @@
     gap: var(--s-2);
     padding: var(--s-3);
     border-bottom: 1px solid var(--border);
+    /* Many or long tags (or a long host) must never squeeze the messages out:
+       the header takes at most ~40% of the pane and scrolls beyond that. */
+    flex: 0 1 auto;
+    max-height: 40%;
+    overflow-y: auto;
   }
   .titleline {
     display: flex;
     align-items: flex-start;
     gap: var(--s-2);
     min-width: 0;
+  }
+  /* Only the title gives up width: a long path must never shrink the Copy and
+     Decode buttons under each other. */
+  .titleline > :global(:not(h2)) {
+    flex: none;
   }
   .title {
     flex: 1 1 auto;
@@ -477,6 +487,11 @@
     font-family: var(--font-mono);
     color: var(--fg-muted);
     overflow-wrap: anywhere;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
   }
   .scope {
     display: inline-flex;

@@ -5,7 +5,7 @@
   import HeadersTable from './HeadersTable.svelte';
   import ResultHeader from './ResultHeader.svelte';
   import { parseHeadLines, type HeaderLine } from '../http/headers';
-  import { hexPage } from '../editor/hex-window';
+  import { HEX_PAGE, hexPage } from '../editor/hex-window';
   import { responseView, type RepeaterTab } from '../stores/repeater.svelte';
   import type { ExchangeDto } from '../stores/history.svelte';
   import { latin1ToBytes, bytesToLatin1 } from '../editor/encoding';
@@ -135,7 +135,7 @@
     { id: 'hex', label: 'Hex', testid: 'resp-tab-hex' },
   ]);
 
-  // ---- Hex paging: never more than one 64 KiB window in the DOM ----------------
+  // ---- Hex paging: never more than one HEX_PAGE (32 KiB) window in the DOM ----------------
   const win = $derived(hexPage(resp?.bytes.length ?? 0, pageNo));
   const hexBytes = $derived(resp ? resp.bytes.subarray(win.start, win.end) : new Uint8Array());
 </script>
@@ -212,7 +212,7 @@
                 icon="chevron-right"
                 class="flip"
                 size="sm"
-                label="Previous 64 KiB"
+                label={`Previous ${HEX_PAGE / 1024} KiB`}
                 data-testid="hex-prev"
                 disabled={win.page === 0}
                 onclick={() => (pageNo = win.page - 1)}
@@ -223,7 +223,7 @@
               <IconButton
                 icon="chevron-right"
                 size="sm"
-                label="Next 64 KiB"
+                label={`Next ${HEX_PAGE / 1024} KiB`}
                 data-testid="hex-next"
                 disabled={win.page >= win.pages - 1}
                 onclick={() => (pageNo = win.page + 1)}

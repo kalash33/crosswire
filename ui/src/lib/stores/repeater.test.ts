@@ -373,8 +373,8 @@ describe('response pane state', () => {
 });
 
 describe('hex paging', () => {
-  it('pages are 64 KiB', () => {
-    expect(HEX_PAGE).toBe(65536);
+  it('pages are 32 KiB', () => {
+    expect(HEX_PAGE).toBe(32768);
   });
 
   it('an empty buffer has one empty page', () => {
@@ -383,14 +383,14 @@ describe('hex paging', () => {
 
   it('a 2 MB buffer is windowed, never whole', () => {
     const n = 2 * 1024 * 1024 + 5;
-    expect(hexPage(n, 0)).toEqual({ page: 0, pages: 33, start: 0, end: 65536 });
-    expect(hexPage(n, 32)).toEqual({ page: 32, pages: 33, start: 32 * 65536, end: n });
+    expect(hexPage(n, 0)).toEqual({ page: 0, pages: 65, start: 0, end: 32768 });
+    expect(hexPage(n, 64)).toEqual({ page: 64, pages: 65, start: 64 * 32768, end: n });
   });
 
   it('clamps out-of-range and non-integer pages', () => {
     expect(hexPage(100, -3).page).toBe(0);
     expect(hexPage(100, 9)).toEqual({ page: 0, pages: 1, start: 0, end: 100 });
-    expect(hexPage(65536 * 2, 1.7).page).toBe(1);
-    expect(hexPage(65536 * 2, Number.NaN).page).toBe(0);
+    expect(hexPage(32768 * 2, 1.7).page).toBe(1);
+    expect(hexPage(32768 * 2, Number.NaN).page).toBe(0);
   });
 });

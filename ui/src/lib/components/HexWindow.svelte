@@ -1,5 +1,5 @@
 <script lang="ts">
-  // The Hex tab: HexPane over one 64 KiB window of the bytes at a time, with
+  // The Hex tab: HexPane over one 32 KiB (HEX_PAGE) window of the bytes at a time, with
   // previous/next paging, so a multi-megabyte body never becomes one DOM row
   // per 16 bytes of the whole buffer (U1 Review Focus 2).
   import HexPane from '../editor/HexPane.svelte';
