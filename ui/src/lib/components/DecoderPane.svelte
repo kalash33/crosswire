@@ -13,7 +13,14 @@
     initial,
     initialNonLatin1 = false,
     onClose,
-  }: { initial: Uint8Array; initialNonLatin1?: boolean; onClose: () => void } = $props();
+    embedded = false,
+  }: {
+    initial: Uint8Array;
+    initialNonLatin1?: boolean;
+    onClose: () => void;
+    /** Fill the host (the /decoder route) instead of floating as a dialog. */
+    embedded?: boolean;
+  } = $props();
 
   interface Step {
     codec: Codec;
@@ -91,8 +98,9 @@
 
 <div
   class="decoder"
+  class:embedded
   data-testid="decoder-pane"
-  role="dialog"
+  role={embedded ? 'region' : 'dialog'}
   aria-label="Decoder"
   tabindex="-1"
   bind:this={root}
@@ -100,7 +108,13 @@
 >
   <div class="head">
     <strong>Decoder</strong>
-    <button type="button" aria-label="Close" data-testid="decoder-close" onclick={onClose}>×</button>
+    <button
+      type="button"
+      aria-label={embedded ? 'Close the decoder and go back' : 'Close'}
+      title={embedded ? 'Back (Esc)' : 'Close (Esc)'}
+      data-testid="decoder-close"
+      onclick={onClose}>×</button
+    >
   </div>
 
   <textarea
@@ -192,6 +206,25 @@
     padding: 0.5rem 0.65rem;
     box-shadow: var(--shadow-pop);
     font-size: 0.8rem;
+  }
+  /* Route-hosted: fill the main area, no floating chrome. */
+  .decoder.embedded {
+    position: static;
+    width: auto;
+    max-width: 64rem;
+    max-height: none;
+    overflow: visible;
+    padding: 0;
+    background: transparent;
+    border: none;
+    box-shadow: none;
+    font-size: var(--fs-md);
+  }
+  .decoder.embedded:focus {
+    outline: none;
+  }
+  .decoder.embedded .input {
+    min-height: 8rem;
   }
   .head {
     display: flex;

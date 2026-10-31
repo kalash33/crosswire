@@ -35,7 +35,7 @@ const VIEWPORTS = [
   { width: 1024, height: 700 },
   { width: 1440, height: 900 },
 ];
-const ROUTES = ['/', '/repeater', '/intercept', '/scope'];
+const ROUTES = ['/', '/repeater', '/intercept', '/scope', '/decoder', '/settings'];
 
 for (const vp of VIEWPORTS) {
   for (const route of ROUTES) {

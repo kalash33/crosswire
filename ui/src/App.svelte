@@ -7,6 +7,8 @@
   import Repeater from './routes/Repeater.svelte';
   import Intercept from './routes/Intercept.svelte';
   import Scope from './routes/Scope.svelte';
+  import Decoder from './routes/Decoder.svelte';
+  import Settings from './routes/Settings.svelte';
   import { router } from './lib/router.svelte';
 
   onMount(() => {
@@ -29,6 +31,10 @@
         <Intercept />
       {:else if router.path === '/scope'}
         <Scope />
+      {:else if router.path === '/decoder'}
+        <Decoder />
+      {:else if router.path === '/settings'}
+        <Settings />
       {:else}
         <p data-testid="route-unknown">No view for {router.path}</p>
       {/if}

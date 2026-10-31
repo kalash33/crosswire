@@ -229,13 +229,16 @@ test('decoder_outputs_are_text_for_every_payload', async ({ page, baseURL }) => 
   );
   const violations = watch(page, origin);
   await page.goto('/');
-  const startUrl = page.url();
   // The chord only works once the app has hydrated; retry the press until the pane appears.
   await expect(page.getByTestId('app-root')).toBeVisible();
   await expect(async () => {
     await page.keyboard.press('Control+Shift+D');
     await expect(page.getByTestId('decoder-pane')).toBeVisible({ timeout: 1000 });
   }).toPass();
+  // U1 D6: the decoder is the /decoder route, so the chord itself navigates
+  // there; payloads must not navigate anywhere after that.
+  const startUrl = page.url();
+  expect(new URL(startUrl).pathname).toBe('/decoder');
   const input = page.getByTestId('decoder-input');
   await page.getByTestId('decoder-step-add').click();
   const codecSel = page.getByTestId('decoder-step-0-codec');

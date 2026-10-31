@@ -9,6 +9,9 @@
   import { keymap } from '../lib/keymap';
   import { repeater } from '../lib/stores/repeater.svelte';
   import { router } from '../lib/router.svelte';
+  import StartPanel from '../lib/components/StartPanel.svelte';
+  import { showStart } from '../lib/components/start';
+  import { connection } from '../lib/stores/connection.svelte';
 
   // ---- Filter inputs (applied on submit; the store builds the query) --------
   let fHost = $state('');
@@ -165,9 +168,19 @@
     }
   }
 
+  // Start panel (U1 D3): first-run guidance instead of an empty table, only
+  // once the first page has loaded and only while no filter is applied. A
+  // `received` event adds a row, which hides it.
+  let firstLoadDone = $state(false);
+  const filterActive = $derived(Object.values(history.filter).some((v) => v !== undefined && v !== ''));
+  const start = $derived(
+    showStart(sortedRows.length, filterActive, history.loading || !firstLoadDone || !!history.error),
+  );
+
   onMount(() => {
     events.start();
-    void history.applyFilter({});
+    void connection.load();
+    void history.applyFilter({}).finally(() => (firstLoadDone = true));
     const off = keymap.register('send-to-repeater', () => void sendFocusedToRepeater());
     return off;
   });
@@ -219,6 +232,13 @@
     <p class="error" data-testid="history-send-error" role="alert">{sendError}</p>
   {/if}
 
+  {#if start}
+    <StartPanel
+      proxyAddr={connection.proxyAddrOrDefault}
+      proxyReported={connection.proxyAddr !== null}
+      apiOrigin={connection.apiOrigin}
+    />
+  {:else}
   <div class="layout">
     <div class="list" data-testid="history-list">
       <table>
@@ -334,6 +354,7 @@
       {/if}
     </aside>
   </div>
+  {/if}
 </div>
 
 <style>

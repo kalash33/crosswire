@@ -1,4 +1,4 @@
-import { apiGet, apiSend } from '../api/client';
+import { apiGet, apiSend, setUnauthorizedHandler } from '../api/client';
 import { ApiError, UnauthorizedError } from '../api/errors';
 import type { SessionRequest } from '../api/types';
 
@@ -78,6 +78,17 @@ class Session {
   }
 
   /**
+   * The server stopped accepting our cookie (restart, expiry): back to Auth.
+   * Called by the API client on any 401 outside the bootstrap exchange.
+   */
+  expire(): void {
+    if (this.status === 'authenticated') {
+      this.error = 'Your session expired or the server restarted. Paste a new bootstrap URL to continue.';
+    }
+    this.status = 'unauthenticated';
+  }
+
+  /**
    * Cheap authenticated GET. 200 -> authenticated; 401 -> unauthenticated.
    * Any other failure (network down, 5xx) cannot prove a session either way:
    * if we were still `unknown` it falls back to `unauthenticated` so the auth
@@ -100,3 +111,4 @@ class Session {
 }
 
 export const session = new Session();
+setUnauthorizedHandler(() => session.expire());

@@ -9,6 +9,7 @@ import * as wire from '../api/intercept';
 import type { HeldDto, RulesDto, ForwardBody, InterceptStatus } from '../api/intercept';
 import { bytesToLatin1 } from '../editor/encoding';
 import { events, type Event } from './events.svelte';
+import { toasts } from '../ui/toasts.svelte';
 
 export type InterceptApi = typeof wire;
 
@@ -74,12 +75,18 @@ export function createIntercept(opts: InterceptOptions = {}) {
     }
   }
 
-  async function act(fn: () => Promise<void>): Promise<void> {
+  /** Run an action; with `outcome`, toast how it went. */
+  async function act(
+    fn: () => Promise<void>,
+    outcome?: { ok: string; fail: string },
+  ): Promise<void> {
     try {
       await fn();
       error = null;
+      if (outcome) toasts.push({ kind: 'success', text: outcome.ok });
     } catch (e) {
       error = msg(e);
+      if (outcome) toasts.push({ kind: 'error', text: `${outcome.fail}: ${error}` });
     }
   }
 
@@ -127,19 +134,21 @@ export function createIntercept(opts: InterceptOptions = {}) {
       await act(async () => {
         await api.postForward(id, body);
         await refresh();
-      });
+      }, edited
+        ? { ok: 'Forwarded the edited request.', fail: 'Forward failed' }
+        : { ok: 'Forwarded the request.', fail: 'Forward failed' });
     },
     async drop(id: string) {
       await act(async () => {
         await api.postDrop(id);
         await refresh();
-      });
+      }, { ok: 'Dropped the request.', fail: 'Drop failed' });
     },
     async forwardAll() {
       await act(async () => {
         await api.postForwardAll();
         await refresh();
-      });
+      }, { ok: 'Forwarded all held requests.', fail: 'Forward all failed' });
     },
     async putRules(next: RulesDto) {
       await act(async () => {

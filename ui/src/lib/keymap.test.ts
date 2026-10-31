@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { ACTIONS, createKeymap, DEFAULT_BINDINGS, chordFromEvent } from './keymap';
+import { ACTIONS, createKeymap, DEFAULT_BINDINGS, chordFromEvent, formatChord } from './keymap';
 
 function key(init: KeyboardEventInit): KeyboardEvent {
   return new KeyboardEvent('keydown', { cancelable: true, bubbles: true, ...init });
@@ -19,6 +19,7 @@ describe('keymap defaults (Burp-consistent)', () => {
         'tab-next',
         'tab-prev',
         'toggle-intercept',
+        'show-shortcuts',
       ].sort(),
     );
     expect(DEFAULT_BINDINGS).toEqual({
@@ -32,6 +33,7 @@ describe('keymap defaults (Burp-consistent)', () => {
       'tab-prev': 'ctrl+shift+[',
       'copy-as-curl': 'ctrl+shift+c',
       'copy-raw': 'ctrl+shift+s',
+      'show-shortcuts': '?',
     });
   });
 
@@ -117,5 +119,80 @@ describe('keymap dispatch', () => {
     off();
     km.dispatch(key({ key: ' ', code: 'Space', ctrlKey: true }));
     expect(h).not.toHaveBeenCalled();
+  });
+});
+
+describe('keymap bindings()', () => {
+  it('lists every default action with a non-empty chord and label', () => {
+    const km = createKeymap();
+    const rows = km.bindings();
+    expect(rows.map((r) => r.action).sort()).toEqual([...ACTIONS].sort());
+    for (const r of rows) {
+      expect(r.chord.length).toBeGreaterThan(0);
+      expect(r.label.trim().length).toBeGreaterThan(0);
+      expect(r.chord).toBe(DEFAULT_BINDINGS[r.action]);
+    }
+  });
+
+  it('reflects a remap', () => {
+    const km = createKeymap();
+    km.remap('drop', 'ctrl+shift+x');
+    expect(km.bindings().find((r) => r.action === 'drop')?.chord).toBe('ctrl+shift+x');
+  });
+
+  it('formats chords for display', () => {
+    expect(formatChord('ctrl+shift+d')).toBe('Ctrl+Shift+D');
+    expect(formatChord('ctrl+space')).toBe('Ctrl+Space');
+    expect(formatChord('?')).toBe('?');
+    expect(formatChord('ctrl+shift+]')).toBe('Ctrl+Shift+]');
+  });
+});
+
+describe('plain-key chords (no Ctrl/Alt)', () => {
+  it('resolves ? with or without Shift to the same chord', () => {
+    expect(chordFromEvent(key({ key: '?', code: 'Slash', shiftKey: true }))).toBe('?');
+    expect(chordFromEvent(key({ key: '?', code: 'Slash' }))).toBe('?');
+  });
+
+  it('fires ? outside editable targets only', () => {
+    const km = createKeymap();
+    const h = vi.fn();
+    km.register('show-shortcuts', h);
+    const onBody = key({ key: '?', code: 'Slash', shiftKey: true });
+    document.body.dispatchEvent(onBody);
+    km.dispatch(onBody);
+    expect(h).toHaveBeenCalledTimes(1);
+
+    for (const tag of ['input', 'textarea', 'select']) {
+      const el = document.createElement(tag);
+      document.body.append(el);
+      const ev = key({ key: '?', code: 'Slash', shiftKey: true });
+      el.dispatchEvent(ev);
+      km.dispatch(ev);
+      expect(ev.defaultPrevented).toBe(false);
+      el.remove();
+    }
+    const ce = document.createElement('div');
+    ce.setAttribute('contenteditable', 'true'); // jsdom does not reflect .contentEditable
+    document.body.append(ce);
+    const ev = key({ key: '?', code: 'Slash', shiftKey: true });
+    ce.dispatchEvent(ev);
+    km.dispatch(ev);
+    expect(ev.defaultPrevented).toBe(false);
+    ce.remove();
+    expect(h).toHaveBeenCalledTimes(1);
+  });
+
+  it('still fires Ctrl chords inside an input', () => {
+    const km = createKeymap();
+    const h = vi.fn();
+    km.register('forward', h);
+    const el = document.createElement('input');
+    document.body.append(el);
+    const ev = key({ key: 'f', code: 'KeyF', ctrlKey: true });
+    el.dispatchEvent(ev);
+    km.dispatch(ev);
+    expect(h).toHaveBeenCalledTimes(1);
+    el.remove();
   });
 });

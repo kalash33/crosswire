@@ -8,6 +8,7 @@
 //    there as a Latin-1 string (encoding.ts, 1:1 byte<->char), never a JS array.
 import { apiGetBytes, apiGet } from '../api/client';
 import { ApiError } from '../api/errors';
+import { toasts } from '../ui/toasts.svelte';
 import {
   deleteTab,
   listTabs,
@@ -278,6 +279,7 @@ export function createRepeater(opts: RepeaterOptions = {}) {
       // 403 out-of-scope / 422 unparseable / 502 upstream: show it, keep the draft.
       const cur = find(id);
       if (cur) cur.error = messageOf(e);
+      toasts.push({ kind: 'error', text: `Send failed: ${messageOf(e)}` });
     } finally {
       const cur = find(id);
       if (cur) cur.sending = false;

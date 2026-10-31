@@ -70,7 +70,10 @@ async function addStep(page: Page, i: number, codec: string, dir: string) {
 
 test('chord_opens_pane_seeded_from_selection', async ({ page }) => {
   await openSeeded(page);
-  await expect(page.getByTestId('decoder-pane')).toHaveAttribute('role', 'dialog');
+  // U1 D6: the pane is the /decoder route's content (a region), no longer a
+  // floating dialog; the chord navigates there.
+  await expect(page).toHaveURL(/\/decoder$/);
+  await expect(page.getByTestId('decoder-pane')).toHaveAttribute('role', 'region');
   await expect(page.getByTestId('decoder-input')).toHaveValue(BODY);
 });
 

@@ -116,3 +116,29 @@ describe('probe', () => {
     expect(session.status).toBe('authenticated');
   });
 });
+
+describe('expire (mid-session 401)', () => {
+  it('flips an authenticated session to unauthenticated with a message', () => {
+    session.status = 'authenticated';
+    session.error = null;
+    session.expire();
+    expect(session.status).toBe('unauthenticated');
+    expect(session.error).toMatch(/expired/i);
+  });
+
+  it('a 401 from any authenticated API call expires the session', async () => {
+    session.status = 'authenticated';
+    mockFetch(401, { error: { code: 'unauthorized', message: 'no session' } });
+    const { apiGet } = await import('../api/client');
+    await expect(apiGet('/api/v1/scope')).rejects.toThrow();
+    expect(session.status).toBe('unauthenticated');
+  });
+
+  it('a 401 from the bootstrap exchange is not an expiry', async () => {
+    session.status = 'unauthenticated';
+    session.error = null;
+    mockFetch(401, { error: { code: 'unauthorized', message: 'bad token' } });
+    await session.submitToken('nope');
+    expect(session.error).toBe('bad token');
+  });
+});

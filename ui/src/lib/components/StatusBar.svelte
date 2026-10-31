@@ -7,6 +7,7 @@
   import { intercept } from '../stores/intercept.svelte';
 
   import { scope } from '../stores/scope.svelte';
+  import { connection } from '../stores/connection.svelte';
 
   let counts = $state<CountsDto | null>(null);
   let failed = $state(false);
@@ -31,6 +32,7 @@
 
   onMount(() => {
     refreshAll();
+    void connection.load();
     // The shared intercept store keeps itself in sync (events + lagged).
     intercept.start();
     const off = events.subscribe((e) => {
@@ -53,9 +55,18 @@
 
 <!-- One pinned line in the shell's status row: never wraps, clips instead. -->
 <footer class="statusbar" data-testid="status-bar">
+  <span
+    class="item ws"
+    class:live={events.connected}
+    data-testid="status-ws"
+    data-state={events.connected ? 'connected' : 'disconnected'}
+  ><span class="dot" aria-hidden="true"></span>{events.connected ? 'Live' : 'Offline'}</span>
   <span class="item" data-testid="status-api">API {location.host}</span>
-  <!-- TODO: proxy bind address needs a future endpoint (no GET /settings in alpha.2). -->
-  <span class="item" data-testid="status-proxy">Proxy n/a</span>
+  <!-- Shown only when the server reports its proxy address (GET /health has
+       no such field yet); never a guessed value. -->
+  {#if connection.proxyAddr}
+    <span class="item" data-testid="status-proxy">Proxy {connection.proxyAddr}</span>
+  {/if}
   <span
     class="item intercept"
     class:on={intercept.loaded && intercept.enabled}
@@ -116,6 +127,12 @@
     height: 7px;
     border-radius: 50%;
     background: var(--fg-faint);
+  }
+  .ws .dot {
+    background: var(--danger);
+  }
+  .ws.live .dot {
+    background: var(--ok);
   }
   .intercept.on {
     color: var(--warn);

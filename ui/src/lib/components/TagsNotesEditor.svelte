@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { toasts } from '../ui/toasts.svelte';
   import { onDestroy, untrack } from 'svelte';
   import { patchExchange } from '../api/exchanges';
   import { addTag } from '../tags';
@@ -123,6 +124,7 @@
       (_v, e) => {
         localTags = tagServer;
         saveError = e instanceof Error ? e.message : 'failed to save tags';
+        toasts.push({ kind: 'error', text: `Tags not saved: ${saveError}` });
       },
     );
   }
@@ -165,6 +167,7 @@
         if (localNotes === v) localNotes = notesServer;
         else notesDirty = true; // keep text typed since; it will be re-sent
         saveError = e instanceof Error ? e.message : 'failed to save notes';
+        toasts.push({ kind: 'error', text: `Notes not saved: ${saveError}` });
       },
     );
   }
