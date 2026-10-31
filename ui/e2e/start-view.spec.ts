@@ -19,6 +19,9 @@ test('an empty project shows the Start panel with the three setup steps', async 
   await expect(panel).toContainText('Replace PROJECT_DIR with your project directory.');
   // No href anywhere in the panel: the CA page opens via a button handler.
   await expect(panel.locator('a[href]')).toHaveCount(0);
+  // Nothing to filter yet: the filter/bulk bar is hidden while the panel shows.
+  await expect(page.getByTestId('filter-toggle')).toHaveCount(0);
+  await expect(page.getByTestId('history-filters')).toHaveCount(0);
 });
 
 test('Open CA page opens the proxy CA page in a new tab', async ({ page }) => {
@@ -62,10 +65,15 @@ test('rows arriving on a refresh hide the Start panel', async ({ page }) => {
 });
 
 test('a filter with no matches shows the empty table, not the Start panel', async ({ page }) => {
-  await mockApp(page);
+  // The filter bar is hidden on the Start panel (U1), so start from a project
+  // with a row; the filtered request then matches nothing.
+  let rows: Row[] = [row('01HFILTERFILTERFILTERFILTE')];
+  await mockApp(page, { rows: () => rows });
   await mockEvents(page);
   await page.goto('/');
-  await expect(page.getByTestId('start-panel')).toBeVisible();
+  await expect(page.getByTestId('history-row')).toHaveCount(1);
+  await expect(page.getByTestId('start-panel')).toHaveCount(0);
+  rows = [];
   await page.getByTestId('filter-host').fill('nothing.example');
   await page.getByTestId('filter-apply').click();
   await expect(page.getByTestId('start-panel')).toHaveCount(0);

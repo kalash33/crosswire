@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { mockApp, mockEvents } from './fixtures/app-mock';
+import { mockApp, mockEvents, row } from './fixtures/app-mock';
 
 // U1 D3 shell chrome: rail, top bar, shortcuts sheet, theme, live-socket dot.
 
@@ -53,6 +53,8 @@ test('the top-bar Shortcuts button opens the sheet', async ({ page }) => {
 });
 
 test('? typed into a text field stays text', async ({ page }) => {
+  // One row, so History shows the filter bar (hidden on the Start panel).
+  await mockApp(page, { rows: () => [row('01HSHELLSHELLSHELLSHELLSHE')] });
   await mockEvents(page);
   await page.goto('/');
   const input = page.getByTestId('filter-host');

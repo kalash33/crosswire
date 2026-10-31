@@ -19,7 +19,8 @@
 ## 2. Constraints carried
 - Svelte 5 runes, Vite, CodeMirror 6; **no new npm dependency** (icons are inline SVG from a path map; the splitter, toasts, tabs and menus are small in-repo components).
 - §11.1: every captured value is text-interpolated; no `{@html}`, innerHTML, srcdoc, dynamic `href`/`src`; the ESLint rule set is unchanged and gains no `eslint-disable`. The only URL the UI builds is from the server's own trusted config (proxy address from `/api/v1/health`-adjacent config), opened via a button handler, never an `href`.
-- CSP: `style-src 'self' 'nonce-…'` so no `style=` attributes and no runtime style injection; theming is CSS custom properties toggled by a `data-theme` attribute on `<html>`; `default-src 'self'` so no CDN assets.
+- CSP: `style-src 'self' 'nonce-…'` so no `style=` attributes and no injected `<style>` elements; CSSOM custom-property writes (`element.style.setProperty('--x', …)`) are permitted (not governed by `style-src`); theming is CSS custom properties toggled by a `data-theme` attribute on `<html>`; `default-src 'self'` so no CDN assets.
+- `proxy_addr` on `GET /api/v1/health` (added in a separate PR) feeds the Start panel, Settings and the status bar; until a server reports it (or when the value fails `parseProxyAddr`), the UI shows the `crosswire serve` default and the status bar shows no proxy item.
 - Bundle rebuilt and committed (`just ui-build`), `just ui-dist-check` green; full CI gate; Conventional Commits; no AI trailers.
 - The `data-testid` contract the e2e specs depend on is preserved; where the layout change moves a control (status-bar intercept toggle, `<summary>Rules`, document scrolling in `perf-scroll`), the spec is updated in the same task with the reason.
 
