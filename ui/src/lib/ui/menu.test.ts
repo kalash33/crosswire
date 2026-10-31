@@ -90,6 +90,14 @@ describe('Menu', () => {
     expect(document.activeElement).toBe(anchor);
   });
 
+  it('Tab closes and hands focus to the anchor (not <body>)', () => {
+    const { menu, onclose } = open([{ label: 'A', onselect: vi.fn() }]);
+    expect(document.activeElement).toBe(items()[0]);
+    key(menu, 'Tab');
+    expect(onclose).toHaveBeenCalledOnce();
+    expect(document.activeElement).toBe(anchor);
+  });
+
   it('a click outside closes; a click inside does not', () => {
     const { menu, onclose } = open([{ label: 'A', onselect: vi.fn() }]);
     menu.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }));

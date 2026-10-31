@@ -16,9 +16,13 @@
 
   let list = $state<HTMLElement>();
 
+  // The tab that takes part in the tab order: the active one, or the first
+  // tab when `active` matches none (so the list stays keyboard reachable).
+  const focusIndex = $derived(Math.max(0, tabs.findIndex((t) => t.id === active)));
+
   // Roving focus: arrow keys move between tabs and select (automatic activation).
   function onkeydown(e: KeyboardEvent) {
-    const i = tabs.findIndex((t) => t.id === active);
+    const i = focusIndex;
     let next = -1;
     if (e.key === 'ArrowRight') next = (i + 1) % tabs.length;
     else if (e.key === 'ArrowLeft') next = (i - 1 + tabs.length) % tabs.length;
@@ -32,13 +36,13 @@
 </script>
 
 <div class="tabs" role="tablist" aria-label={label} bind:this={list} tabindex="-1" {onkeydown}>
-  {#each tabs as t (t.id)}
+  {#each tabs as t, i (t.id)}
     <button
       type="button"
       role="tab"
       class="tab"
       aria-selected={t.id === active}
-      tabindex={t.id === active ? 0 : -1}
+      tabindex={i === focusIndex ? 0 : -1}
       data-testid={t.testid}
       onclick={() => onselect(t.id)}
     >

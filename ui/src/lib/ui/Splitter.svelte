@@ -190,11 +190,13 @@
     background: var(--accent);
   }
   .row > .handle:hover::after,
+  .row > .handle:focus-visible::after,
   .row.dragging > .handle::after {
     left: 1px;
     width: 3px;
   }
   .column > .handle:hover::after,
+  .column > .handle:focus-visible::after,
   .column.dragging > .handle::after {
     top: 1px;
     height: 3px;

@@ -2,21 +2,33 @@
   // The single toast outlet; mounted once by the shell.
   import Icon from './Icon.svelte';
   import type { IconName } from './icons';
-  import { toasts, type ToastKind } from './toasts.svelte';
+  import { toasts, type ToastItem, type ToastKind } from './toasts.svelte';
 
-  const ICON: Record<ToastKind, IconName> = { info: 'check', success: 'check', error: 'warning' };
+  const ICON: Record<ToastKind, IconName> = { info: 'info', success: 'check', error: 'warning' };
+
+  const errors = $derived(toasts.items.filter((t) => t.kind === 'error'));
+  const notices = $derived(toasts.items.filter((t) => t.kind !== 'error'));
 </script>
 
-<div class="toasts" role="status" aria-live="polite" data-testid="toasts">
-  {#each toasts.items as t (t.id)}
-    <div class="toast {t.kind}" data-testid="toast" data-kind={t.kind}>
-      <span class="mark"><Icon name={ICON[t.kind]} size={14} /></span>
-      <span class="text">{t.text}</span>
-      <button type="button" class="x" aria-label="Dismiss notification" title="Dismiss" onclick={() => toasts.dismiss(t.id)}>
-        <Icon name="close" size={12} />
-      </button>
-    </div>
-  {/each}
+{#snippet toast(t: ToastItem, role: 'alert' | undefined)}
+  <div class="toast {t.kind}" {role} data-testid="toast" data-kind={t.kind}>
+    <span class="mark"><Icon name={ICON[t.kind]} size={14} /></span>
+    <span class="text">{t.text}</span>
+    <button type="button" class="x" aria-label="Dismiss notification" title="Dismiss" onclick={() => toasts.dismiss(t.id)}>
+      <Icon name="close" size={12} />
+    </button>
+  </div>
+{/snippet}
+
+<!-- Errors are announced assertively (each one role="alert"); info and
+     success share one polite status region. Separate regions, never nested. -->
+<div class="toasts" data-testid="toasts">
+  <div class="region">
+    {#each errors as t (t.id)}{@render toast(t, 'alert')}{/each}
+  </div>
+  <div class="region" role="status" aria-live="polite">
+    {#each notices as t (t.id)}{@render toast(t, undefined)}{/each}
+  </div>
 </div>
 
 <style>
@@ -30,6 +42,9 @@
     align-items: flex-end;
     gap: var(--s-2);
     pointer-events: none;
+  }
+  .region {
+    display: contents;
   }
   .toast {
     display: flex;

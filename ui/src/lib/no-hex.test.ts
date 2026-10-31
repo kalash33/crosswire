@@ -11,7 +11,8 @@ import { join, relative } from 'node:path';
 //    value runs to the next `;` or `}`. A selector ends at `{`, so CSS id
 //    selectors (`#app {`) and pseudo-classes never count.
 //  * .css files: the whole file (comments stripped). .svelte files: only the
-//    <style> blocks. .ts files: the whole file, which also catches style
+//    <style> blocks, plus string literals that are exactly a colour in their
+//    <script> blocks. .ts files: the whole file, which also catches style
 //    objects such as `{ color: '#' + 'fff' }` written literally, plus any
 //    string literal that is exactly a colour. Strings like `'#bootstrap='` never match:
 //    the literal must be 3, 4, 6 or 8 hex digits and nothing else.
@@ -54,6 +55,11 @@ export function findColourLiterals(name: string, text: string): string[] {
       const start = (m.index ?? 0) + m[0].indexOf(m[1]);
       for (const [i, lit] of cssColours(stripComments(m[1]))) hits.push([start + i, lit]);
     }
+    // A colour string in component script (e.g. later fed to setProperty).
+    for (const m of text.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g)) {
+      const start = (m.index ?? 0) + m[0].indexOf(m[1]);
+      for (const q of m[1].matchAll(QUOTED)) hits.push([start + (q.index ?? 0) + 1, q[2]]);
+    }
   } else if (name.endsWith('.ts')) {
     hits.push(...cssColours(text));
     for (const m of text.matchAll(QUOTED)) hits.push([(m.index ?? 0) + 1, m[2]]);
@@ -85,12 +91,16 @@ describe('colour-literal heuristic', () => {
     ).toEqual([`4: ${H}22333a`]);
     expect(findColourLiterals('a.ts', `const t = { color: '${H}abcdef' };`)).toEqual([`1: ${H}abcdef`]);
     expect(findColourLiterals('a.ts', `const c = "${H}123";`)).toEqual([`1: ${H}123`]);
+    expect(
+      findColourLiterals('a.svelte', `<script lang="ts">\n  const c = '${H}aabbcc';\n</script>\n<p>x</p>`),
+    ).toEqual([`2: ${H}aabbcc`]);
   });
 
   it('ignores id selectors, fragments and non-style markup', () => {
     expect(findColourLiterals('a.css', `${H}app { margin: 0; }\n${H}fff, ${H}add > b { color: red; }`)).toEqual([]);
     expect(findColourLiterals('a.ts', `if (location.hash.includes('${H}bootstrap=')) go('${H}cafe-route');`)).toEqual([]);
     expect(findColourLiterals('a.svelte', `<a data-x="${H}fff">${H}fff</a>`)).toEqual([]);
+    expect(findColourLiterals('a.svelte', `<script>\n  go('${H}bootstrap=');\n</script>`)).toEqual([]);
     expect(findColourLiterals('a.css', `/* was ${H}fff; */ a { color: var(--fg); }`)).toEqual([]);
   });
 });

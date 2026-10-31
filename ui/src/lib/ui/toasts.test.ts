@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { flushSync, mount, unmount } from 'svelte';
+import Toast from './Toast.svelte';
 import { toasts } from './toasts.svelte';
 
 describe('toasts', () => {
@@ -55,5 +57,31 @@ describe('toasts', () => {
     expect(toasts.items.map((t) => t.text)).toEqual(['Y']);
     vi.advanceTimersByTime(4000);
     expect(toasts.items).toHaveLength(0);
+  });
+});
+
+describe('Toast outlet', () => {
+  let cleanup: (() => void) | undefined;
+  afterEach(() => {
+    cleanup?.();
+    cleanup = undefined;
+    toasts.clear();
+    document.body.replaceChildren();
+  });
+
+  it('announces errors with role="alert" and others in a polite status region', () => {
+    const c = mount(Toast, { target: document.body });
+    cleanup = () => unmount(c);
+    toasts.push({ kind: 'info', text: 'Copied URL' });
+    toasts.push({ kind: 'error', text: '<b>Send failed</b>' });
+    flushSync();
+    const alerts = document.querySelectorAll('[role="alert"]');
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0].textContent).toContain('<b>Send failed</b>');
+    expect(document.querySelector('b')).toBeNull();
+    const status = document.querySelector('[role="status"]')!;
+    expect(status.getAttribute('aria-live')).toBe('polite');
+    expect(status.textContent).toContain('Copied URL');
+    expect(status.textContent).not.toContain('Send failed');
   });
 });

@@ -148,6 +148,9 @@
         close();
         break;
       case 'Tab':
+        // Hand focus to the anchor first so the native Tab moves on from
+        // there instead of from <body> once the focused item unmounts.
+        restoreFocus();
         onclose();
         return;
       default:

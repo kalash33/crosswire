@@ -62,8 +62,7 @@
     data-testid="status-intercept"
     data-enabled={intercept.loaded ? intercept.enabled : ''}
   >
-    <span class="dot" aria-hidden="true"></span>Intercept {intercept.loaded ? (intercept.enabled ? 'ON' : 'OFF') : '…'}{#if intercept.held.length > 0}
-      ({intercept.held.length} held){/if}
+    <span class="dot" aria-hidden="true"></span>Intercept {intercept.loaded ? (intercept.enabled ? 'ON' : 'OFF') : '…'}{#if intercept.held.length > 0}{` (${intercept.held.length} held)`}{/if}
   </span>
   <button
     type="button"

@@ -17,6 +17,7 @@ export type IconName =
   | 'close'
   | 'search'
   | 'filter'
+  | 'chevron'
   | 'chevron-down'
   | 'chevron-right'
   | 'play'
@@ -31,7 +32,10 @@ export type IconName =
   | 'keyboard'
   | 'external'
   | 'check'
-  | 'warning';
+  | 'warning'
+  | 'info';
+
+const CHEVRON_DOWN = ['M4 6l4 4 4-4'];
 
 const circle = (cx: number, cy: number, r: number) =>
   `M${cx - r} ${cy}a${r} ${r} 0 1 0 ${2 * r} 0a${r} ${r} 0 1 0 ${-2 * r} 0z`;
@@ -50,7 +54,9 @@ export const ICONS: Readonly<Record<IconName, readonly string[]>> = {
   close: ['M4 4l8 8M12 4l-8 8'],
   search: [circle(7, 7, 4.5), 'M10.25 10.25 14 14'],
   filter: ['M2 3h12L9.5 8.5v4.75l-3-1.5V8.5z'],
-  'chevron-down': ['M4 6l4 4 4-4'],
+  // `chevron` is the spec's name; it is an alias of chevron-down.
+  chevron: CHEVRON_DOWN,
+  'chevron-down': CHEVRON_DOWN,
   'chevron-right': ['M6 4l4 4-4 4'],
   play: ['M5 3l8 5-8 5z'],
   pause: ['M5.5 3.5v9M10.5 3.5v9'],
@@ -69,4 +75,5 @@ export const ICONS: Readonly<Record<IconName, readonly string[]>> = {
   external: ['M9.5 2.5h4v4', 'M13.5 2.5 7.5 8.5', 'M11.75 9.5v4h-9.25V4.25h4'],
   check: ['M3 8.5l3 3 7-7'],
   warning: ['M8 2 14.5 13.5h-13z', 'M8 6.5v3', 'M8 11.5h.01'],
+  info: [circle(8, 8, 5.75), 'M8 7.25v3.75', 'M8 5h.01'],
 };
