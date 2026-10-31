@@ -2,16 +2,16 @@
   // The Headers/Raw/Hex choice per side outlives a row switch (the detail is
   // re-created for every exchange), so it lives at module level.
   type View = 'headers' | 'raw' | 'hex';
+  // A narrow pane shows one message at a time; the response is the default.
   const views = $state<{ req: View; resp: View; side: 'req' | 'resp' }>({
     req: 'raw',
     resp: 'raw',
-    side: 'req',
+    side: 'resp',
   });
 </script>
 
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { MediaQuery } from 'svelte/reactivity';
   import CopyDropdown from './CopyDropdown.svelte';
   import TagsNotesEditor from './TagsNotesEditor.svelte';
   import HeadersTable from './HeadersTable.svelte';
@@ -55,9 +55,13 @@
   let previewUrl = $state<string | null>(null);
   let previewError = $state<string | null>(null);
 
-  // Both messages need room: from 1280px they share the pane in a resizable
-  // column split; below that a Request | Response switch shows one at a time.
-  const wide = new MediaQuery('min-width: 1280px');
+  // The layout follows the DETAIL PANE's own width (bind:clientWidth uses a
+  // ResizeObserver), not the window: from 760px the two messages sit side by
+  // side, each the full height; below that a Request | Response switch shows
+  // one at a time, also at full height.
+  const SIDE_BY_SIDE_PX = 760;
+  let paneWidth = $state(0);
+  const wide = $derived(paneWidth >= SIDE_BY_SIDE_PX);
 
   onMount(() => copyStatus.clear());
 
@@ -263,14 +267,7 @@
       onselect={(v) => (views[side] = v as View)}
     />
     <span class="spacer"></span>
-    {#if side === 'req'}
-      <CopyDropdown
-        {id}
-        row={row ? { host: row.host, path: row.path } : null}
-        chords={true}
-        showStatus={true}
-      />
-    {:else if body && !body.absent && !body.error}
+    {#if side === 'resp' && body && !body.absent && !body.error}
       <Button size="sm" icon="external" data-testid="preview-button" onclick={openPreview}>Preview</Button>
     {/if}
   </div>
@@ -353,7 +350,7 @@
   {/if}
 {/snippet}
 
-<section class="detail" data-testid="exchange-detail">
+<section class="detail" data-testid="exchange-detail" bind:clientWidth={paneWidth}>
   {#if loadError}
     <p class="error" data-testid="detail-error" role="alert">{loadError}</p>
   {:else if !exchange}
@@ -365,6 +362,12 @@
           <span class="method">{titleMethod}</span>
           <span class="path">{titlePath}</span>
         </h2>
+        <CopyDropdown
+          {id}
+          row={row ? { host: row.host, path: row.path } : null}
+          chords={true}
+          showStatus={true}
+        />
         <Button
           size="sm"
           variant="ghost"
@@ -395,8 +398,8 @@
     </header>
 
     <div class="sides">
-      {#if wide.current}
-        <Splitter direction="column" storageKey="history-messages" min={[120, 120]} label="Resize request and response">
+      {#if wide}
+        <Splitter direction="row" storageKey="history-messages" min={[300, 300]} label="Resize request and response">
           {#snippet a()}{@render requestPane()}{/snippet}
           {#snippet b()}{@render responsePane()}{/snippet}
         </Splitter>

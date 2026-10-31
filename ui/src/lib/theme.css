@@ -38,6 +38,8 @@
   --accent-fg: #0b1416;
   --accent-soft: #4fb3bf24;
   --selection: #4fb3bf1f;
+  /* The open History row: clearly visible, still lets badges read. */
+  --row-selected: #4fb3bf3d;
   --focus: #7fd0da;
 
   /* Semantic */
@@ -148,6 +150,7 @@
   --accent-fg: #ffffff;
   --accent-soft: #137a861f;
   --selection: #137a861a;
+  --row-selected: #137a862b;
   --focus: #1590a0;
 
   --ok: #277a42;

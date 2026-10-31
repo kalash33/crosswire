@@ -6,7 +6,7 @@
   import ExchangeDetail from '../lib/components/ExchangeDetail.svelte';
   import SelectionToolbar from '../lib/components/SelectionToolbar.svelte';
   import RowContextMenu from '../lib/components/RowContextMenu.svelte';
-  import type { RowActions } from '../lib/components/row-actions';
+  import { actionTarget, type RowActions } from '../lib/components/row-actions';
   import { scope } from '../lib/stores/scope.svelte';
   import { hostRule } from '../lib/components/scope-rows';
   import { keymap } from '../lib/keymap';
@@ -161,9 +161,10 @@
 
   const rowById = (id: string | null): Row | null => (id ? (history.rows.find((r) => r.id === id) ?? null) : null);
   const selectedRow = $derived(rowById(selectedId));
-  // The toolbar acts on the opened row; with none open, on the focused row.
-  const targetId = $derived(selectedId ?? focusedId);
-  const targetRow = $derived(rowById(targetId));
+  // One action target for the toolbar AND the Ctrl+R chord: the focused row,
+  // then the opened row. The toolbar names it when it is not the open row.
+  const target = $derived(actionTarget(focusedId, selectedId, sortedRows));
+  const targetRow = $derived(rowById(target.id));
 
   // ---- Row actions (selection toolbar + context menu) ------------------------
   function hostInScope(host: string): boolean {
@@ -321,8 +322,7 @@
     void connection.load();
     void history.applyFilter({}).finally(() => (firstLoadDone = true));
     const off = keymap.register('send-to-repeater', () => {
-      const id = focusedId ?? selectedId;
-      if (id) void sendToRepeater(id);
+      if (target.id) void sendToRepeater(target.id);
     });
     return off;
   });
@@ -534,7 +534,7 @@
                     onclick={() => openRow(row.id)}>{row.resp_len === null ? '' : humanBytes(row.resp_len)}</td
                   >
                   <td class="open" onclick={() => openRow(row.id)}><Badge kind="state" value={row.state} /></td>
-                  <td class="tags">
+                  <td class="tags" title={row.tags.join(', ')}>
                     <span class="chips">{#each row.tags as tag (tag)}<Chip>{tag}</Chip>{/each}</span>
                   </td>
                 </tr>
@@ -564,16 +564,18 @@
       {/snippet}
       {#snippet b()}
         <aside class="detail-pane" data-testid="history-detail">
-          {#if targetId}
+          {#if target.id}
             <SelectionToolbar
-              id={targetId}
+              id={target.id}
               row={targetRow}
-              actions={actionsFor(targetId)}
+              actions={actionsFor(target.id)}
               busy={sending}
-              showTarget={targetId !== selectedId}
+              showTarget={target.differs}
+              index={target.index}
             />
           {/if}
-          <div class="detail-body">
+          <!-- Focus entering the open exchange makes it the action target again. -->
+          <div class="detail-body" onfocusin={() => (focusedId = selectedId)}>
             {#if selectedId}
               {#key `${selectedId}-${detailEpoch}`}
                 <ExchangeDetail bind:this={detail} id={selectedId} row={selectedRow} />
@@ -762,7 +764,7 @@
     background: var(--accent-soft);
   }
   tr.selected td {
-    background: var(--selection);
+    background: var(--row-selected);
   }
   tr.selected td:first-child {
     box-shadow: inset 2px 0 0 var(--accent);
@@ -775,8 +777,18 @@
     margin-right: var(--s-1);
   }
   .chips {
-    display: inline-flex;
+    display: flex;
     gap: var(--s-1);
+    min-width: 0;
+    overflow: hidden;
+  }
+  /* Chips shrink and ellipsize (Chip's text already clips with an ellipsis). */
+  .chips :global(.chip) {
+    flex: 0 1 auto;
+    min-width: 0;
+  }
+  .chips :global(.chip .text) {
+    min-width: 0;
   }
   .empty {
     color: var(--fg-faint);

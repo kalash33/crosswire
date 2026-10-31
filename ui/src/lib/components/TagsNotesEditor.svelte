@@ -3,6 +3,7 @@
   import { onDestroy, untrack } from 'svelte';
   import { patchExchange } from '../api/exchanges';
   import { addTag } from '../tags';
+  import { trackTagSave } from '../stores/tag-saves';
 
   type Saved = { id: string; tags?: string[]; notes?: string };
 
@@ -114,18 +115,22 @@
     saveError = null;
     lane.next = { v: next };
     if (lane.busy) return;
-    void drain(
-      lane,
-      (v) => patchExchange(savedId, { tags: v }),
-      (v) => {
-        if (!lane.stale) tagServer = v;
-        onSaved({ id: savedId, tags: v });
-      },
-      (_v, e) => {
-        localTags = tagServer;
-        saveError = e instanceof Error ? e.message : 'failed to save tags';
-        toasts.push({ kind: 'error', text: `Tags not saved: ${saveError}` });
-      },
+    // Tracked so a bulk tag run waits for this lane before reading the tags.
+    trackTagSave(
+      savedId,
+      drain(
+        lane,
+        (v) => patchExchange(savedId, { tags: v }),
+        (v) => {
+          if (!lane.stale) tagServer = v;
+          onSaved({ id: savedId, tags: v });
+        },
+        (_v, e) => {
+          localTags = tagServer;
+          saveError = e instanceof Error ? e.message : 'failed to save tags';
+          toasts.push({ kind: 'error', text: `Tags not saved: ${saveError}` });
+        },
+      ),
     );
   }
 
@@ -214,7 +219,7 @@
     data-testid="notes-input"
     placeholder="notes"
     aria-label="notes"
-    rows="2"
+    rows="1"
     value={localNotes}
     oninput={onNotesInput}
     onblur={saveNotes}
@@ -255,11 +260,22 @@
     font-size: 0.75rem;
     width: 8rem;
   }
+  /* One line until focused, so the messages below keep the height. */
   .notes {
     width: 100%;
+    height: 28px;
     font-size: 0.8rem;
-    resize: vertical;
+    resize: none;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
     box-sizing: border-box;
+  }
+  .notes:focus {
+    height: 5.5em;
+    resize: vertical;
+    overflow: auto;
+    white-space: pre-wrap;
   }
   .error {
     margin: 0;

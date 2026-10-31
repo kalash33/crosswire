@@ -31,10 +31,24 @@ function splitHost(raw: string): { host: string; port: number | null } {
   return { host: raw, port: null };
 }
 
+const ABSOLUTE_FORM = /^[a-z][a-z0-9+.-]*:\/\//i;
+
+/**
+ * True when a URL can be built: an absolute-form target, or an origin-form
+ * target (starts with "/") with a known host. Asterisk-form (`*`) and
+ * authority-form (`host:port`, CONNECT) targets have no URL to copy.
+ */
+export function canCopyUrl(src: UrlSource | null | undefined): boolean {
+  if (!src) return false;
+  const path = src.path ?? '';
+  if (ABSOLUTE_FORM.test(path)) return true;
+  return path.startsWith('/') && (src.host ?? '') !== '';
+}
+
 export function urlFor(src: UrlSource): string {
   const path = src.path ?? '';
   // An absolute-form request target already is the whole URL.
-  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(path)) return path;
+  if (ABSOLUTE_FORM.test(path)) return path;
   const { host, port: hostPort } = splitHost(src.host ?? '');
   const port = src.port && src.port > 0 ? src.port : hostPort;
   const tls = typeof src.tls === 'boolean' ? src.tls : port === 443;

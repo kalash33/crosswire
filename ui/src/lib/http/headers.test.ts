@@ -14,18 +14,23 @@ describe('parseHeadLines', () => {
     expect(r.malformed).toEqual([]);
   });
 
-  it('accepts bare LF and lone CR line ends', () => {
+  it('accepts bare LF line ends', () => {
     expect(parseHeadLines(enc('HTTP/1.1 200 OK\nA: 1\nB: 2\n\n')).headers.map((h) => h.name)).toEqual(['A', 'B']);
-    const cr = parseHeadLines(enc('HTTP/1.1 200 OK\rA: 1\rB: 2\r\r'));
-    expect(cr.start).toBe('HTTP/1.1 200 OK');
-    expect(cr.headers).toEqual([
-      { name: 'A', value: '1' },
-      { name: 'B', value: '2' },
+  });
+
+  it('keeps a lone CR inside the line, shown as U+240D, never as a new header', () => {
+    const r = parseHeadLines(enc('GET /a HTTP/1.1\r\nX-A: one\rX-Smuggle: two\r\nHost: a\r\n\r\n'));
+    expect(r.headers).toEqual([
+      { name: 'X-A', value: 'one\u240dX-Smuggle: two' },
+      { name: 'Host', value: 'a' },
     ]);
+    expect(parseHeadLines(enc('HTTP/1.1 200 OK\rA: 1\r\n\r\n')).start).toBe('HTTP/1.1 200 OK\u240dA: 1');
+    expect(parseHeadLines(enc('S\r\nnope\rx\r\n\r\n')).malformed).toEqual(['nope\u240dx']);
   });
 
   it('never renders CR or LF in any output string', () => {
     const r = parseHeadLines(enc('GET /\r HTTP/1.1\r\nX: a\rb\r\n\tfold\r\n\r\n'));
+    expect(r.headers).toHaveLength(1);
     const all = [r.start, ...r.headers.flatMap((h) => [h.name, h.value]), ...r.malformed].join('|');
     expect(all).not.toMatch(/[\r\n]/);
   });

@@ -14,7 +14,7 @@
     onclose,
   }: {
     id: string;
-    row: UrlSource | null;
+    row: (UrlSource & { status?: number | null }) | null;
     open: boolean;
     anchor: { x: number; y: number } | HTMLElement | null;
     actions: RowActions;

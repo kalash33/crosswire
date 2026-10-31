@@ -199,5 +199,109 @@ describe('history store', () => {
     await h.applyFilter({});
     expect(h.bulkAddHosts(['A', 'B', 'C', 'D', 'ZZ'])).toEqual(['b.test', 'a.test']);
   });
+
+  it('bulkTag reports an id with no loaded row as failed and never PATCHes it from []', async () => {
+    const patch = vi.fn().mockResolvedValue(undefined);
+    const getExchange = vi.fn();
+    const h = createHistory({ get: vi.fn().mockResolvedValue(page([row('A')])), subscribe: noSub, patch, getExchange });
+    await h.applyFilter({});
+    const res = await h.bulkTag(['GONE', 'A'], 't');
+    expect(res.failed).toEqual([{ id: 'GONE', error: 'row no longer loaded; reload and retry' }]);
+    expect(res.ok).toEqual(['A']);
+    expect(patch.mock.calls.map((c) => c[0])).toEqual(['A']);
+    expect(getExchange).not.toHaveBeenCalled();
+  });
+
+  it('bulkTag snapshots tags before the first await, so a row trimmed mid-run keeps its tags', async () => {
+    let emit: (e: Event) => void = () => {};
+    const subscribe = (onEvent: (e: Event) => void) => {
+      emit = onEvent;
+      return () => {};
+    };
+    const get = vi.fn().mockResolvedValue(page([row('A'), row('B', { tags: ['keep'] })]));
+    const patch = vi.fn(async (id: string) => {
+      // A live flood during the first PATCH pushes B out of the 2-row cap.
+      if (id === 'A') {
+        emit({ type: 'received', id: 'N1' } as Event);
+        emit({ type: 'received', id: 'N2' } as Event);
+      }
+    });
+    const h = createHistory({ get, subscribe, patch, maxRows: 2 });
+    await h.applyFilter({});
+    const res = await h.bulkTag(['A', 'B'], 't');
+    expect(h.rows.some((r) => r.id === 'B')).toBe(false);
+    expect(patch.mock.calls).toEqual([
+      ['A', { tags: ['t'] }],
+      ['B', { tags: ['keep', 't'] }],
+    ]);
+    expect(res.ok).toEqual(['A', 'B']);
+  });
+
+  it('bulkTag reads a placeholder/uncommitted row from the server before PATCHing it', async () => {
+    const order: string[] = [];
+    const get = vi.fn().mockResolvedValue(
+      page([row('A', { tags: ['a'] }), row('P', { method: null, state: 'received' }), row('C', { tags: ['c'] })]),
+    );
+    const getExchange = vi.fn(async (id: string) => {
+      order.push(`get:${id}`);
+      return { tags: ['server-only'] };
+    });
+    const patch = vi.fn(async (id: string, body: unknown) => {
+      order.push(`patch:${id}:${JSON.stringify(body)}`);
+    });
+    const h = createHistory({ get, subscribe: noSub, patch, getExchange });
+    await h.applyFilter({});
+    const res = await h.bulkTag(['A', 'P', 'C'], 'n');
+    expect(order).toEqual([
+      'patch:A:{"tags":["a","n"]}',
+      'get:P',
+      'patch:P:{"tags":["server-only","n"]}',
+      'patch:C:{"tags":["c","n"]}',
+    ]);
+    expect(res.ok).toEqual(['A', 'P', 'C']);
+  });
+
+  it('bulkTag fails (without PATCH) a placeholder whose server read fails', async () => {
+    const patch = vi.fn().mockResolvedValue(undefined);
+    const getExchange = vi.fn().mockRejectedValue(new Error('offline'));
+    const h = createHistory({
+      get: vi.fn().mockResolvedValue(page([row('P', { method: null, state: 'received' })])),
+      subscribe: noSub,
+      patch,
+      getExchange,
+    });
+    await h.applyFilter({});
+    const res = await h.bulkTag(['P'], 'n');
+    expect(res).toEqual({ ok: [], failed: [{ id: 'P', error: 'could not read current tags: offline' }] });
+    expect(patch).not.toHaveBeenCalled();
+  });
+
+  it('bulkTag waits for an in-flight editor tag save, then re-reads that exchange', async () => {
+    const order: string[] = [];
+    let release: () => void = () => {};
+    const saving = new Promise<void>((r) => (release = r));
+    const h = createHistory({
+      get: vi.fn().mockResolvedValue(page([row('A', { tags: ['old'] })])),
+      subscribe: noSub,
+      patch: async (id, body) => void order.push(`patch:${id}:${JSON.stringify(body)}`),
+      getExchange: async () => {
+        order.push('get');
+        return { tags: ['old', 'typed'] };
+      },
+      savePending: (id) => id === 'A',
+      saveSettled: async () => {
+        order.push('wait');
+        await saving;
+        order.push('settled');
+      },
+    });
+    await h.applyFilter({});
+    const run = h.bulkTag(['A'], 'bulk');
+    await Promise.resolve();
+    expect(order).toEqual(['wait']);
+    release();
+    await run;
+    expect(order).toEqual(['wait', 'settled', 'get', 'patch:A:{"tags":["old","typed","bulk"]}']);
+  });
 });
 

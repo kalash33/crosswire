@@ -41,7 +41,7 @@
       >
     </div>
   {/if}
-  <HexPane bytes={slice} base={win.start} />
+  <div class="dump"><HexPane bytes={slice} base={win.start} /></div>
 </div>
 
 <style>
@@ -50,6 +50,24 @@
     flex-direction: column;
     gap: var(--s-2);
     min-width: 0;
+  }
+  /* A row is ~75 columns: a smaller face, and horizontal scroll inside the
+     window (never clipping the ASCII gutter) when the pane is narrower. */
+  .dump {
+    overflow-x: auto;
+    min-width: 0;
+  }
+  .dump :global(.hex-pane) {
+    width: max-content;
+    min-width: 100%;
+    font-size: var(--fs-xs);
+  }
+  /* Tighter gutters: a 16-byte row fits in ~430px (the 1280px detail pane). */
+  .dump :global(.hex-row) {
+    gap: var(--s-2);
+  }
+  .dump :global(.hex-cells) {
+    gap: 0.25em;
   }
   .pager {
     display: flex;

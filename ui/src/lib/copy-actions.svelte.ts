@@ -7,7 +7,7 @@
 import { apiGet } from './api/client';
 import { curl, raw } from './api/copy';
 import { bytesToLatin1 } from './editor/encoding';
-import { connFacts, urlFor, type UrlSource } from './copy-url';
+import { canCopyUrl, connFacts, urlFor, type UrlSource } from './copy-url';
 import { keymap, type Action } from './keymap';
 import { toasts } from './ui/toasts.svelte';
 import type { MenuItem } from './ui/Menu.svelte';
@@ -79,9 +79,12 @@ export function chordLabel(action: Action): string | undefined {
     .join('+');
 }
 
-/** The five copy items, with the testids the e2e specs use. */
+/**
+ * The copy items, with the testids the e2e specs use. Copy URL is left out
+ * when the target has no URL (no host, or an asterisk/authority-form target).
+ */
 export function copyItems(id: string, row: UrlSource | null): MenuItem[] {
-  return [
+  const items: MenuItem[] = [
     {
       label: 'Copy as curl',
       icon: 'copy',
@@ -105,13 +108,9 @@ export function copyItems(id: string, row: UrlSource | null): MenuItem[] {
       testid: 'copy-request-raw-redacted',
       onselect: () => void copyExchange(id, 'raw', true),
     },
-    {
-      label: 'Copy URL',
-      testid: 'copy-url',
-      disabled: row === null,
-      onselect: () => {
-        if (row) void copyUrl(id, row);
-      },
-    },
   ];
+  if (row && canCopyUrl(row)) {
+    items.push({ label: 'Copy URL', testid: 'copy-url', onselect: () => void copyUrl(id, row) });
+  }
+  return items;
 }

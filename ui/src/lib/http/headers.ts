@@ -2,10 +2,12 @@
 //
 // The bytes are NOT decoded: each byte maps 1:1 to a code point through the
 // Latin-1 mapping (bytesToLatin1), so 0x80-0xFF show as their Latin-1 glyphs
-// and nothing is guessed. Lines end at CRLF, a bare LF or a lone CR, so no CR
-// or LF ever reaches an output string. Parsing stops at the first empty line
-// (the end of the head). Never throws: anything it cannot classify is listed
-// in `malformed` rather than dropped.
+// and nothing is guessed. Lines end at CRLF or a bare LF only, as an RFC 9112
+// parser sees them: a lone CR is NOT a line end (splitting there would invent
+// a header no server parses, e.g. `X-A: one\rX-Smuggle: two`). It stays in the
+// line text and is shown as U+240D, so no raw CR or LF ever reaches an output
+// string. Parsing stops at the first empty line (the end of the head). Never
+// throws: anything it cannot classify is listed in `malformed`, not dropped.
 
 import { bytesToLatin1 } from '../editor/encoding';
 
@@ -27,7 +29,9 @@ const OWS = /^[ \t]+|[ \t]+$/g;
 export function parseHeadLines(bytes: Uint8Array): HeadLines {
   const out: HeadLines = { start: '', headers: [], malformed: [] };
   if (bytes.length === 0) return out;
-  const lines = bytesToLatin1(bytes).split(/\r\n|\n|\r/);
+  const lines = bytesToLatin1(bytes)
+    .split(/\r\n|\n/)
+    .map(visibleLineBreaks);
   out.start = lines[0] ?? '';
   for (let i = 1; i < lines.length; i++) {
     const line = lines[i];

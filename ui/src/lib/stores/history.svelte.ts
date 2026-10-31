@@ -15,6 +15,7 @@ import { apiGet, type QueryParams } from '../api/client';
 import { patchExchange } from '../api/exchanges';
 import type { PatchBody } from '../api/types';
 import { addTag } from '../tags';
+import { tagSavePending, tagSavesSettled } from './tag-saves';
 import { events, type Event } from './events.svelte';
 
 /** One history row, exactly the fields alpha.2 provides (no mime/tls/ms). */
@@ -70,6 +71,11 @@ export interface HistoryOptions {
   maxRows?: number;
   /** Injectable `PATCH /exchanges/{id}` (defaults to the API helper). */
   patch?: (id: string, body: PatchBody) => Promise<void>;
+  /** Injectable `GET /exchanges/{id}` for a row whose tags are not trusted. */
+  getExchange?: (id: string) => Promise<{ tags?: string[] }>;
+  /** Injectable "is a detail-editor tag save in flight" check and wait. */
+  savePending?: (id: string) => boolean;
+  saveSettled?: (id: string) => Promise<void>;
 }
 
 /** The outcome of a bulk tag: ids saved, and ids that failed with the reason. */
@@ -106,6 +112,10 @@ export function createHistory(opts: HistoryOptions = {}) {
   const pageSize = opts.pageSize ?? 100;
   const maxRows = opts.maxRows ?? 5_000;
   const patch = opts.patch ?? patchExchange;
+  const getExchange =
+    opts.getExchange ?? ((id: string) => get<{ tags?: string[] }>(`${EXCHANGES}/${encodeURIComponent(id)}`));
+  const savePending = opts.savePending ?? tagSavePending;
+  const saveSettled = opts.saveSettled ?? tagSavesSettled;
 
   let rows = $state<Row[]>([]);
   let activeFilter = $state<ExchangeFilter>({});
@@ -224,19 +234,51 @@ export function createHistory(opts: HistoryOptions = {}) {
     },
     /**
      * Add `tag` to every id, one PATCH at a time in the given order. The PATCH
-     * REPLACES the whole tag list, so each list is the row's current tags plus
-     * the new one (deduped). A failure is recorded and the run continues. An
-     * invalid tag (empty, too long, control characters) throws before any
-     * request.
+     * REPLACES the whole tag list, so a list is only ever built from tags we
+     * trust:
+     *  - every target's tags are snapshotted BEFORE the first await, so a row
+     *    trimmed by the live-row cap mid-run still gets its own tags;
+     *  - an id with no loaded row is reported failed (never PATCHed from []);
+     *  - a live placeholder / uncommitted row, or one whose detail editor has a
+     *    tag save in flight (after waiting for it), is read from the server
+     *    first, and fails if that read fails.
+     * The new tag is appended and the list deduped. A failure is recorded and
+     * the run continues. An invalid tag throws before any request.
      */
     async bulkTag(ids: readonly string[], tag: string): Promise<BulkTagResult> {
       const probe = addTag([], tag);
       if (!probe.ok) throw new Error(probe.error);
       const clean = probe.tags[0];
+      const plan = ids.map((id) => {
+        const r = rows.find((x) => x.id === id);
+        return {
+          id,
+          tags: r ? [...r.tags] : null,
+          untrusted: r ? r.uncommitted || r.method === null : false,
+        };
+      });
       const res: BulkTagResult = { ok: [], failed: [] };
-      for (const id of ids) {
-        const found = rows.find((r) => r.id === id)?.tags ?? [];
-        const current = found.filter((t, i) => found.indexOf(t) === i);
+      for (const p of plan) {
+        const { id } = p;
+        if (p.tags === null) {
+          res.failed.push({ id, error: 'row no longer loaded; reload and retry' });
+          continue;
+        }
+        let base = p.tags;
+        let fetch = p.untrusted;
+        if (savePending(id)) {
+          await saveSettled(id);
+          fetch = true;
+        }
+        if (fetch) {
+          try {
+            base = (await getExchange(id)).tags ?? [];
+          } catch (e) {
+            res.failed.push({ id, error: `could not read current tags: ${e instanceof Error ? e.message : 'read failed'}` });
+            continue;
+          }
+        }
+        const current = base.filter((t, i) => base.indexOf(t) === i);
         let next: string[];
         if (current.includes(clean)) next = current;
         else {

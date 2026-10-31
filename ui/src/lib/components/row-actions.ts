@@ -13,8 +13,28 @@ export interface RowActions {
   preview: () => void;
 }
 
+/**
+ * The ONE target the toolbar buttons and the Ctrl+R chord act on: the focused
+ * row first (the keyboard loop), then the opened row. `differs` is true when
+ * that is not the row open in the detail, so the toolbar names it (`index` is
+ * its 1-based position in the table, 0 when it is not in `rows`).
+ */
+export function actionTarget(
+  focused: string | null,
+  opened: string | null,
+  rows: readonly { id: string }[],
+): { id: string | null; differs: boolean; index: number } {
+  const id = focused ?? opened;
+  if (id === null) return { id: null, differs: false, index: 0 };
+  return { id, differs: id !== opened, index: rows.findIndex((r) => r.id === id) + 1 };
+}
+
 /** Context-menu items for exchange `id` (labels are fixed text, never captured data). */
-export function rowMenuItems(id: string, row: UrlSource | null, a: RowActions): MenuItem[] {
+export function rowMenuItems(
+  id: string,
+  row: (UrlSource & { status?: number | null }) | null,
+  a: RowActions,
+): MenuItem[] {
   return [
     { label: 'Open', testid: 'row-menu-open', onselect: a.open },
     {
@@ -33,6 +53,12 @@ export function rowMenuItems(id: string, row: UrlSource | null, a: RowActions): 
       disabled: !row?.host,
       onselect: a.addHost,
     },
-    { label: 'Preview response', icon: 'external', testid: 'row-menu-preview', onselect: a.preview },
+    {
+      label: 'Preview response',
+      icon: 'external',
+      testid: 'row-menu-preview',
+      disabled: row?.status === null || row?.status === undefined,
+      onselect: a.preview,
+    },
   ];
 }
