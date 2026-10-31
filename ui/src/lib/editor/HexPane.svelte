@@ -2,7 +2,9 @@
   // A classic hex dump of the SAME bytes the editor holds: offset, up to 16 hex
   // columns, and a Latin-1/ASCII gutter. It reads the raw Uint8Array directly
   // (never a lossy string), so it matches the editor byte for byte.
-  let { bytes = new Uint8Array() }: { bytes?: Uint8Array } = $props();
+  // `base` is the offset of `bytes[0]` in a larger buffer, so a windowed page
+  // (e.g. the repeater's 64 KiB hex pages) shows true offsets.
+  let { bytes = new Uint8Array(), base = 0 }: { bytes?: Uint8Array; base?: number } = $props();
 
   const BYTES_PER_ROW = 16;
 
@@ -17,7 +19,7 @@
       const cells = Array.from(slice, hx);
       let ascii = '';
       for (const b of slice) ascii += b >= 0x20 && b <= 0x7e ? String.fromCharCode(b) : '.';
-      out.push({ offset: off.toString(16).padStart(8, '0'), cells, ascii });
+      out.push({ offset: (base + off).toString(16).padStart(8, '0'), cells, ascii });
     }
     return out;
   });

@@ -1,5 +1,16 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { createRepeater, toJson, fromJson, newTabId, type RepeaterApi, type RepeaterTab } from './repeater.svelte';
+import {
+  createRepeater,
+  toJson,
+  fromJson,
+  newTabId,
+  deriveTitle,
+  responseView,
+  hexWindow,
+  HEX_PAGE_BYTES,
+  type RepeaterApi,
+  type RepeaterTab,
+} from './repeater.svelte';
 import { ApiError } from '../api/errors';
 import { bytesToLatin1 } from '../editor/encoding';
 import type { SendOutcomeDto } from '../api/repeater';
@@ -267,5 +278,120 @@ describe('repeater store', () => {
     expect(tab.conn).toMatchObject({ host: 'h.test', port: 8443, tls: true, sni: 'sni.test' });
     expect(Array.from(tab.raw)).toEqual([...head, ...body]);
     expect(r.activeTabId).toBe(id);
+  });
+});
+
+const enc = (s: string) => latin1(s);
+function latin1(s: string): Uint8Array {
+  const out = new Uint8Array(s.length);
+  for (let i = 0; i < s.length; i++) out[i] = s.charCodeAt(i) & 0xff;
+  return out;
+}
+
+describe('tab titles', () => {
+  it('derives METHOD host from the request line and Host header', () => {
+    expect(deriveTitle(enc('GET / HTTP/1.1\r\nHost: example.com\r\n\r\n'), 1)).toBe('GET example.com');
+    // LF-only heads, header-name case and surrounding whitespace.
+    expect(deriveTitle(enc('POST /x HTTP/1.1\nhOsT:   api.test:8443  \n\n'), 1)).toBe('POST api.test:8443');
+  });
+
+  it('falls back to the method when there is no Host header', () => {
+    expect(deriveTitle(enc('GET / HTTP/1.1\r\nAccept: */*\r\n\r\n'), 2)).toBe('GET');
+  });
+
+  it('ignores a Host line in the body (after the blank line)', () => {
+    expect(deriveTitle(enc('GET / HTTP/1.1\r\n\r\nHost: body.test\r\n'), 1)).toBe('GET');
+  });
+
+  it('falls back to Tab N for an empty or unparseable draft', () => {
+    expect(deriveTitle(new Uint8Array(), 3)).toBe('Tab 3');
+    expect(deriveTitle(enc('\r\n\r\n'), 4)).toBe('Tab 4');
+  });
+
+  it('bounds a hostile Host value and keeps it as plain text', () => {
+    const t = deriveTitle(enc(`GET / HTTP/1.1\r\nHost: <img src=x onerror=alert(1)>${'a'.repeat(500)}\r\n\r\n`), 1);
+    expect(t.startsWith('GET <img src=x onerror=alert(1)>')).toBe(true);
+    expect(t.length).toBeLessThanOrEqual(80);
+  });
+
+  it('titleFor uses the draft and the tab position', () => {
+    const r = createRepeater({ api: mockApi() });
+    const a = r.newTab();
+    const b = r.newTab({ raw: enc('PUT /a HTTP/1.1\r\nHost: h.test\r\n\r\n') });
+    expect(r.titleFor(r.tabs.find((t) => t.id === a)!)).toBe('Tab 1');
+    expect(r.titleFor(r.tabs.find((t) => t.id === b)!)).toBe('PUT h.test');
+  });
+
+  it('an explicit rename sticks across draft edits; an empty rename reverts', () => {
+    const r = createRepeater({ api: mockApi() });
+    const id = r.newTab({ raw: enc('GET / HTTP/1.1\r\nHost: a.test\r\n\r\n') });
+    const tab = () => r.tabs.find((t) => t.id === id)!;
+    r.renameTab(id, '  login probe  ');
+    expect(r.titleFor(tab())).toBe('login probe');
+    r.setRaw(id, enc('POST / HTTP/1.1\r\nHost: b.test\r\n\r\n'));
+    expect(r.titleFor(tab())).toBe('login probe');
+    r.renameTab(id, '   ');
+    expect(r.titleFor(tab())).toBe('POST b.test');
+  });
+
+  it('the rename is in-memory only (not in the draft json)', () => {
+    const r = createRepeater({ api: mockApi() });
+    const id = r.newTab();
+    r.renameTab(id, 'x');
+    expect(toJson(r.tabs.find((t) => t.id === id)!)).not.toHaveProperty('title');
+  });
+});
+
+describe('response pane state', () => {
+  const base: RepeaterTab = {
+    id: 'T',
+    conn: { host: '', port: 80, tls: false, reuse: false, follow: 'off' },
+    mode: 'raw',
+    raw: new Uint8Array(),
+  };
+
+  it('is empty before the first send', () => {
+    expect(responseView(base)).toBe('empty');
+  });
+
+  it('is sending while a send is in flight with no prior result', () => {
+    expect(responseView({ ...base, sending: true })).toBe('sending');
+  });
+
+  it('shows the error when the send failed and there is no result', () => {
+    expect(responseView({ ...base, error: 'boom' })).toBe('error');
+  });
+
+  it('shows the result after a send (kept while re-sending)', async () => {
+    const r = createRepeater({ api: mockApi() });
+    const id = r.newTab();
+    const tab = () => r.tabs.find((t) => t.id === id)!;
+    expect(responseView(tab())).toBe('empty');
+    await r.send(id);
+    expect(responseView(tab())).toBe('result');
+    expect(responseView({ ...tab(), sending: true })).toBe('result');
+  });
+});
+
+describe('hex paging', () => {
+  it('pages are 64 KiB', () => {
+    expect(HEX_PAGE_BYTES).toBe(65536);
+  });
+
+  it('an empty buffer has one empty page', () => {
+    expect(hexWindow(0, 0)).toEqual({ page: 0, pages: 1, start: 0, end: 0 });
+  });
+
+  it('a 2 MB buffer is windowed, never whole', () => {
+    const n = 2 * 1024 * 1024 + 5;
+    expect(hexWindow(n, 0)).toEqual({ page: 0, pages: 33, start: 0, end: 65536 });
+    expect(hexWindow(n, 32)).toEqual({ page: 32, pages: 33, start: 32 * 65536, end: n });
+  });
+
+  it('clamps out-of-range and non-integer pages', () => {
+    expect(hexWindow(100, -3).page).toBe(0);
+    expect(hexWindow(100, 9)).toEqual({ page: 0, pages: 1, start: 0, end: 100 });
+    expect(hexWindow(65536 * 2, 1.7).page).toBe(1);
+    expect(hexWindow(65536 * 2, Number.NaN).page).toBe(0);
   });
 });

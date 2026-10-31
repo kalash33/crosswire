@@ -46,6 +46,8 @@ export interface RepeaterTab {
   /** Last draft-autosave failure; independent of `error`. */
   saveError?: string;
   sending?: boolean;
+  /** Explicit user rename (in-memory only, never persisted). Wins over the derived title. */
+  title?: string;
 }
 
 export interface TabSeed {
@@ -92,6 +94,69 @@ export function newTabId(): string {
   let rand = '';
   for (let i = 0; i < 16; i++) rand += CROCKFORD[rnd[i] & 31];
   return time + rand;
+}
+
+// ---- tab titles ----
+
+/** Only the head is scanned for a title; a huge body is never decoded. */
+const TITLE_SCAN_BYTES = 8192;
+const TITLE_MAX = 80;
+const METHOD_RE = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
+
+/**
+ * `METHOD host` from the draft's request line and Host header, read as
+ * Latin-1 (1:1 bytes, no decoding). No Host header gives the method alone;
+ * no request line gives `Tab N`. The value is captured data: callers render
+ * it as text only. Bounded to TITLE_MAX characters.
+ */
+export function deriveTitle(raw: Uint8Array, n: number): string {
+  const head = bytesToLatin1(raw.subarray(0, TITLE_SCAN_BYTES));
+  const lines = head.split(/\r?\n/);
+  const method = (lines[0] ?? '').trim().split(/\s+/)[0] ?? '';
+  if (!method || !METHOD_RE.test(method)) return `Tab ${n}`;
+  let host = '';
+  for (let i = 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (line === '' || line === '\r') break; // end of head
+    const colon = line.indexOf(':');
+    if (colon > 0 && line.slice(0, colon).trim().toLowerCase() === 'host') {
+      host = line.slice(colon + 1).trim();
+      break;
+    }
+  }
+  const title = host ? `${method} ${host}` : method;
+  return title.length > TITLE_MAX ? `${title.slice(0, TITLE_MAX - 1)}…` : title;
+}
+
+// ---- response pane ----
+
+export type ResponseView = 'empty' | 'sending' | 'error' | 'result';
+
+/** What the response pane shows. A previous result stays visible while re-sending. */
+export function responseView(tab: RepeaterTab): ResponseView {
+  if (tab.outcome) return 'result';
+  if (tab.sending) return 'sending';
+  if (tab.error) return 'error';
+  return 'empty';
+}
+
+/** Hex view page size: the pane never renders more than this many bytes. */
+export const HEX_PAGE_BYTES = 64 * 1024;
+
+export interface HexWindow {
+  page: number;
+  pages: number;
+  start: number;
+  end: number;
+}
+
+/** The byte window for `page` of a `length`-byte buffer, clamped to valid pages. */
+export function hexWindow(length: number, page: number): HexWindow {
+  const len = Math.max(0, Math.floor(length) || 0);
+  const pages = Math.max(1, Math.ceil(len / HEX_PAGE_BYTES));
+  const p = Math.min(pages - 1, Math.max(0, Math.floor(page) || 0));
+  const start = p * HEX_PAGE_BYTES;
+  return { page: p, pages, start, end: Math.min(len, start + HEX_PAGE_BYTES) };
 }
 
 // ---- tab <-> draft json ----
@@ -240,6 +305,21 @@ export function createRepeater(opts: RepeaterOptions = {}) {
     schedule(id);
   }
 
+  /** The tab-strip title: an explicit rename, else derived from the draft. */
+  function titleFor(tab: RepeaterTab): string {
+    if (tab.title) return tab.title;
+    const i = tabs.findIndex((t) => t.id === tab.id);
+    return deriveTitle(tab.raw, (i < 0 ? tabs.length : i) + 1);
+  }
+
+  /** Rename a tab locally (not persisted). A blank name reverts to the derived title. */
+  function renameTab(id: string, title: string): void {
+    const t = find(id);
+    if (!t) return;
+    const v = title.trim();
+    t.title = v === '' ? undefined : v.slice(0, 120);
+  }
+
   function setConn(id: string, patch: Partial<TabConn>): void {
     const t = find(id);
     if (!t) return;
@@ -371,6 +451,8 @@ export function createRepeater(opts: RepeaterOptions = {}) {
     setRaw,
     setConn,
     setMode,
+    titleFor,
+    renameTab,
     send,
     loadTabs,
     flushDrafts,
