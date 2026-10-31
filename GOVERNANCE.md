@@ -34,6 +34,9 @@ A maintainer may invite a contributor after three merged pull requests. The invi
 - **The tag triggers the cargo-dist release workflow.** It builds the tier-1 binaries, attaches GitHub build-provenance attestations and publishes the GitHub release.
 - **Pre-releases** are `vX.Y.Z-rc.N` tags cut by a maintainer.
 - **Cadence.** A tagged release or pre-release every 4 to 6 weeks.
+- **Pre-release tags are invisible to release-plz.** It only sees tags like `vX.Y.Z`, so until `v0.1.0` is cut, the release PR it opens proposes a stale or duplicate pre-release version. The maintainer closes that PR unmerged, or edits the version in the PR to the intended one.
+- **Only server commits open a release PR.** release-plz opens one only for commits under `crates/crosswire-server`. Commits in other crates still appear in the notes through `changelog_include`. To release changes made elsewhere, edit the version in an existing release PR or push a server commit.
+- **Fold the curated notes before merging.** release-plz inserts its generated version block directly under `## [Unreleased]`. Before merging a release PR, the maintainer folds the curated `[Unreleased]` entries into that block so they are not left stranded beneath it.
 - **Token.** The `RELEASE_PLZ_TOKEN` repository secret is a fine-grained personal access token with contents and pull-requests write. The maintainer rotates it.
 
 To check a release, see "Verifying releases" in [SECURITY.md](SECURITY.md).
