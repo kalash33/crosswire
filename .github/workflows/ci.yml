@@ -45,7 +45,7 @@ jobs:
           node-version: 24
           cache: npm
           cache-dependency-path: ui/package-lock.json
-      - run: npm ci
+      - run: npm ci --ignore-scripts
         working-directory: ui
         if: matrix.os == 'ubuntu-latest'
       - run: just ui-lint
@@ -53,6 +53,12 @@ jobs:
       - run: just ui-test
         if: matrix.os == 'ubuntu-latest'
       - run: just ui-dist-check
+        if: matrix.os == 'ubuntu-latest'
+      # The committed release.yml must be exactly what dist generates from
+      # dist-workspace.toml; the installer is pinned to the same dist version.
+      - run: |
+          curl --proto '=https' --tlsv1.2 -LsSf https://github.com/axodotdev/cargo-dist/releases/download/v0.33.1/cargo-dist-installer.sh | sh
+          dist generate --check
         if: matrix.os == 'ubuntu-latest'
       # Playwright's Chromium for the UI e2e suites (ubuntu only, so every other
       # OS stays Node-free). --with-deps adds the system libraries it needs on

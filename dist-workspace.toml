@@ -1,0 +1,37 @@
+[workspace]
+members = ["cargo:."]
+
+# Config for 'dist'
+[dist]
+# The preferred dist version to use in CI (Cargo.toml SemVer syntax)
+cargo-dist-version = "0.33.1"
+# CI backends to support
+ci = "github"
+# The installers to generate for each app
+installers = ["shell"]
+# Target platforms to build apps for (Rust target-triple syntax)
+targets = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu", "aarch64-apple-darwin"]
+# Path that installers should place binaries in
+install-path = "CARGO_HOME"
+# Whether to install an updater program
+install-updater = false
+# Attest every artefact with GitHub build provenance (verify with
+# `gh attestation verify`).
+github-attestations = true
+# Pull requests only plan the release; they never build artefacts.
+pr-run-mode = "plan"
+# Runs before any build job: fails the release if assets/ui drifted from ui/.
+plan-jobs = ["./ui-dist-check"]
+# Every action in the generated release.yml is pinned to a full commit SHA.
+# Action pins for the generated release.yml. Dependabot excludes that file;
+# bump a pin here and run `dist generate`.
+[dist.github-action-commits]
+"actions/checkout" = "d23441a48e516b6c34aea4fa41551a30e30af803"
+"actions/upload-artifact" = "cf430e030ddbb5b0abf93d22962f4752f3646cd9"
+"actions/download-artifact" = "9000827ccba6bdab643e8b6fd33ac0654aef8333"
+"actions/attest" = "1e69f48acb82d1966a394da916b4c1698aa569d6"
+
+# GitHub retired the macos-14 image on 2026-11-02 (brownouts cancelled the
+# v0.1.0-rc.1 macOS build); pin the Apple Silicon build to macos-15.
+[dist.github-custom-runners]
+aarch64-apple-darwin = "macos-15"

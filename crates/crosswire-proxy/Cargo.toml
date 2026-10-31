@@ -1,6 +1,6 @@
 [package]
 name = "crosswire-proxy"
-version = "0.0.0"
+version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
@@ -12,12 +12,12 @@ publish = false
 workspace = true
 
 [dependencies]
-crosswire-core = { path = "../crosswire-core", version = "0.0.0" }
-crosswire-h1 = { path = "../crosswire-h1", version = "0.0.0" }
-crosswire-model = { path = "../crosswire-model", version = "0.0.0" }
-crosswire-client = { path = "../crosswire-client", version = "0.0.0" }
-crosswire-ca = { path = "../crosswire-ca", version = "0.0.0" }
-crosswire-scope = { path = "../crosswire-scope", version = "0.0.0" }
+crosswire-core = { path = "../crosswire-core" }
+crosswire-h1 = { path = "../crosswire-h1" }
+crosswire-model = { path = "../crosswire-model" }
+crosswire-client = { path = "../crosswire-client" }
+crosswire-ca = { path = "../crosswire-ca" }
+crosswire-scope = { path = "../crosswire-scope" }
 tokio = { workspace = true }
 rustls = { workspace = true }
 tokio-rustls = { workspace = true }
@@ -32,8 +32,8 @@ ulid = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-crosswire-store = { path = "../crosswire-store", version = "0.0.0" }
-crosswire-scope = { path = "../crosswire-scope", version = "0.0.0" }
+crosswire-store = { path = "../crosswire-store" }
+crosswire-scope = { path = "../crosswire-scope" }
 webpki-roots = { workspace = true }
 serde_json = { workspace = true }
 x509-parser = { workspace = true }

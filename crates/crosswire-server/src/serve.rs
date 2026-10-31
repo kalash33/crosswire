@@ -256,6 +256,7 @@ async fn serve_with_store(
         bind: api_addr,
         idle_timeout: DEFAULT_IDLE_TIMEOUT,
         bootstrap_ttl: DEFAULT_BOOTSTRAP_TTL,
+        proxy_addr: Some(addr),
     };
     let state = AppState::new(
         Arc::clone(&store),

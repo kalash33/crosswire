@@ -3,7 +3,7 @@
 
 mod common;
 
-use common::TestApp;
+use common::{Opts, TestApp};
 
 #[tokio::test]
 async fn schema_version_header_on_every_gated_response() {
@@ -38,4 +38,25 @@ async fn health_reports_schema_and_format_versions() {
     assert_eq!(j["status"], "ok");
     assert_eq!(j["schema_version"], 2);
     assert_eq!(j["format_version"], 6);
+}
+
+#[tokio::test]
+async fn health_reports_proxy_addr_when_configured() {
+    let unconfigured = TestApp::new().await;
+    let j = unconfigured.get("/api/v1/health", &[]).await.json();
+    assert!(
+        j.get("proxy_addr").is_none(),
+        "absent when unconfigured: {j}"
+    );
+
+    for addr in ["127.0.0.1:8081", "[::1]:9090"] {
+        let proxy: std::net::SocketAddr = addr.parse().unwrap();
+        let app = TestApp::with(Opts {
+            proxy_addr: Some(proxy),
+            ..Opts::default()
+        })
+        .await;
+        let j = app.get("/api/v1/health", &[]).await.json();
+        assert_eq!(j["proxy_addr"], addr);
+    }
 }

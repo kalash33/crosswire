@@ -1,6 +1,6 @@
 [package]
 name = "crosswire-server"
-version = "0.0.0"
+version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
@@ -16,14 +16,14 @@ name = "crosswire"
 path = "src/main.rs"
 
 [dependencies]
-crosswire-api = { path = "../crosswire-api", version = "0.0.0" }
-crosswire-proxy = { path = "../crosswire-proxy", version = "0.0.0" }
-crosswire-scope = { path = "../crosswire-scope", version = "0.0.0" }
-crosswire-store = { path = "../crosswire-store", version = "0.0.0" }
-crosswire-tools = { path = "../crosswire-tools", version = "0.0.0" }
-crosswire-ca = { path = "../crosswire-ca", version = "0.0.0" }
-crosswire-client = { path = "../crosswire-client", version = "0.0.0" }
-crosswire-model = { path = "../crosswire-model", version = "0.0.0" }
+crosswire-api = { path = "../crosswire-api" }
+crosswire-proxy = { path = "../crosswire-proxy" }
+crosswire-scope = { path = "../crosswire-scope" }
+crosswire-store = { path = "../crosswire-store" }
+crosswire-tools = { path = "../crosswire-tools" }
+crosswire-ca = { path = "../crosswire-ca" }
+crosswire-client = { path = "../crosswire-client" }
+crosswire-model = { path = "../crosswire-model" }
 axum = { workspace = true }
 clap = { workspace = true }
 tokio = { workspace = true }
@@ -54,3 +54,15 @@ x509-parser = { workspace = true }
 sha2 = { workspace = true }
 base64 = { workspace = true }
 serde_json = { workspace = true }
+
+# publish = false hides the binary from dist; opt this one package in. Every
+# other workspace package stays out of the release.
+[package.metadata.dist]
+dist = true
+
+# cargo-binstall resolves the cargo package name (crosswire-server) and
+# downloads the dist archive; the binary inside is `crosswire`.
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/crosswire-server-{ target }{ archive-suffix }"
+pkg-fmt = "txz"
+bin-dir = "crosswire-server-{ target }/{ bin }{ binary-ext }"

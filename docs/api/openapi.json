@@ -1055,6 +1055,13 @@
             "description": "The project database format (`user_version`) this build reads and writes.",
             "minimum": 0
           },
+          "proxy_addr": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The proxy listener's bound address as `host:port` (`[v6]:port` for\nIPv6). Absent when no proxy is running alongside the API."
+          },
           "schema_version": {
             "type": "integer",
             "format": "int32",

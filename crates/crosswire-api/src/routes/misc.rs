@@ -24,6 +24,10 @@ pub struct HealthResponse {
     pub schema_version: u32,
     /// The project database format (`user_version`) this build reads and writes.
     pub format_version: u32,
+    /// The proxy listener's bound address as `host:port` (`[v6]:port` for
+    /// IPv6). Absent when no proxy is running alongside the API.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proxy_addr: Option<String>,
 }
 
 /// Liveness probe.
@@ -32,11 +36,12 @@ pub struct HealthResponse {
     path = "/api/v1/health",
     responses((status = 200, description = "The API is serving", body = HealthResponse))
 )]
-pub async fn health() -> Json<HealthResponse> {
+pub async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
     Json(HealthResponse {
         status: "ok",
         schema_version: crosswire_model::SCHEMA_VERSION,
         format_version: crosswire_store::FORMAT_VERSION,
+        proxy_addr: state.proxy_addr.map(|a| a.to_string()),
     })
 }
 
