@@ -164,6 +164,6 @@ no UI yet. The minimum supported Rust version is 1.88.
 - **docs**: the project format (`docs/format.md`), ADR-0001 to ADR-0003, the
   CA install guide and the h1 diagnostics catalogue.
 
-[Unreleased]: https://github.com/kalash33/crosswire/compare/v0.1.0-rc.1...HEAD
+[Unreleased]: https://github.com/kalash33/crosswire/compare/v0.1.0-rc.2...HEAD
 [0.1.0-alpha.2]: https://github.com/kalash33/crosswire/tree/05bc968
 [0.1.0-alpha.1]: https://github.com/kalash33/crosswire/tree/f44ec2a
