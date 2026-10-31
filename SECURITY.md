@@ -22,7 +22,7 @@ Out of scope: findings in the *targets* you test with Crosswire, and intentional
 
 ## Verifying releases
 
-Every release asset carries a GitHub build-provenance attestation. Verify a download with:
+Each release archive (`crosswire-server-<target>.tar.xz`) carries a GitHub build-provenance attestation; the installer script and checksum files do not. Verify a download with:
 
 ```
 gh attestation verify <file> --repo kalash33/crosswire

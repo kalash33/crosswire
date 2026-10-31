@@ -29,7 +29,8 @@ A maintainer may invite a contributor after three merged pull requests. The invi
 
 ## Releases
 
-- **release-plz opens a release pull request on every push to `main`.** It proposes the version bump and the `CHANGELOG.md` entry.
+- **release-plz runs on every push to `main` and opens or refreshes a release pull request when there is something to release.** It proposes the version bump and the `CHANGELOG.md` entry.
+- **Tag only green commits.** The release workflow's UI drift gate stops the binaries from being built, but the release entry itself is still created; if the gate fails, delete that release, fix `main`, and tag again. Cut a tag only on a commit whose `ci` run is green.
 - **Merging that pull request releases.** The merge bumps the version, updates `CHANGELOG.md` and tags `vX.Y.Z`.
 - **The tag triggers the cargo-dist release workflow.** It builds the tier-1 binaries, attaches GitHub build-provenance attestations and publishes the GitHub release.
 - **Pre-releases** are `vX.Y.Z-rc.N` tags cut by a maintainer.

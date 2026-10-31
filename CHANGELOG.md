@@ -17,9 +17,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   including the gate's own `401`, `421` and `404` refusals. `GET /api/v1/health`
   adds `schema_version` and `format_version` (`crosswire-store` exports
   `FORMAT_VERSION`).
-- **Release pipeline and governance** (R2): one workspace version, release-plz
-  opening the release PR and cutting the `v<version>` tag, and the governance
-  documents.
+- **Release pipeline and governance** (R2): one workspace version; release-plz
+  opens the release PR and cuts the `v<version>` tag; cargo-dist builds the
+  `crosswire` binary for `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`
+  and `aarch64-apple-darwin`, publishes a shell installer and `cargo binstall`
+  metadata, and attaches GitHub build-provenance attestations to every archive;
+  a UI drift check gates every release build; `GOVERNANCE.md`, `MAINTAINERS.md`
+  and ADR-0005.
 
 ### Changed
 

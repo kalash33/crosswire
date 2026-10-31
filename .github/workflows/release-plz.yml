@@ -12,6 +12,14 @@ concurrency:
   group: release-plz
   cancel-in-progress: false
 
+env:
+  # release-plz is not an action, so Dependabot does not watch it: bump the
+  # version and the digest below together.
+  RELEASE_PLZ_VERSION: 0.4.2
+  # sha256 of release-plz-x86_64-unknown-linux-gnu.tar.gz from the
+  # release-plz-v0.4.2 GitHub release (the asset's published digest).
+  RELEASE_PLZ_SHA256: bd7c3adc1a4ed3831e6bfde51b92b168f32ab6d15cd210ed88044e7f858f0cae
+
 jobs:
   release-plz:
     runs-on: ubuntu-latest
@@ -27,22 +35,38 @@ jobs:
             echo "::error::RELEASE_PLZ_TOKEN secret is not set; see GOVERNANCE.md#releases"
             exit 1
           fi
+      # Everything that downloads or installs runs BEFORE the PAT is on disk.
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch head
+        with:
+          toolchain: stable
+      # The upstream release-plz/action installs cargo-binstall from a floating
+      # `latest` URL inside the job that holds the PAT. Install the pinned
+      # release-plz binary ourselves and verify its checksum instead.
+      - name: Install release-plz (pinned, checksum-verified)
+        run: |
+          set -euo pipefail
+          url="https://github.com/release-plz/release-plz/releases/download/release-plz-v${RELEASE_PLZ_VERSION}/release-plz-x86_64-unknown-linux-gnu.tar.gz"
+          curl --proto '=https' --tlsv1.2 -fsSL -o release-plz.tar.gz "$url"
+          echo "${RELEASE_PLZ_SHA256}  release-plz.tar.gz" | sha256sum -c -
+          mkdir -p "$HOME/.local/bin"
+          tar -xzf release-plz.tar.gz -C "$HOME/.local/bin" release-plz
+          rm release-plz.tar.gz
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/release-plz" --version
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
           token: ${{ secrets.RELEASE_PLZ_TOKEN }}
-      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch head
-        with:
-          toolchain: stable
+      - name: Configure git identity for the release commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
       - name: Tag a merged release
-        uses: release-plz/action@f67a7e724bdad4a0f6875f186060a0ca2770d76c # v0.5.147
-        with:
-          command: release
         env:
-          GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
+          # release-plz reads the forge token from GIT_TOKEN; keep it out of argv.
+          GIT_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
+        run: release-plz release --forge github
       - name: Open or update the release PR
-        uses: release-plz/action@f67a7e724bdad4a0f6875f186060a0ca2770d76c # v0.5.147
-        with:
-          command: release-pr
         env:
-          GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
+          GIT_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
+        run: release-plz release-pr --forge github
