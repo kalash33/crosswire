@@ -39,6 +39,8 @@ pub struct Opts {
     pub idle_timeout: Duration,
     /// Bootstrap-token lifetime.
     pub bootstrap_ttl: Duration,
+    /// The proxy address `/health` reports, if any.
+    pub proxy_addr: Option<SocketAddr>,
 }
 
 impl Default for Opts {
@@ -50,6 +52,7 @@ impl Default for Opts {
             event_capacity: 10_000,
             idle_timeout: Duration::from_secs(30 * 60),
             bootstrap_ttl: Duration::from_secs(60),
+            proxy_addr: None,
         }
     }
 }
@@ -131,6 +134,7 @@ impl TestApp {
             bind: addr,
             idle_timeout: opts.idle_timeout,
             bootstrap_ttl: opts.bootstrap_ttl,
+            proxy_addr: opts.proxy_addr,
         };
         let state = AppState::new(
             Arc::clone(&store),

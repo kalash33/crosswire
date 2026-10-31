@@ -38,6 +38,10 @@ pub struct ApiConfig {
     pub idle_timeout: Duration,
     /// How long a bootstrap token stays valid (default 60 s).
     pub bootstrap_ttl: Duration,
+    /// The proxy listener's actual bound address, reported on `/health` so
+    /// clients show the right proxy address. `None` when the embedder runs no
+    /// proxy.
+    pub proxy_addr: Option<SocketAddr>,
 }
 
 impl Default for ApiConfig {
@@ -46,6 +50,7 @@ impl Default for ApiConfig {
             bind: SocketAddr::from(([127, 0, 0, 1], 0)),
             idle_timeout: DEFAULT_IDLE_TIMEOUT,
             bootstrap_ttl: DEFAULT_BOOTSTRAP_TTL,
+            proxy_addr: None,
         }
     }
 }
@@ -81,6 +86,8 @@ pub struct AppState {
     pub idle_timeout: Duration,
     /// The bootstrap-token lifetime.
     pub bootstrap_ttl: Duration,
+    /// The proxy's bound address, if the embedder runs one.
+    pub proxy_addr: Option<SocketAddr>,
     /// Per-peer authentication-failure rate limiter.
     pub auth_limiter: RateLimiter,
     /// The per-serve secret that signs preview capability tokens (§11.1).
@@ -129,6 +136,7 @@ impl AppState {
             control,
             idle_timeout: config.idle_timeout,
             bootstrap_ttl: config.bootstrap_ttl,
+            proxy_addr: config.proxy_addr,
             auth_limiter: RateLimiter::new(),
             preview_key: Arc::new(PreviewKey::random()),
         })
