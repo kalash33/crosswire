@@ -10,9 +10,9 @@
 //! * **plan** (performance contract) — `EXPLAIN QUERY PLAN` for the tag query
 //!   searches `exchange_tags` by its `(tag, ulid)` primary key and never does a
 //!   full `SCAN exchanges`.
-//! * **backfill** — a project created before migration 0004 (its
-//!   `exchange_tags` table dropped and `user_version` set back to 3) returns the
-//!   tagged rows for `tag = Y` after the next open drives the migration.
+//! * **pre-release** — a project created before migration 0004 (its
+//!   `exchange_tags` table dropped and `user_version` set back to 3) is refused
+//!   on open, not migrated.
 //! * **dual-write consistency** — `exchange_set_tags` to a new tag makes
 //!   `tag = new` match and `tag = old` not match, and clearing an exchange's
 //!   tags leaves it no `exchange_tags` rows.
@@ -70,10 +70,6 @@ fn cfg() -> StoreConfig {
 
 fn create(dir: &Path) -> Store {
     Store::open(Project::create(dir).unwrap(), cfg()).unwrap()
-}
-
-fn reopen(dir: &Path) -> Store {
-    Store::open(Project::open(dir).unwrap(), cfg()).unwrap()
 }
 
 fn wait_committed(ev: &mut EventStream, want: &[Ulid]) {
@@ -194,56 +190,38 @@ fn tag_query_uses_the_exchange_tags_index_not_a_scan() {
     println!("tag plan: {plan}");
 }
 
-/// Drops `exchange_tags` and sets `user_version` back to 3, so the next open
-/// runs the real v3→v4 migration (create + backfill) over existing tagged rows.
-fn downgrade_to_v3(db: &Path) {
-    let conn = rusqlite::Connection::open(db).unwrap();
-    conn.execute_batch("DROP TABLE exchange_tags; PRAGMA user_version = 3;")
-        .unwrap();
-}
-
+/// A project that predates the side table (format 3) is a pre-release project:
+/// it is refused, not migrated, and left untouched.
 #[test]
-fn migration_backfills_tags_for_a_preexisting_project() {
+fn pre_release_project_without_tag_table_is_refused() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path().join("p");
     let db = dir.join("project.db");
 
-    let ids = {
+    {
         let store = create(&dir);
         let mut ev = store.subscribe();
-        let ids = seed(&store, &mut ev);
+        let _ = seed(&store, &mut ev);
         store.close().unwrap();
-        ids
-    };
+    }
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    conn.execute_batch("DROP TABLE exchange_tags; PRAGMA user_version = 3;")
+        .unwrap();
+    drop(conn);
 
-    // Pretend it predates the side table, then reopen to drive the migration.
-    downgrade_to_v3(&db);
-    let store = reopen(&dir);
-
-    let version: u32 = store
-        .reader()
+    let err = Project::open(&dir).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            crosswire_store::StoreError::PreReleaseProject { version: 3 }
+        ),
+        "{err:?}"
+    );
+    let version: u32 = rusqlite::Connection::open(&db)
         .unwrap()
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 5, "user_version advanced to current (5)");
-
-    // ids[0] = {red, blue}, ids[2] = {red}, ids[4] = {red, green}, ids[5] = {green}.
-    // ULIDs minted in the same millisecond are not monotonic, so order the
-    // expectation by ulid (newest first) rather than by insertion order.
-    let desc = |mut v: Vec<Ulid>| {
-        v.sort_unstable();
-        v.reverse();
-        v
-    };
-    assert_eq!(
-        list_all(&store, &tag_filter("red")),
-        desc(vec![ids[0], ids[2], ids[4]]),
-        "backfill covers every pre-0004 tagged row"
-    );
-    assert_eq!(
-        list_all(&store, &tag_filter("green")),
-        desc(vec![ids[4], ids[5]]),
-    );
+    assert_eq!(version, 3, "refusal leaves the project untouched");
 }
 
 #[test]
