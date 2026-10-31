@@ -6,6 +6,10 @@ Thanks for your interest. Crosswire is a pure community open-source project; the
 
 The project is pre-alpha and maintained part-time. Until v0.2 there is no response-time promise except for security reports (see [SECURITY.md](SECURITY.md)). Issues and pull requests are labelled best-effort.
 
+## Response times
+
+Before v0.2: best-effort, except security reports acknowledged within 72 hours. From v0.2: first response on issues within 7 days, PR review within 14 days, security within 72 hours.
+
 ## What is open for contribution now
 
 - **Corpus cases** (`corpus/h1/cases`): real-world HTTP/1 shapes that normalising tools alter. Every case must round-trip byte-for-byte; see [corpus/h1/README.md](corpus/h1/README.md).
@@ -29,14 +33,14 @@ Rust stable; the MSRV is 1.88, declared in `Cargo.toml` (`rust-version`) and che
 ## Pull requests
 
 - One logical change per PR; tests for behaviour changes; `just lint` and `just test` green.
-- **DCO sign-off** required: add `Signed-off-by: Your Name <you@example.com>` to each commit (`git commit -s`).
+- **DCO sign-off** required: add `Signed-off-by: Your Name <you@example.com>` to each commit (`git commit -s`). release-plz's automated release pull requests are exempt; the maintainer's merge is the sign-off.
 - Wire-layer changes (`crosswire-h1`) need golden corpus coverage for the shape they touch.
 - **AI-assisted contributions are welcome** under one rule: the author must be able to explain every line. The reviewer may ask; "the model wrote it" is not an answer. Tests are still required.
 - Commits follow the existing style: `feat(h1): …`, `fix(core): …`, `test(h1): …`, `docs: …`.
 
 ## Decisions
 
-Architecture decisions are recorded in `docs/adr/`. The design spec is `docs/superpowers/specs/2026-10-22-crosswire-design.md`; when the code and the spec disagree, open an issue rather than silently changing either.
+Who decides, how RFCs work and how releases are cut is in [GOVERNANCE.md](GOVERNANCE.md). Architecture decisions are recorded in `docs/adr/`. The design spec is `docs/superpowers/specs/2026-10-22-crosswire-design.md`; when the code and the spec disagree, open an issue rather than silently changing either.
 
 ## Code of conduct
 
