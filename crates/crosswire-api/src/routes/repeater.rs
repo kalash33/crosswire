@@ -55,12 +55,17 @@ pub struct SendBody {
 }
 
 /// One recorded edit, summarised.
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct ChangeDto {
-    /// The edit operation (debug name).
+    /// The edit operation, a frozen kebab-case code: `insert`, `delete`,
+    /// `replace` or `unknown`.
     pub op: String,
-    /// Why the edit was made (debug name).
-    pub reason: String,
+    /// Why the edit was made: a kebab-case string (`hop-by-hop`,
+    /// `content-length`, `intercept-edit`, `unknown`) or a single-key object
+    /// (`{"match-replace":{"rule":"x"}}`, `{"intruder-position":3}`,
+    /// `{"custom":"why"}`). Taken from the core serde, so it cannot drift.
+    #[schema(value_type = serde_json::Value)]
+    pub reason: serde_json::Value,
     /// The affected span's inclusive start offset.
     pub start: u32,
     /// The affected span's exclusive end offset.
@@ -68,7 +73,7 @@ pub struct ChangeDto {
 }
 
 /// The outcome of a send.
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct SendOutcomeDto {
     /// The primary recorded exchange id.
     pub exchange_id: String,
@@ -100,8 +105,14 @@ impl From<SendOutcome> for SendOutcomeDto {
                 .changes
                 .iter()
                 .map(|c| ChangeDto {
-                    op: format!("{:?}", c.op()),
-                    reason: format!("{:?}", c.reason()),
+                    op: match serde_json::to_value(c.op()) {
+                        Ok(serde_json::Value::String(s)) => s,
+                        _ => "unknown".to_owned(),
+                    },
+                    reason: serde_json::to_value(c.reason()).unwrap_or_else(|e| {
+                        tracing::warn!(error = %e, "serializing a change reason");
+                        serde_json::Value::Null
+                    }),
                     start: c.span().start(),
                     end: c.span().end(),
                 })
@@ -131,7 +142,7 @@ pub struct DraftDto {
     post,
     path = "/api/v1/repeater/send",
     responses(
-        (status = 200, description = "The send outcome"),
+        (status = 200, description = "The send outcome", body = SendOutcomeDto),
         (status = 403, description = "Out of scope"),
         (status = 422, description = "The request could not be parsed"),
         (status = 502, description = "The upstream exchange failed")

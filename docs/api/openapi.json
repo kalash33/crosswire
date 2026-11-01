@@ -644,7 +644,14 @@
         },
         "responses": {
           "200": {
-            "description": "The send outcome"
+            "description": "The send outcome",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SendOutcomeDto"
+                }
+              }
+            }
           },
           "403": {
             "description": "Out of scope"
@@ -747,11 +754,11 @@
     },
     "/api/v1/scope": {
       "get": {
-        "summary": "Returns the current scope source document.",
+        "summary": "Returns the current scope source document, plus `enforce_strict` (whether\nstrict scope enforcement is on).",
         "operationId": "get_scope",
         "responses": {
           "200": {
-            "description": "The scope document"
+            "description": "The scope document and `enforce_strict`"
           }
         }
       },
@@ -915,6 +922,37 @@
   },
   "components": {
     "schemas": {
+      "ChangeDto": {
+        "type": "object",
+        "description": "One recorded edit, summarised.",
+        "required": [
+          "op",
+          "reason",
+          "start",
+          "end"
+        ],
+        "properties": {
+          "end": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The affected span's exclusive end offset.",
+            "minimum": 0
+          },
+          "op": {
+            "type": "string",
+            "description": "The edit operation, a frozen kebab-case code: `insert`, `delete`,\n`replace` or `unknown`."
+          },
+          "reason": {
+            "description": "Why the edit was made: a kebab-case string (`hop-by-hop`,\n`content-length`, `intercept-edit`, `unknown`) or a single-key object\n(`{\"match-replace\":{\"rule\":\"x\"}}`, `{\"intruder-position\":3}`,\n`{\"custom\":\"why\"}`). Taken from the core serde, so it cannot drift."
+          },
+          "start": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The affected span's inclusive start offset.",
+            "minimum": 0
+          }
+        }
+      },
       "CountsDto": {
         "type": "object",
         "description": "Project totals.",
@@ -1210,6 +1248,67 @@
               "null"
             ],
             "description": "`web-pki` (default) or `accept-invalid`."
+          }
+        }
+      },
+      "SendOutcomeDto": {
+        "type": "object",
+        "description": "The outcome of a send.",
+        "required": [
+          "exchange_id",
+          "scope_state",
+          "changes",
+          "skipped",
+          "cert_override",
+          "ttfb_ms",
+          "total_ms",
+          "redirects"
+        ],
+        "properties": {
+          "cert_override": {
+            "type": "boolean",
+            "description": "Whether an invalid certificate chain was accepted."
+          },
+          "changes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ChangeDto"
+            },
+            "description": "Edits assisted mode applied."
+          },
+          "exchange_id": {
+            "type": "string",
+            "description": "The primary recorded exchange id."
+          },
+          "redirects": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Recorded redirect-hop exchange ids."
+          },
+          "scope_state": {
+            "type": "string",
+            "description": "The scope verdict (wire name)."
+          },
+          "skipped": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Notes about deliberately skipped edits."
+          },
+          "total_ms": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Total exchange time, milliseconds.",
+            "minimum": 0
+          },
+          "ttfb_ms": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Time to first byte, milliseconds.",
+            "minimum": 0
           }
         }
       },

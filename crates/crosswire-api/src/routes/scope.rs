@@ -30,23 +30,32 @@ pub struct EnabledBody {
     pub enabled: bool,
 }
 
-/// Returns the current scope source document.
+/// Returns the current scope source document, plus `enforce_strict` (whether
+/// strict scope enforcement is on).
 #[utoipa::path(
     get,
     path = "/api/v1/scope",
-    responses((status = 200, description = "The scope document"))
+    responses((status = 200, description = "The scope document and `enforce_strict`"))
 )]
 pub async fn get_scope(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthCtx>,
-) -> ApiResult<Json<Scope>> {
+) -> ApiResult<Json<serde_json::Value>> {
     ctx.scopes.require(Cap::Read)?;
     let scope = state
         .scope_doc
         .read()
         .unwrap_or_else(PoisonError::into_inner)
         .clone();
-    Ok(Json(scope))
+    let mut doc = serde_json::to_value(&scope)
+        .map_err(|e| ApiError::internal(format!("serializing the scope: {e}")))?;
+    if let serde_json::Value::Object(map) = &mut doc {
+        map.insert(
+            "enforce_strict".to_owned(),
+            serde_json::Value::Bool(state.strict.load(Ordering::SeqCst)),
+        );
+    }
+    Ok(Json(doc))
 }
 
 /// Replaces the scope. The new scope is compiled before anything is stored;

@@ -38,6 +38,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **crosswire-api**: repeater change `op` and `reason` now use the frozen wire
+  codes (`replace`, `content-length`, `{"intruder-position":3}`) instead of Rust
+  debug names, and `GET /api/v1/scope` reports `enforce_strict`.
 - **Breaking, wire format** (`SCHEMA_VERSION` 2): enum codes are frozen
   (kebab-case or snake_case, no PascalCase), tagged unions use a `type` tag, and
   defaults are fixed. Unknown enum codes read back as an `Unknown` variant

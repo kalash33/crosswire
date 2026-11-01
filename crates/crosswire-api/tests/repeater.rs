@@ -82,6 +82,24 @@ async fn assisted_send_fixes_framing() {
         !v["changes"].as_array().unwrap().is_empty(),
         "assisted mode recorded at least one edit"
     );
+    // The frozen wire codes, not Rust debug names: `op` is a kebab string and
+    // `reason` a kebab string or a single-key object.
+    let changes = v["changes"].as_array().unwrap();
+    for c in changes {
+        assert!(
+            matches!(c["op"].as_str(), Some("insert" | "delete" | "replace")),
+            "op is a frozen kebab code: {c}"
+        );
+        match &c["reason"] {
+            serde_json::Value::String(s) => assert!(!s.contains(char::is_uppercase), "{s}"),
+            serde_json::Value::Object(o) => assert_eq!(o.len(), 1, "single-key object: {c}"),
+            other => panic!("reason must be a string or object, got {other}"),
+        }
+    }
+    assert!(
+        changes.iter().any(|c| c["reason"] == "content-length"),
+        "the Content-Length fix is reported as `content-length`: {changes:?}"
+    );
 }
 
 #[tokio::test]

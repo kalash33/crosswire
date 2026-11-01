@@ -284,6 +284,8 @@ The proxy records each exchange's scope verdict (`in`, `out`, `empty` or
 `host-mismatch`, filterable as `scope_state`), and the repeater and intercept use
 the same scope. The accepted list forms are in the
 [`crosswire-scope` README](../crates/crosswire-scope/README.md).
+`GET /api/v1/scope` returns the scope document plus `enforce_strict` (a boolean:
+whether strict enforcement, below, is on).
 `PUT /api/v1/settings/enforce_scope_strictly` with `{"enabled":true}` makes the
 repeater refuse out-of-scope sends outright instead of sending them with an
 audit row; the setting is also persisted. Changing scope or strictness needs
@@ -315,7 +317,19 @@ curl -s -H "Authorization: Bearer $SECRET" -X POST http://localhost:8081/api/v1/
 
 The response has the new `exchange_id`, the `scope_state`, the `changes` made
 in assisted mode, `skipped` notes, `cert_override`, `ttfb_ms`, `total_ms` and
-the `redirects` followed. Errors: `403 out_of_scope`, `422 parse_error`,
+the `redirects` followed. Each entry of `changes` is
+`{"op":...,"reason":...,"start":N,"end":N}` with the frozen wire codes (the same
+codes the project file uses):
+
+- `op` is a string: `insert`, `delete`, `replace` or `unknown`.
+- `reason` is either a string, for the unit reasons `hop-by-hop`,
+  `content-length`, `intercept-edit` and `unknown`, or a single-key object, for
+  the reasons that carry data: `{"match-replace":{"rule":"name"}}`,
+  `{"intruder-position":3}` and `{"custom":"text"}`. Treat any code you do not
+  recognise as unknown.
+
+For example, `{"op":"replace","reason":"content-length","start":51,"end":52}`.
+Errors: `403 out_of_scope`, `422 parse_error`,
 `502 upstream_error`. The repeater has its own transport
 but the same destination gate rules as the proxy: loopback, link-local and
 cloud-metadata addresses are refused unless you started `serve` with `--allow`. Repeater exchanges are filed under the
