@@ -15,6 +15,12 @@ disagree on layout, components or discoverability, follow
 `docs/superpowers/specs/2026-10-31-crosswire-u1-proper-app-ui-design.md`; the
 architecture, data flow and §11.1 rules here are unchanged.
 
+**U2 addendum (2026-11-02):** the message viewer (Pretty/Raw/Headers/Hex with
+colouring and find), the repeater bench (send history, restore, compare),
+History search and keyboard navigation, remappable shortcuts and the project
+identity (top-bar name, window title, manifest and icons) are specified in
+`docs/superpowers/specs/2026-11-01-crosswire-u2-super-app-design.md`.
+
 ## 1. What this is
 
 The Crosswire web UI: a Svelte single-page app that drives the alpha.2

@@ -42,6 +42,14 @@ test('install-to-first-capture appears in the real UI history under 2 min', asyn
   await expect(page.getByTestId('history-view')).toBeVisible();
   // The token must not linger in the address bar after the exchange.
   expect(page.url()).not.toContain('bootstrap');
+  // U2 D4: the real /health names the project (loopback peer): the top-bar
+  // chip shows the directory name with the path as its tooltip, and the
+  // window title leads with it.
+  const projectName = PROJECT.split('/').filter(Boolean).at(-1)!;
+  const chip = page.getByTestId('topbar-project');
+  await expect(chip).toHaveText(projectName);
+  await expect(chip).toHaveAttribute('title', new RegExp(`/${projectName}$`));
+  await expect(page).toHaveTitle(`${projectName} · History · Crosswire`);
 
   // 2. Cause ONE real capture through the running proxy. serve holds the
   // project's exclusive lock, so the launcher is pointed at the proxy with
