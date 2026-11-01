@@ -290,6 +290,8 @@ async fn serve_records_a_tls_fetch_and_closes_cleanly() {
             "serve",
             "--proxy-bind",
             "127.0.0.1:0",
+            "--api-bind",
+            "127.0.0.1:0",
             "--project",
             project.to_str().unwrap(),
             "--ca-dir",
