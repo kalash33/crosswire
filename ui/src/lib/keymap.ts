@@ -115,14 +115,135 @@ export function chordFromEvent(e: KeyboardEvent): string | null {
   return parts.join('+');
 }
 
-export function createKeymap(initial: Readonly<Record<Action, string>> = DEFAULT_BINDINGS) {
+
+/** localStorage key holding the persisted `{action: chord}` overrides. */
+export const KEYMAP_KEY = 'crosswire.keymap';
+
+const MOD_ORDER = ['ctrl', 'alt', 'shift'] as const;
+
+/**
+ * Canonical chord string: modifiers ordered ctrl, alt, shift, the key lower-
+ * cased, `Space`/" " as `space`, brackets as-is. Returns null for an empty or
+ * modifier-only chord, an unknown modifier, or a Meta chord (unsupported).
+ */
+export function normalizeChord(chord: string): string | null {
+  const raw = chord === ' ' ? 'space' : chord;
+  if (raw.trim() === '') return null;
+  // The key is the last segment; a literal "+" key is "...++" or just "+".
+  const m = /^(.*?)\+?(\+|[^+]+)$/.exec(raw);
+  if (!m) return null;
+  const mods = m[1] === '' ? [] : m[1].split('+').map((x) => x.trim().toLowerCase());
+  let key = m[2].trim().toLowerCase();
+  if (key === '') key = m[2] === ' ' ? 'space' : '';
+  if (key === '') return null;
+  if (['control', 'ctrl', 'shift', 'alt', 'meta', 'cmd', 'command'].includes(key)) return null;
+  const set = new Set<string>();
+  for (const mod of mods) {
+    if (!(MOD_ORDER as readonly string[]).includes(mod)) return null;
+    set.add(mod);
+  }
+  const ordered = MOD_ORDER.filter((x) => set.has(x));
+  return [...ordered, key].join('+');
+}
+
+/**
+ * Chords a web page cannot reliably intercept (browser tab/window commands).
+ * Meta equivalents are not listed: Meta-modified events never match (see
+ * chordFromEvent), so they only become relevant if Meta is ever supported.
+ */
+const RESERVED = new Set([
+  'ctrl+t',
+  'ctrl+n',
+  'ctrl+w',
+  'ctrl+shift+t',
+  'ctrl+shift+n',
+  'ctrl+shift+w',
+]);
+
+export type ChordCheck = { ok: true } | { ok: false; reason: string };
+
+export interface KeymapOptions {
+  /** localStorage key to load/save overrides under; null/omitted: memory only. */
+  storageKey?: string | null;
+}
+
+function isAction(v: string): v is Action {
+  return (ACTIONS as readonly string[]).includes(v);
+}
+
+/** The overrides actually applied from storage; unknown/invalid entries dropped. */
+function readOverrides(storageKey: string): Partial<Record<Action, string>> {
+  const out: Partial<Record<Action, string>> = {};
+  let parsed: unknown;
+  try {
+    const raw = localStorage.getItem(storageKey);
+    if (raw === null) return out;
+    parsed = JSON.parse(raw);
+  } catch {
+    // Storage disabled or corrupt JSON: fall back to the defaults.
+    return out;
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return out;
+  for (const [action, value] of Object.entries(parsed as Record<string, unknown>)) {
+    if (!isAction(action) || typeof value !== 'string') continue;
+    const norm = normalizeChord(value);
+    if (norm === null || RESERVED.has(norm) || modifierless(norm)) continue;
+    out[action] = norm;
+  }
+  return out;
+}
+
+/** A bare letter/digit (optionally with only Shift) would fire while typing. */
+function modifierless(chord: string): boolean {
+  const parts = chord.split(/\+(?=.)/);
+  const key = parts[parts.length - 1];
+  const hasCtrlAlt = parts.includes('ctrl') || parts.includes('alt');
+  return !hasCtrlAlt && /^[a-z0-9]$/.test(key);
+}
+
+export function createKeymap(
+  initial: Readonly<Record<Action, string>> = DEFAULT_BINDINGS,
+  options: KeymapOptions = {},
+) {
+  const storageKey = options.storageKey ?? null;
+  const defaults = initial;
   const bindings = new Map<Action, string>(Object.entries(initial) as [Action, string][]);
   const handlers = new Map<Action, Handler>();
+  const overrides = new Map<Action, string>();
+  const listeners = new Set<() => void>();
+
+  function notify(): void {
+    for (const l of listeners) l();
+  }
+
+  function saveOverrides(): void {
+    if (storageKey === null) return;
+    try {
+      if (overrides.size === 0) localStorage.removeItem(storageKey);
+      else localStorage.setItem(storageKey, JSON.stringify(Object.fromEntries(overrides)));
+    } catch {
+      // Not persisted; the binding still applies for this page load.
+    }
+  }
+
+  function loadOverrides(): void {
+    if (storageKey === null) return;
+    for (const [action, chord] of Object.entries(readOverrides(storageKey)) as [Action, string][]) {
+      // A stored chord that collides with another action's current chord is
+      // ignored rather than allowed to shadow it.
+      const holder = [...bindings].find(([a, c]) => c === chord && a !== action);
+      if (holder) continue;
+      bindings.set(action, chord);
+      if (chord !== defaults[action]) overrides.set(action, chord);
+    }
+  }
 
   function actionFor(chord: string): Action | undefined {
     for (const [action, c] of bindings) if (c === chord) return action;
     return undefined;
   }
+
+  loadOverrides();
 
   return {
     chordFor(action: Action): string | undefined {
@@ -144,12 +265,82 @@ export function createKeymap(initial: Readonly<Record<Action, string>> = DEFAULT
         if (handlers.get(action) === handler) handlers.delete(action);
       };
     },
-    /** Rebind an action; a chord already held by another action is taken over. */
+    /**
+     * Rebind an action and persist it. A chord already held by another action
+     * is taken over (that action goes unbound and is not persisted); callers
+     * that must not steal check `validateChord` first.
+     */
     remap(action: Action, chord: string): void {
-      const norm = chord.toLowerCase();
+      const norm = normalizeChord(chord) ?? chord.toLowerCase();
       const holder = actionFor(norm);
-      if (holder && holder !== action) bindings.delete(holder);
+      if (holder && holder !== action) {
+        bindings.delete(holder);
+        overrides.delete(holder);
+      }
       bindings.set(action, norm);
+      if (norm === defaults[action]) overrides.delete(action);
+      else overrides.set(action, norm);
+      saveOverrides();
+      notify();
+    },
+    /**
+     * Drop one override (or all, with no argument) and restore the defaults.
+     * If a restored default chord is held by another action, that holder's own
+     * override is dropped too (cascading) so two actions never share a chord.
+     */
+    reset(action?: Action): void {
+      const queue: Action[] = action ? [action] : [...ACTIONS];
+      while (queue.length > 0) {
+        const a = queue.shift() as Action;
+        overrides.delete(a);
+        const def = defaults[a];
+        const holder = actionFor(def);
+        if (holder && holder !== a) {
+          // Another action sits on this default: send it back to its own.
+          if (overrides.has(holder)) queue.push(holder);
+          else bindings.delete(holder);
+        }
+        bindings.set(a, def);
+      }
+      saveOverrides();
+      notify();
+    },
+    /** Actions whose chord differs from the default (for the "custom" badge). */
+    isOverridden(action: Action): boolean {
+      return overrides.has(action);
+    },
+    /** Reload overrides from storage over the defaults (startup, tests). */
+    loadOverrides(): void {
+      loadOverrides();
+      notify();
+    },
+    saveOverrides,
+    /** Refuse reserved, modifier-less and conflicting chords for `action`. */
+    validateChord(chord: string, action: Action): ChordCheck {
+      const norm = normalizeChord(chord);
+      if (norm === null) return { ok: false, reason: 'That is not a valid shortcut.' };
+      if (RESERVED.has(norm)) {
+        return {
+          ok: false,
+          reason: `${formatChord(norm)} is reserved by the browser and cannot be used.`,
+        };
+      }
+      if (modifierless(norm)) {
+        return { ok: false, reason: 'Add Ctrl or Alt: a bare key would fire while you type.' };
+      }
+      const holder = actionFor(norm);
+      if (holder && holder !== action) {
+        return {
+          ok: false,
+          reason: `${formatChord(norm)} is already used by "${ACTION_LABELS[holder]}".`,
+        };
+      }
+      return { ok: true };
+    },
+    /** Subscribe to binding changes (remap/reset/load); returns unsubscribe. */
+    subscribe(fn: () => void): () => void {
+      listeners.add(fn);
+      return () => listeners.delete(fn);
     },
     /**
      * The single keydown entry point. Only a chord bound to an action WITH a
@@ -171,4 +362,32 @@ export function createKeymap(initial: Readonly<Record<Action, string>> = DEFAULT
   };
 }
 
-export const keymap = createKeymap();
+export const keymap = createKeymap(DEFAULT_BINDINGS, { storageKey: KEYMAP_KEY });
+
+/** What one keydown means while the user is recording a new shortcut. */
+export type Recording =
+  | { kind: 'ignore' }
+  | { kind: 'cancel' }
+  | { kind: 'refused'; chord: string; reason: string }
+  | { kind: 'ok'; chord: string };
+
+/**
+ * Interpret the next keydown of a recording session: lone modifiers are
+ * ignored, a bare Escape cancels, anything else is validated for `action`.
+ */
+export function recordChord(
+  e: KeyboardEvent,
+  action: Action,
+  km: Pick<ReturnType<typeof createKeymap>, 'validateChord'> = keymap,
+): Recording {
+  if (['Control', 'Shift', 'Alt', 'Meta'].includes(e.key)) return { kind: 'ignore' };
+  if (e.key === 'Escape' && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey) {
+    return { kind: 'cancel' };
+  }
+  const chord = chordFromEvent(e);
+  if (chord === null) {
+    return { kind: 'refused', chord: '', reason: 'Meta (Cmd/Windows) shortcuts are not supported.' };
+  }
+  const check = km.validateChord(chord, action);
+  return check.ok ? { kind: 'ok', chord } : { kind: 'refused', chord, reason: check.reason };
+}
