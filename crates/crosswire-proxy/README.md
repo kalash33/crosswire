@@ -260,8 +260,10 @@ The relay itself holds at most one 64 KiB read buffer per direction, so a
 
 - The proxy binds loopback unless told otherwise, and then demands credentials. A non-loopback proxy hands anyone who authenticates a
   way to reach whatever the machine can; the destination gate still refuses
-  loopback, link-local and metadata ranges and the proxy's own port, evaluated
-  after DNS, unless a host is allowed with `--allow`.
+  loopback, link-local, cloud-metadata, unspecified, multicast and broadcast
+  addresses and the proxy and API ports, evaluated after DNS with IPv6
+  transition forms unwrapped. `--allow HOST:PORT` lifts only the loopback and
+  link-local refusals.
 - Upstream certificates are verified against the web PKI. A host on
   `accept_invalid_cert` is accepted with the error recorded on the connection;
   the binary audits each such host.

@@ -78,7 +78,7 @@ partial response as if it were whole.
   `::a.b.c.d`, NAT64 `64:ff9b::/96` and local-use `64:ff9b:1::/48`, 6to4
   `2002::/16`, Teredo `2001:0::/32`), and the rules run on
   both the unwrapped and the original address. Every resolved address must
-  pass; an empty result is refused as `Unresolved`.
+  pass; an empty result is refused (`Unresolved` when it reaches the gate; `Transport::resolve` reports it as a DNS error first).
 - **Always refused, never allowlistable:** unspecified (`0.0.0.0/8`, `::`),
   multicast (`224.0.0.0/4`, `ff00::/8`), broadcast (`255.255.255.255`), the
   cloud metadata and credential addresses `169.254.169.254` (AWS, GCP, Azure

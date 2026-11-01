@@ -56,7 +56,7 @@ Logs go to **stderr**; stdout carries command output only.
 | `--allow-non-loopback` | off | permit a non-loopback bind (needs `--proxy-auth`) |
 | `--proxy-auth USER:PASS` | none | require `Proxy-Authorization: Basic`; split at the first `:`, both parts non-empty |
 | `--passthrough HOST` | none | tunnel this host, or `.suffix`, without interception; repeatable |
-| `--allow HOST:PORT` | none | let the proxy reach a destination the gate refuses (loopback, link-local, cloud metadata); repeatable; `[v6]:port` for IPv6 |
+| `--allow HOST:PORT` | none | let the proxy and repeater reach a loopback or link-local destination the gate refuses; never lifts the refusal of cloud-metadata addresses and names, unspecified, multicast or broadcast addresses, or the proxy and API ports; repeatable; `[v6]:port` for IPv6 |
 | `--accept-invalid-cert HOST` | none | accept an invalid upstream certificate from this host; repeatable; audited |
 | `--ca-dir PATH` | the platform config dir (`crosswire ca path`) | where `ca.crt` and `ca.key` live |
 | `--capture-cap BYTES` | 52428800 (50 MiB) | bytes of each body kept; the rest is relayed only |

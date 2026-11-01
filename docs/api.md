@@ -331,8 +331,10 @@ codes the project file uses):
 For example, `{"op":"replace","reason":"content-length","start":51,"end":52}`.
 Errors: `403 out_of_scope`, `422 parse_error`,
 `502 upstream_error`. The repeater has its own transport
-but the same destination gate rules as the proxy: loopback, link-local and
-cloud-metadata addresses are refused unless you started `serve` with `--allow`. Repeater exchanges are filed under the
+but the same destination gate rules as the proxy: loopback and link-local
+addresses are refused unless you started `serve` with `--allow HOST:PORT`;
+cloud-metadata addresses and names, unspecified, multicast and broadcast
+addresses and the proxy and API ports are always refused. Repeater exchanges are filed under the
 `repeater` namespace (`?namespace=repeater`). Every followed redirect
 hop is sent as a plain `GET` with `Connection: close`, whatever the status (a
 `307` or `308` included); the original method and body are not repeated.

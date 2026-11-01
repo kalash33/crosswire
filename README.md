@@ -159,9 +159,10 @@ only as a hash. The whole guide, with scope, repeater, intercept and the event
 stream, is [docs/api.md](docs/api.md); the credential design is
 [ADR-0004](docs/adr/0004-api-credentials.md).
 
-By default the proxy refuses to reach loopback, link-local and cloud-metadata
-addresses and its own port, evaluated after DNS resolution. Allow a target
-with `--allow HOST:PORT`; every allowance is audited.
+By default the proxy and repeater refuse to reach loopback, link-local,
+cloud-metadata, unspecified, multicast and broadcast addresses and the proxy
+and API ports, evaluated after DNS resolution. `--allow HOST:PORT` lifts only
+the loopback and link-local refusals; every allowance is audited.
 
 ## What works today
 
