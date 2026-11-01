@@ -926,8 +926,9 @@
   .c-idx {
     width: 40px;
   }
+  /* Fits "MMM DD HH:MM:SS" (an older row) or the uncommitted dot plus a clock. */
   .c-time {
-    width: 72px;
+    width: 116px;
   }
   .c-method {
     width: 76px;

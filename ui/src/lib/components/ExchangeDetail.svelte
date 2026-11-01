@@ -493,8 +493,11 @@
     font-size: var(--fs-xs);
     color: var(--fg-faint);
   }
+  /* Basis 0: the messages take only the space the header leaves. With an auto
+     basis a tall Pretty view (content-sized) made the header shrink too and
+     clipped the notes field under the Request/Response switch. */
   .sides {
-    flex: 1 1 auto;
+    flex: 1 1 0;
     min-height: 0;
     display: flex;
     flex-direction: column;
