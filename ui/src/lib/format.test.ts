@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { humanBytes, timeShort } from './format';
+import { humanBytes, timeCell, timeShort } from './format';
 
 describe('humanBytes', () => {
   it('formats bytes, KB and MB with one decimal below 10 and none above', () => {
@@ -38,5 +38,30 @@ describe('timeShort', () => {
 
   it('returns an empty string for an unparseable value', () => {
     expect(timeShort('not a date')).toBe('');
+  });
+});
+
+describe('timeCell', () => {
+  const now = new Date(2026, 10, 1, 12, 0, 0);
+
+  it('shows only the clock for a row from today', () => {
+    expect(timeCell(new Date(2026, 10, 1, 7, 5, 9).getTime(), now)).toBe('07:05:09');
+  });
+
+  it('prefixes month and day for an older row', () => {
+    expect(timeCell(new Date(2026, 9, 3, 7, 5, 9).toISOString(), now)).toBe('Oct 3 07:05:09');
+  });
+
+  it('switches exactly at local midnight', () => {
+    expect(timeCell(new Date(2026, 9, 31, 23, 59, 59).getTime(), now)).toBe('Oct 31 23:59:59');
+    expect(timeCell(new Date(2026, 10, 1, 0, 0, 0).getTime(), now)).toBe('00:00:00');
+  });
+
+  it('treats the same day of another year as older', () => {
+    expect(timeCell(new Date(2025, 10, 1, 8, 0, 0).getTime(), now)).toBe('Nov 1 08:00:00');
+  });
+
+  it('returns an empty string for an unparseable value', () => {
+    expect(timeCell('nope', now)).toBe('');
   });
 });

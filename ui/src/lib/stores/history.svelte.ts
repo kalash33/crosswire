@@ -40,6 +40,24 @@ export interface Row extends ExchangeRowDto {
   uncommitted: boolean;
 }
 
+/**
+ * Client-side search over the loaded rows: a case-insensitive substring match
+ * on host, path and tags. A blank query keeps every row. Pure, text only.
+ */
+export function clientFilter<T extends { host: string | null; path: string | null; tags: readonly string[] }>(
+  rows: readonly T[],
+  q: string,
+): readonly T[] {
+  const needle = q.trim().toLowerCase();
+  if (needle === '') return rows;
+  return rows.filter(
+    (r) =>
+      (r.host ?? '').toLowerCase().includes(needle) ||
+      (r.path ?? '').toLowerCase().includes(needle) ||
+      r.tags.some((t) => t.toLowerCase().includes(needle)),
+  );
+}
+
 /** One page of rows, keyed by an opaque keyset cursor. */
 export interface PageDto<T> {
   items: T[];

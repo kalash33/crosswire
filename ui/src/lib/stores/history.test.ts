@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { createHistory, type ExchangeRowDto, type PageDto } from './history.svelte';
+import { clientFilter, createHistory, type ExchangeRowDto, type PageDto } from './history.svelte';
 import type { Event } from './events.svelte';
 
 function page(items: ExchangeRowDto[], next_cursor: string | null = null): PageDto<ExchangeRowDto> {
@@ -305,3 +305,38 @@ describe('history store', () => {
   });
 });
 
+
+describe('clientFilter', () => {
+  const rows = [
+    { host: 'Api.Example.test', path: '/Login', tags: ['auth'] },
+    { host: 'b.test', path: '/x', tags: ['IDOR', 'todo'] },
+    { host: null, path: null, tags: [] },
+  ];
+
+  it('keeps every row for a blank query', () => {
+    expect(clientFilter(rows, '')).toHaveLength(3);
+    expect(clientFilter(rows, '   ')).toHaveLength(3);
+  });
+
+  it('matches host, path and tags case-insensitively as substrings', () => {
+    expect(clientFilter(rows, 'EXAMPLE')).toEqual([rows[0]]);
+    expect(clientFilter(rows, 'login')).toEqual([rows[0]]);
+    expect(clientFilter(rows, 'idor')).toEqual([rows[1]]);
+    expect(clientFilter(rows, 'od')).toEqual([rows[1]]);
+  });
+
+  it('matches nothing for an absent needle and never throws on null fields', () => {
+    expect(clientFilter(rows, 'zzz')).toEqual([]);
+  });
+
+  it('treats hostile strings as plain text, not patterns', () => {
+    const hostile = [
+      { host: '<img src=x onerror=alert(1)>', path: '/a', tags: ['"><script>alert(1)</script>'] },
+      { host: 'plain.test', path: '/.*', tags: [] },
+    ];
+    expect(clientFilter(hostile, '<img src=x')).toEqual([hostile[0]]);
+    expect(clientFilter(hostile, '<script>')).toEqual([hostile[0]]);
+    expect(clientFilter(hostile, '.*')).toEqual([hostile[1]]);
+    expect(clientFilter(hostile, '(')).toEqual([hostile[0]]);
+  });
+});

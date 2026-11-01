@@ -32,3 +32,18 @@ export function timeShort(iso: string | number): string {
   if (Number.isNaN(d.getTime())) return '';
   return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
+
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+/**
+ * History time cell: `HH:MM:SS` for a row from today (local calendar day of
+ * `now`), `MMM D HH:MM:SS` for any other day; '' if invalid.
+ */
+export function timeCell(iso: string | number, now: Date = new Date()): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const clock = timeShort(iso);
+  const today =
+    d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+  return today ? clock : `${MONTHS[d.getMonth()]} ${d.getDate()} ${clock}`;
+}
