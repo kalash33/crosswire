@@ -566,3 +566,81 @@ test('U1: Start panel, status bar and Settings reject or quote hostile health va
   }
   expect(violations).toEqual([]);
 });
+
+// U2 D1: the viewer's Pretty views are derived from captured bytes. Seed the
+// corpus into a JSON string value (and key), a urlencoded form value (and key)
+// and a query value (and key), render each in Pretty, and prove nothing runs.
+test('U2: Pretty JSON, form and query views render the corpus as text', async ({ page, baseURL }) => {
+  test.setTimeout(120_000);
+  const origin = new URL(baseURL!).origin;
+  const pairs = XSS_CORPUS.map((p, i) => `${encodeURIComponent(p.value)}=${encodeURIComponent(p.value)}&k${i}=${encodeURIComponent(p.value)}`).join('&');
+  const target = `/search?${pairs}`;
+  const json = JSON.stringify({
+    items: XSS_CORPUS.map((p) => ({ name: p.name, value: p.value })),
+    ...Object.fromEntries(XSS_CORPUS.map((p) => [p.value, p.value])),
+  });
+  const reqHead = `POST ${target} HTTP/1.1\r\nHost: h.example\r\nContent-Type: application/x-www-form-urlencoded\r\n\r\n`;
+  const respHead = 'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n';
+  const detail = {
+    ...DETAIL,
+    request: { ...DETAIL.request, head: { type: 'http1-raw', bytes: b64(reqHead), parser_version: 1 } },
+    response: { ...DETAIL.response, head: { type: 'http1-raw', bytes: b64(respHead), parser_version: 1 } },
+  };
+  const body = (text: string) => (r: import('@playwright/test').Route) =>
+    r.fulfill({
+      status: 200,
+      contentType: 'application/octet-stream',
+      headers: { 'x-crosswire-length': String(Buffer.byteLength(text)) },
+      body: Buffer.from(text, 'utf8'),
+    });
+  await page.route('**/api/v1/counts', (r) => r.fulfill({ status: 200, json: COUNTS }));
+  await page.route(/\/api\/v1\/exchanges\/[^/?]+$/, (r) => r.fulfill({ status: 200, json: detail }));
+  await page.route(/\/api\/v1\/exchanges\/[^/]+\/body\/req$/, body(pairs));
+  await page.route(/\/api\/v1\/exchanges\/[^/]+\/body\/resp$/, body(json));
+  await page.route(/\/api\/v1\/exchanges(\?.*)?$/, (r) =>
+    r.fulfill({ status: 200, json: { items: [{ ...ROW, host: 'h.example', path: target }], next_cursor: null } }),
+  );
+  const violations = watch(page, origin);
+  await page.goto('/');
+  const startUrl = page.url();
+  await page.getByTestId('history-row').locator('td.open').first().click();
+  await expect(page.getByTestId('exchange-detail')).toBeVisible();
+
+  // Response: Pretty JSON is the default; every payload shows as editor text.
+  await showResponseSide(page);
+  const resp = page.getByTestId('detail-response');
+  await expect(resp.getByTestId('detail-tab-pretty')).toHaveAttribute('aria-selected', 'true');
+  // CodeMirror renders only the lines in view, so drive each payload into
+  // view with find (a hostile needle in the find box too) before checking it.
+  const pretty = page.getByTestId('detail-resp-pretty-json');
+  await resp.getByTestId('detail-find').click();
+  const needle = resp.getByTestId('detail-findbar-input');
+  for (const p of XSS_CORPUS) {
+    const escaped = JSON.stringify(p.value).slice(1, -1);
+    await needle.fill(escaped);
+    await expect(resp.getByTestId('detail-findbar-count'), p.name).toHaveText(/^1\/\d+$/);
+    await expect(pretty.locator('.cm-find-current'), p.name).toHaveCount(1);
+    await expect(pretty, p.name).toContainText(escaped, { useInnerText: false });
+  }
+  await needle.press('Escape');
+
+  // Request: query table and form table, keys and values are text cells.
+  await showRequestSide(page);
+  const req = page.getByTestId('detail-request');
+  await expect(req.getByTestId('detail-tab-pretty')).toHaveAttribute('aria-selected', 'true');
+  for (const kind of ['query', 'form'] as const) {
+    const table = page.getByTestId(`detail-req-pretty-${kind}`);
+    const values = await table.getByTestId(`detail-req-pretty-${kind}-value`).allTextContents();
+    const keys = await table.getByTestId(`detail-req-pretty-${kind}-key`).allTextContents();
+    for (const p of XSS_CORPUS) {
+      expect(values, `${kind} value ${p.name}`).toContain(p.value);
+      expect(keys, `${kind} key ${p.name}`).toContain(p.value);
+    }
+  }
+  // Long hostile values sit in a title attribute: still just text.
+  await page.mouse.move(5, 5);
+  await page.getByTestId('detail-req-pretty-form-value').first().hover();
+  await page.mouse.move(300, 300);
+
+  await assertInert(page, violations, startUrl);
+});

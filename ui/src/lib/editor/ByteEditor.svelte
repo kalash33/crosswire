@@ -1,11 +1,14 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { EditorState } from '@codemirror/state';
-  import { EditorView } from '@codemirror/view';
+  import { Compartment, EditorState, type Extension } from '@codemirror/state';
+  import { Decoration, EditorView } from '@codemirror/view';
   import { bytesToLatin1, latin1ToBytes, encodePastedText } from './encoding';
-  import { nonPrintablePlaceholders } from './nonprintable';
+  import { lineEndMarkers, nonPrintablePlaceholders } from './nonprintable';
   import { readCspNonce } from './csp';
+  import { languageExtension, type EditorLanguage } from './lang';
   import type { Chip } from './chips';
+  import type { EditorMatches } from '../viewer/find';
+  import './highlight.css';
 
   // `bytes` is bindable. In read-only use (Task 6 / history detail) it is set
   // once from the document after mount and never changes. In editable use
@@ -22,6 +25,11 @@
     diagnostic = null,
     chips = [],
     showCopyRaw = true,
+    text = null,
+    language = null,
+    wrap = true,
+    showControls = undefined,
+    matches = null,
   }: {
     bytes?: Uint8Array;
     readonly?: boolean;
@@ -29,10 +37,63 @@
     chips?: Chip[];
     /** Show the inline "Copy raw" button (editable mode only). Off when a host toolbar provides it. */
     showCopyRaw?: boolean;
+    /**
+     * Read-only derived TEXT to show instead of `bytes` (the viewer's Pretty
+     * JSON, which may hold characters above U+00FF). `bytes` is then ignored.
+     */
+    text?: string | null;
+    /** Syntax colouring (class-only, see lang/tokens.ts); null = none. */
+    language?: EditorLanguage | null;
+    /** Soft-wrap long lines (the default, as before U2). */
+    wrap?: boolean;
+    /**
+     * The viewer's control-character toggle. Undefined (every non-viewer
+     * host) keeps the pre-U2 look: CR glyphs shown, no LF glyphs. true adds
+     * `␊` glyphs at line ends; false hides the CR and LF glyphs with CSS.
+     * The document bytes are never touched either way.
+     */
+    showControls?: boolean;
+    /** Find matches to mark (the viewer's find bar). */
+    matches?: EditorMatches | null;
   } = $props();
 
   let host: HTMLDivElement;
   let view: EditorView | undefined;
+  const wrapping = new Compartment();
+  const colouring = new Compartment();
+  const marking = new Compartment();
+
+  const MATCH = Decoration.mark({ class: 'cm-find-match' });
+  const CURRENT = Decoration.mark({ class: 'cm-find-match cm-find-current' });
+
+  function matchExtension(m: EditorMatches | null): Extension {
+    if (!m || m.positions.length === 0 || m.length <= 0) return [];
+    const len = view?.state.doc.length ?? Infinity;
+    const ranges = m.positions
+      .filter((p) => p + m.length <= len)
+      .map((p, i) => (i === m.current ? CURRENT : MATCH).range(p, p + m.length));
+    return EditorView.decorations.of(Decoration.set(ranges, true));
+  }
+
+  // Live prop changes reconfigure the mounted editor in place.
+  $effect(() => {
+    const w = wrap;
+    view?.dispatch({ effects: wrapping.reconfigure(w ? EditorView.lineWrapping : []) });
+  });
+  $effect(() => {
+    const l = language;
+    view?.dispatch({ effects: colouring.reconfigure(languageExtension(l)) });
+  });
+  $effect(() => {
+    const m = matches;
+    if (!view) return;
+    const effects = [marking.reconfigure(matchExtension(m))];
+    const at = m && m.current >= 0 ? m.positions[m.current] : undefined;
+    if (at !== undefined && at <= view.state.doc.length) {
+      effects.push(EditorView.scrollIntoView(at, { y: 'center' }));
+    }
+    view.dispatch({ effects });
+  });
   let pasteChip = $state<string | null>(null);
 
   // PASTE-RAW. Normal CodeMirror paste would insert the clipboard text at the
@@ -80,7 +141,10 @@
       EditorState.lineSeparator.of('\n'),
       EditorState.readOnly.of(readonly),
       EditorView.editable.of(!readonly),
-      EditorView.lineWrapping,
+      wrapping.of(wrap ? EditorView.lineWrapping : []),
+      colouring.of(languageExtension(language)),
+      marking.of([]),
+      ...(showControls === undefined ? [] : [lineEndMarkers]),
       // PLACEHOLDER INTERACTION: non-printables are drawn as view-only replace
       // decorations; the REAL byte always lives in the document. The decoration
       // set is recomputed on every docChange, so editing text around a
@@ -102,15 +166,17 @@
     ];
 
     const state = EditorState.create({
-      doc: bytesToLatin1(bytes),
+      doc: text ?? bytesToLatin1(bytes),
       extensions,
     });
     view = new EditorView({ state, parent: host });
+    if (matches) view.dispatch({ effects: marking.reconfigure(matchExtension(matches)) });
 
     // Seed the bound value from the editor's real document once at mount. In
     // read-only mode this equals the input exactly; in editable mode it is the
-    // starting point the update listener then keeps in sync.
-    bytes = latin1ToBytes(view.state.doc.toString());
+    // starting point the update listener then keeps in sync. A derived `text`
+    // document is not bytes, so it never flows back.
+    if (text === null) bytes = latin1ToBytes(view.state.doc.toString());
 
     return () => {
       view?.destroy();
@@ -119,7 +185,12 @@
   });
 </script>
 
-<div class="byte-editor" data-testid="byte-editor">
+<div
+  class="byte-editor"
+  class:hide-controls={showControls === false}
+  class:show-controls={showControls === true}
+  data-testid="byte-editor"
+>
   {#if chips.length > 0}
     <div class="chip-bar" data-testid="assisted-chips">
       {#each chips as c, i (i)}
@@ -225,6 +296,18 @@
   .cm-host :global(.cm-editor .cm-selectionLayer .cm-selectionBackground),
   .cm-host :global(.cm-editor.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground) {
     background: var(--accent-soft);
+  }
+  /* The viewer's control-character toggle: CR/LF glyphs collapse (bytes stay). */
+  .hide-controls :global(.cm-ctl) {
+    display: none;
+  }
+  .cm-host :global(.cm-find-match) {
+    background: var(--find-match);
+    border-radius: 2px;
+  }
+  .cm-host :global(.cm-find-current) {
+    background: var(--find-current);
+    outline: 1px solid var(--accent);
   }
   /* Non-printable placeholder glyphs (rendered by CodeMirror decorations). */
   .cm-host :global(.cm-nonprintable) {

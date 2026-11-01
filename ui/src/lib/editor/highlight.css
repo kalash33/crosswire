@@ -1,0 +1,43 @@
+/*
+ * Viewer syntax colouring (U2 D1). The tokenizers in editor/lang/ emit only
+ * the fixed `tok-*` classes below (mark decorations, no inline style); the
+ * colours are theme tokens from theme.css, so light and dark follow it.
+ */
+.tok-propertyName {
+  color: var(--syn-key);
+}
+.tok-string {
+  color: var(--syn-string);
+}
+.tok-number {
+  color: var(--syn-number);
+}
+.tok-keyword {
+  color: var(--syn-keyword);
+}
+.tok-punctuation {
+  color: var(--syn-punct);
+}
+.tok-comment {
+  color: var(--syn-comment);
+  font-style: italic;
+}
+.tok-tagName {
+  color: var(--syn-tag);
+}
+.tok-attributeName {
+  color: var(--syn-attr);
+}
+.tok-attributeValue {
+  color: var(--syn-attr-value);
+}
+.tok-headerName {
+  color: var(--syn-header-name);
+}
+.tok-headerValue {
+  color: var(--syn-header-value);
+}
+.tok-statusLine {
+  color: var(--syn-status);
+  font-weight: 600;
+}

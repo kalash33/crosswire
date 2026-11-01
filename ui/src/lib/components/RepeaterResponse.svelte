@@ -1,6 +1,5 @@
 <script lang="ts">
-  import ByteEditor from '../editor/ByteEditor.svelte';
-  import HexWindow from './HexWindow.svelte';
+  import MessageViewer from '../viewer/MessageViewer.svelte';
   import CopyMenu from './CopyMenu.svelte';
   import HeadersTable from './HeadersTable.svelte';
   import ResultHeader from './ResultHeader.svelte';
@@ -13,10 +12,9 @@
   import EmptyState from '../ui/EmptyState.svelte';
   import Kbd from '../ui/Kbd.svelte';
   import { chordLabel } from '../copy-actions.svelte';
-  import Tabs from '../ui/Tabs.svelte';
 
   // The response side of one repeater tab: empty state before the first send,
-  // then a status line and Headers / Raw / Hex sub-tabs. Everything shown is
+  // then a status line and the message viewer (Pretty / Raw / Headers / Hex). Everything shown is
   // captured data and rendered as text only (§11.1).
   let { tab }: { tab: RepeaterTab } = $props();
 
@@ -121,16 +119,10 @@
     })();
   });
 
-  // ---- Sub-tabs ----------------------------------------------------------------
-  // Raw is the default: the body is what a send is usually checked for.
-  type Sub = 'headers' | 'raw' | 'hex';
-  let sub = $state<Sub>('raw');
-  const subTabs = $derived([
-    { id: 'headers', label: 'Headers', badge: head?.count, testid: 'resp-tab-headers' },
-    { id: 'raw', label: 'Raw', testid: 'resp-tab-raw' },
-    { id: 'hex', label: 'Hex', testid: 'resp-tab-hex' },
-  ]);
-
+  // The media type of a normalized head (a raw head is read by the viewer).
+  const structuredType = $derived(
+    head?.structured?.find((h) => h.name.toLowerCase() === 'content-type')?.value,
+  );
 </script>
 
 <div class="response" data-testid="repeater-response">
@@ -166,42 +158,42 @@
       <CopyMenu id={tab.outcome.exchange_id} />
     </div>
 
-    <div class="subtabs">
-      <Tabs tabs={subTabs} active={sub} onselect={(id) => (sub = id as Sub)} label="Response view" />
-      {#if tab.sending}<span class="resending">Sending…</span>{/if}
-    </div>
-
-    <div class="panel" role="tabpanel" aria-label={sub}>
-      {#if sub === 'headers'}
-        {#if head === null}
-          <p class="note">Loading headers…</p>
-        {:else}
-          {#if head.note}
-            <p class="note" data-testid="resp-headers-note">{head.note}</p>
-          {:else if head.bytes}
-            <HeadersTable bytes={head.bytes} testid="resp-headers" />
-          {:else}
-            {#if head.start}<p class="start-line" data-testid="resp-start-line">{head.start}</p>{/if}
-            <HeadersTable structured={head.structured} testid="resp-headers" />
-          {/if}
-        {/if}
-      {:else if resp === null}
-        <p class="note">Loading response…</p>
-      {:else if resp.error}
-        <p class="error-text" role="alert" data-testid="resp-error">{resp.error}</p>
-      {:else if resp.absent}
-        <p class="note" data-testid="resp-empty">No response body.</p>
-      {:else if sub === 'raw'}
-        {#key `${tab.outcome.exchange_id}-${resp.bytes.length}`}
-          <div class="raw" data-testid="result-resp-body">
-            <ByteEditor bytes={resp.bytes} readonly={true} />
-          </div>
-        {/key}
-      {:else}
-        {#key `${tab.outcome.exchange_id}-${resp.bytes.length}`}
-          <HexWindow bytes={resp.bytes} testid="resp-hex" />
-        {/key}
-      {/if}
+    <div class="viewer">
+      {#key tab.outcome.exchange_id}
+        <MessageViewer
+          head={head?.bytes ?? null}
+          body={resp && !resp.error && !resp.absent ? resp.bytes : null}
+          contentType={structuredType}
+          side="resp"
+          testidPrefix="resp"
+          ids={{ body: 'result-resp-body', headers: 'resp-headers', hex: 'resp-hex', pretty: 'resp-pretty' }}
+          label="Response view"
+          headerCount={head?.count}
+        >
+          {#snippet actions()}
+            {#if tab.sending}<span class="resending">Sending…</span>{/if}
+          {/snippet}
+          {#snippet bodyStatus()}
+            {#if resp === null}
+              <p class="note">Loading response…</p>
+            {:else if resp.error}
+              <p class="error-text" role="alert" data-testid="resp-error">{resp.error}</p>
+            {:else if resp.absent}
+              <p class="note" data-testid="resp-empty">No response body.</p>
+            {/if}
+          {/snippet}
+          {#snippet headersFallback()}
+            {#if head === null}
+              <p class="note">Loading headers…</p>
+            {:else if head.note}
+              <p class="note" data-testid="resp-headers-note">{head.note}</p>
+            {:else}
+              {#if head.start}<p class="start-line" data-testid="resp-start-line">{head.start}</p>{/if}
+              <HeadersTable structured={head.structured} testid="resp-headers" />
+            {/if}
+          {/snippet}
+        </MessageViewer>
+      {/key}
     </div>
   {/if}
 </div>
@@ -236,22 +228,16 @@
     padding: 0 var(--s-2);
     font-size: var(--fs-sm);
   }
-  .subtabs {
-    display: flex;
-    align-items: center;
-    gap: var(--s-2);
-    padding: 0 var(--s-3);
-    border-bottom: 1px solid var(--border);
-  }
   .resending {
-    margin-left: auto;
     font-size: var(--fs-sm);
     color: var(--fg-muted);
   }
-  .panel {
+  .viewer {
     flex: 1;
     min-height: 0;
     overflow: auto;
+    display: flex;
+    flex-direction: column;
     padding: var(--s-2) var(--s-3);
   }
   .start-line {

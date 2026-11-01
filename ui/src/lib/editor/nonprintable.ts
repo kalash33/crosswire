@@ -55,7 +55,9 @@ class PlaceholderWidget extends WidgetType {
     // textContent only — never innerHTML — so nothing from the byte stream is
     // ever interpreted as markup (§11.1).
     const span = document.createElement('span');
-    span.className = 'cm-nonprintable';
+    // CR also carries `cm-ctl`: the viewer's "control characters" toggle
+    // hides `.cm-ctl` glyphs with CSS (the byte stays in the document).
+    span.className = this.code === 0x0d ? 'cm-nonprintable cm-ctl' : 'cm-nonprintable';
     span.textContent = label(this.code);
     span.setAttribute('data-byte', String(this.code));
     span.title = '0x' + this.code.toString(16).toUpperCase().padStart(2, '0');
@@ -93,6 +95,55 @@ export const nonPrintablePlaceholders = ViewPlugin.fromClass(
     update(u: ViewUpdate): void {
       if (u.docChanged || u.viewportChanged) {
         this.decorations = buildDecorations(u.view);
+      }
+    }
+  },
+  { decorations: (v) => v.decorations },
+);
+
+// LF markers for the viewer's "show control characters" toggle (U2 D1). An LF
+// is the line break itself, so it is never replaced; this adds a `␊` glyph
+// WIDGET at the end of each line that ends in LF. Hosts that do not opt in
+// (editable editors) never load it, so their text is unchanged.
+class LineEndWidget extends WidgetType {
+  eq(): boolean {
+    return true;
+  }
+
+  toDOM(): HTMLElement {
+    const span = document.createElement('span');
+    span.className = 'cm-nonprintable cm-ctl';
+    span.textContent = '␊';
+    span.setAttribute('data-byte', '10');
+    span.title = '0x0A';
+    return span;
+  }
+}
+
+const LF_MARK = Decoration.widget({ widget: new LineEndWidget(), side: -1 });
+
+function buildLineEnds(view: EditorView): DecorationSet {
+  const builder = new RangeSetBuilder<Decoration>();
+  for (const { from, to } of view.visibleRanges) {
+    const text = view.state.doc.sliceString(from, to);
+    for (let i = text.indexOf('\n'); i >= 0; i = text.indexOf('\n', i + 1)) {
+      builder.add(from + i, from + i, LF_MARK);
+    }
+  }
+  return builder.finish();
+}
+
+export const lineEndMarkers = ViewPlugin.fromClass(
+  class {
+    decorations: DecorationSet;
+
+    constructor(view: EditorView) {
+      this.decorations = buildLineEnds(view);
+    }
+
+    update(u: ViewUpdate): void {
+      if (u.docChanged || u.viewportChanged) {
+        this.decorations = buildLineEnds(u.view);
       }
     }
   },

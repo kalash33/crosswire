@@ -1,13 +1,9 @@
 <script lang="ts" module>
-  // The Headers/Raw/Hex choice per side outlives a row switch (the detail is
-  // re-created for every exchange), so it lives at module level.
-  type View = 'headers' | 'raw' | 'hex';
   // A narrow pane shows one message at a time; the response is the default.
-  const views = $state<{ req: View; resp: View; side: 'req' | 'resp' }>({
-    req: 'raw',
-    resp: 'raw',
-    side: 'resp',
-  });
+  // The choice outlives a row switch (the detail is re-created per exchange),
+  // so it lives at module level. The Pretty/Raw/Headers/Hex tab is chosen per
+  // message by the viewer from its content (U2 D1).
+  const views = $state<{ side: 'req' | 'resp' }>({ side: 'resp' });
 </script>
 
 <script lang="ts">
@@ -16,11 +12,9 @@
   import TagsNotesEditor from './TagsNotesEditor.svelte';
   import HeadersTable from './HeadersTable.svelte';
   import DiagnosticsList from './DiagnosticsList.svelte';
-  import HexWindow from './HexWindow.svelte';
-  import ByteEditor from '../editor/ByteEditor.svelte';
+  import MessageViewer from '../viewer/MessageViewer.svelte';
   import Badge from '../ui/Badge.svelte';
   import Button from '../ui/Button.svelte';
-  import Tabs from '../ui/Tabs.svelte';
   import Segmented from '../ui/Segmented.svelte';
   import Splitter from '../ui/Splitter.svelte';
   import { toasts } from '../ui/toasts.svelte';
@@ -195,17 +189,6 @@
     return `fidelity: ${msg.fidelity}, kind: ${msg.kind}`;
   }
 
-  // Head + body bytes for the Hex tab (the head only when it is byte-exact).
-  function hexBytes(msg: MessageDto, body: BodyState | null): Uint8Array {
-    const head = rawHeadBytes(msg.head) ?? new Uint8Array();
-    const b = body?.bytes ?? new Uint8Array();
-    if (b.length === 0) return head;
-    const out = new Uint8Array(head.length + b.length);
-    out.set(head, 0);
-    out.set(b, head.length);
-    return out;
-  }
-
   function headerCount(msg: MessageDto): number {
     const raw = rawHeadBytes(msg.head);
     return raw ? parseHeadLines(raw).headers.length : structuredFields(msg.head).length;
@@ -228,105 +211,101 @@
     }
   });
 
-  function tabsFor(msg: MessageDto) {
+  // The request target, for the viewer's query table.
+  function targetOf(msg: MessageDto): string | undefined {
+    const raw = rawHeadBytes(msg.head);
+    if (raw) return parseHeadLines(raw).start.split(' ')[1];
+    return structuredFields(msg.head).find((f) => f.name === ':path')?.value;
+  }
+
+  // The media type of a normalized head (a raw head is read by the viewer).
+  function structuredType(msg: MessageDto): string | undefined {
+    return structuredFields(msg.head).find((f) => f.name.toLowerCase() === 'content-type')?.value;
+  }
+
+  function rawBadge(msg: MessageDto): string | undefined {
     const d = msg.diagnostics?.length ?? 0;
-    return [
-      { id: 'headers', label: 'Headers', badge: headerCount(msg), testid: 'detail-tab-headers' },
-      { id: 'raw', label: 'Raw', badge: d > 0 ? `${d} diag` : undefined, testid: 'detail-tab-raw' },
-      { id: 'hex', label: 'Hex', testid: 'detail-tab-hex' },
-    ];
+    return d > 0 ? `${d} diag` : undefined;
   }
 </script>
 
-{#snippet bodyBlock(side: 'req' | 'resp', body: BodyState | null)}
-  {#if body === null}
-    <p class="note">Loading body…</p>
-  {:else if body.error}
-    <p class="error" role="alert">{body.error}</p>
-  {:else if body.absent}
-    <p class="note" data-testid={`detail-${side}-body-empty`}>
-      No {side === 'req' ? 'request' : 'response'} body.
-    </p>
-  {:else}
-    {#key `${id}-${side}-${body.bytes.length}`}
-      <div data-testid={`detail-${side}-body`}>
-        <ByteEditor bytes={body.bytes} readonly={true} diagnostic={truncationBanner(body)} />
-      </div>
-    {/key}
-  {/if}
-{/snippet}
-
 {#snippet message(side: 'req' | 'resp', msg: MessageDto, body: BodyState | null)}
-  {@const view = views[side]}
-  <div class="toolbar">
-    <span class="ptitle">{side === 'req' ? 'Request' : 'Response'}</span>
-    <Tabs
-      tabs={tabsFor(msg)}
-      active={view}
-      label={side === 'req' ? 'Request view' : 'Response view'}
-      onselect={(v) => (views[side] = v as View)}
-    />
-    <span class="spacer"></span>
-    {#if side === 'resp' && body && !body.absent && !body.error}
-      <Button size="sm" icon="external" data-testid="preview-button" onclick={openPreview}>Preview</Button>
-    {/if}
-  </div>
-  <p class="note" data-testid={`detail-${side}-fidelity`}>{fidelityNote(msg)}</p>
-  {#if msg.diagnostics && msg.diagnostics.length > 0}
-    <DiagnosticsList diagnostics={msg.diagnostics} testid={`detail-${side}-diagnostics`} />
-  {/if}
-
-  {#if side === 'resp'}
-    {#if previewError}
-      <p class="error" role="alert" data-testid="preview-error">{previewError}</p>
-    {/if}
-    {#if previewUrl}
-      <!-- Inert render on the 127.0.0.1 origin: no allow-scripts, no allow-same-origin. -->
-      <!-- §11.1 allowlist: previewSrc() hard-codes the http://127.0.0.1:<port> origin and only accepts a /preview/ path. -->
-      <!-- eslint-disable no-restricted-syntax -->
-      <iframe
-        data-testid="preview-frame"
-        title="Response preview"
-        sandbox=""
-        referrerpolicy="no-referrer"
-        src={previewUrl}
-      ></iframe>
-      <!-- eslint-enable no-restricted-syntax -->
-    {/if}
-  {/if}
-
-  <div class="panel" role="tabpanel" data-testid={`detail-${side}-panel-${view}`}>
-    {#if view === 'headers'}
-      {#if rawHeadBytes(msg.head)}
-        <HeadersTable bytes={rawHeadBytes(msg.head)} testid={`detail-${side}-headers`} />
-      {:else if msg.head.type === 'normalized'}
+  {@const ready = body !== null && !body.error && !body.absent}
+  <MessageViewer
+    head={rawHeadBytes(msg.head)}
+    body={ready ? body!.bytes : null}
+    contentType={structuredType(msg)}
+    target={side === 'req' ? targetOf(msg) : undefined}
+    {side}
+    testidPrefix="detail"
+    ids={{
+      body: `detail-${side}-body`,
+      head: `detail-${side}-head`,
+      headers: `detail-${side}-headers`,
+      hex: `detail-${side}-hex`,
+      pretty: `detail-${side}-pretty`,
+      panel: `detail-${side}`,
+    }}
+    label={side === 'req' ? 'Request view' : 'Response view'}
+    bodyDiagnostic={truncationBanner(body)}
+    headerCount={headerCount(msg)}
+    rawBadge={rawBadge(msg)}
+  >
+    {#snippet title()}
+      <span class="ptitle">{side === 'req' ? 'Request' : 'Response'}</span>
+    {/snippet}
+    {#snippet actions()}
+      {#if side === 'resp' && ready}
+        <Button size="sm" icon="external" data-testid="preview-button" onclick={openPreview}>Preview</Button>
+      {/if}
+    {/snippet}
+    {#snippet above()}
+      <p class="note" data-testid={`detail-${side}-fidelity`}>{fidelityNote(msg)}</p>
+      {#if msg.diagnostics && msg.diagnostics.length > 0}
+        <DiagnosticsList diagnostics={msg.diagnostics} testid={`detail-${side}-diagnostics`} />
+      {/if}
+      {#if side === 'resp'}
+        {#if previewError}
+          <p class="error" role="alert" data-testid="preview-error">{previewError}</p>
+        {/if}
+        {#if previewUrl}
+          <!-- Inert render on the 127.0.0.1 origin: no allow-scripts, no allow-same-origin. -->
+          <!-- §11.1 allowlist: previewSrc() hard-codes the http://127.0.0.1:<port> origin and only accepts a /preview/ path. -->
+          <!-- eslint-disable no-restricted-syntax -->
+          <iframe
+            data-testid="preview-frame"
+            title="Response preview"
+            sandbox=""
+            referrerpolicy="no-referrer"
+            src={previewUrl}
+          ></iframe>
+          <!-- eslint-enable no-restricted-syntax -->
+        {/if}
+      {/if}
+    {/snippet}
+    {#snippet bodyStatus()}
+      {#if body === null}
+        <p class="note">Loading body…</p>
+      {:else if body.error}
+        <p class="error" role="alert">{body.error}</p>
+      {:else if body.absent}
+        <p class="note" data-testid={`detail-${side}-body-empty`}>
+          No {side === 'req' ? 'request' : 'response'} body.
+        </p>
+      {/if}
+    {/snippet}
+    {#snippet headFallback()}
+      <!-- Structured fallback: text only (no byte-exact head bytes). -->
+      <pre class="structured" data-testid={`detail-${side}-head`} data-exact="false">{structuredHead(msg.head)}</pre>
+    {/snippet}
+    {#snippet headersFallback()}
+      {#if msg.head.type === 'normalized'}
         <HeadersTable structured={structuredFields(msg.head)} testid={`detail-${side}-headers`} />
       {:else}
         <p class="note">{structuredHead(msg.head)}</p>
       {/if}
-    {:else if view === 'raw'}
-      {#key id}
-        {#if rawHeadBytes(msg.head)}
-          <div data-testid={`detail-${side}-head`} data-exact="true">
-            <ByteEditor bytes={rawHeadBytes(msg.head)!} readonly={true} />
-          </div>
-        {:else}
-          <!-- Structured fallback: text only (no byte-exact head bytes). -->
-          <pre class="structured" data-testid={`detail-${side}-head`} data-exact="false">{structuredHead(
-              msg.head,
-            )}</pre>
-        {/if}
-      {/key}
-      {@render bodyBlock(side, body)}
-    {:else}
-      {#key `${id}-${side}-hex-${body?.bytes.length ?? -1}`}
-        <HexWindow bytes={hexBytes(msg, body)} testid={`detail-${side}-hex`} />
-      {/key}
-      {#if rawHeadBytes(msg.head) === null}
-        <p class="note">Body only: this head was not recorded byte-exact.</p>
-      {/if}
-    {/if}
-  </div>
+    {/snippet}
+  </MessageViewer>
 {/snippet}
 
 {#snippet requestPane()}
@@ -540,15 +519,6 @@
     font-weight: 600;
     color: var(--fg);
     margin-right: var(--s-1);
-  }
-  .spacer {
-    flex: 1 1 auto;
-  }
-  .panel {
-    display: flex;
-    flex-direction: column;
-    gap: var(--s-2);
-    min-width: 0;
   }
   .note {
     font-size: var(--fs-sm);
