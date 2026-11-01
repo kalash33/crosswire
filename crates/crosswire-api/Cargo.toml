@@ -43,3 +43,4 @@ tracing = { workspace = true }
 [dev-dependencies]
 tempfile = { workspace = true }
 crosswire-h1 = { path = "../crosswire-h1" }
+crosswire-core = { path = "../crosswire-core" }

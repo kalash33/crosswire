@@ -485,6 +485,7 @@ dependencies = [
  "bytes",
  "crosswire-ca",
  "crosswire-client",
+ "crosswire-core",
  "crosswire-h1",
  "crosswire-model",
  "crosswire-proxy",

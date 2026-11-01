@@ -343,3 +343,49 @@ pub async fn delete_tab(
         Err(ApiError::not_found("not_found", "no such draft"))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crosswire_core::{Change, ChangeOp, ChangeReason, Span};
+    use crosswire_model::ScopeState;
+    use serde_json::json;
+
+    /// Runs one change through the production `SendOutcome` -> DTO path and
+    /// returns the serialized `changes[0]`.
+    fn wire(reason: ChangeReason) -> serde_json::Value {
+        let outcome = SendOutcome {
+            exchange_id: Ulid::nil(),
+            scope_state: ScopeState::Empty,
+            changes: vec![Change::new(
+                ChangeOp::Replace,
+                Span::new(1, 2),
+                Bytes::from_static(b"a"),
+                Bytes::from_static(b"b"),
+                reason,
+            )],
+            skipped: Vec::new(),
+            cert_override: false,
+            ttfb_ms: 0,
+            total_ms: 0,
+            redirects: Vec::new(),
+        };
+        let v = serde_json::to_value(SendOutcomeDto::from(outcome)).unwrap();
+        v["changes"][0].clone()
+    }
+
+    #[test]
+    fn intruder_position_reason_is_a_single_key_object() {
+        let c = wire(ChangeReason::IntruderPosition(3));
+        assert_eq!(c["op"], "replace");
+        assert_eq!(c["reason"], json!({"intruder-position": 3}));
+        assert_eq!((c["start"].clone(), c["end"].clone()), (json!(1), json!(2)));
+    }
+
+    #[test]
+    fn custom_reason_is_a_single_key_object() {
+        let c = wire(ChangeReason::Custom("why".into()));
+        assert_eq!(c["op"], "replace");
+        assert_eq!(c["reason"], json!({"custom": "why"}));
+    }
+}
