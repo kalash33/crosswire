@@ -342,7 +342,6 @@ async fn serves_ui_bundle_with_csp_and_keeps_api_gated() {
 /// The installable-app files the UI links from `index.html` are served from
 /// the bundle with their own content types, under the unchanged UI CSP.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "needs the U2 Task 5 bundle rebuild: assets/ui has no manifest or icons until then"]
 async fn serves_the_manifest_and_icons_with_their_content_types() {
     let tmp = tempfile::tempdir().unwrap();
     let project = tmp.path().join("proj");
