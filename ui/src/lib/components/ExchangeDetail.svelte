@@ -15,6 +15,7 @@
   import MessageViewer from '../viewer/MessageViewer.svelte';
   import Badge from '../ui/Badge.svelte';
   import Button from '../ui/Button.svelte';
+  import IconButton from '../ui/IconButton.svelte';
   import Segmented from '../ui/Segmented.svelte';
   import Splitter from '../ui/Splitter.svelte';
   import { toasts } from '../ui/toasts.svelte';
@@ -256,7 +257,13 @@
     {/snippet}
     {#snippet actions()}
       {#if side === 'resp' && ready}
-        <Button size="sm" icon="external" data-testid="preview-button" onclick={openPreview}>Preview</Button>
+        <IconButton
+          size="sm"
+          icon="external"
+          label="Preview response"
+          data-testid="preview-button"
+          onclick={openPreview}
+        />
       {/if}
     {/snippet}
     {#snippet above()}

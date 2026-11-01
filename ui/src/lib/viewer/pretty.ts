@@ -10,6 +10,16 @@ export function decodeUtf8(bytes: Uint8Array): string {
   return new TextDecoder('utf-8').decode(bytes);
 }
 
+/** True when `bytes` is strict UTF-8 (a lossy decode would add U+FFFD). */
+export function isValidUtf8(bytes: Uint8Array): boolean {
+  try {
+    new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Re-indent a JSON body with two spaces, the layout of
  * `JSON.stringify(v, null, 2)`. The body is validated with `JSON.parse`, but
@@ -91,10 +101,10 @@ export interface KeyValue {
  * skipped) and the first `=`, `+` read as a space, `%XX` decoded to bytes and
  * the result read as UTF-8. A malformed `%` sequence is kept literally.
  */
-export function parseForm(bytes: Uint8Array): KeyValue[] {
+export function parseForm(bytes: Uint8Array, max = Infinity): KeyValue[] {
   const out: KeyValue[] = [];
   let start = 0;
-  for (let i = 0; i <= bytes.length; i++) {
+  for (let i = 0; i <= bytes.length && out.length < max; i++) {
     if (i < bytes.length && bytes[i] !== 0x26) continue;
     if (i > start) {
       const seg = bytes.subarray(start, i);
@@ -108,6 +118,18 @@ export function parseForm(bytes: Uint8Array): KeyValue[] {
     start = i + 1;
   }
   return out;
+}
+
+/** The number of pairs `parseForm` would return, without decoding any. */
+export function countPairs(bytes: Uint8Array): number {
+  let n = 0;
+  let start = 0;
+  for (let i = 0; i <= bytes.length; i++) {
+    if (i < bytes.length && bytes[i] !== 0x26) continue;
+    if (i > start) n++;
+    start = i + 1;
+  }
+  return n;
 }
 
 /** The query of a request target (after `?`, before `#`) as key/value pairs. */

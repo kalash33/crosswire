@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseForm, parseQuery, prettyJson } from './pretty';
+import { countPairs, isValidUtf8, parseForm, parseQuery, prettyJson } from './pretty';
 import { PRETTY_LIMIT } from './detect';
 
 const enc = (s: string) => Uint8Array.from(s, (c) => c.charCodeAt(0));
@@ -61,5 +61,21 @@ describe('parseQuery', () => {
     ]);
     expect(parseQuery('/p')).toEqual([]);
     expect(parseQuery('http://h/x?=v')).toEqual([{ key: '', value: 'v' }]);
+  });
+});
+
+describe('limits and UTF-8', () => {
+  it('parseForm stops at a row limit and countPairs counts every non-empty pair', () => {
+    const body = enc('a=&'.repeat(5000));
+    expect(parseForm(body, 1001)).toHaveLength(1001);
+    expect(countPairs(body)).toBe(5000);
+    expect(countPairs(enc('&&a=1&&b&'))).toBe(2);
+    expect(countPairs(enc(''))).toBe(0);
+  });
+
+  it('isValidUtf8 tells strict UTF-8 from bytes that decode with replacements', () => {
+    expect(isValidUtf8(utf8('{"a":"é日本"}'))).toBe(true);
+    expect(isValidUtf8(Uint8Array.from([0x7b, 0xff, 0x7d]))).toBe(false);
+    expect(isValidUtf8(Uint8Array.from([0xc3]))).toBe(false);
   });
 });

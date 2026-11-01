@@ -10,13 +10,18 @@ export interface EditorMatches {
   current: number;
 }
 
+/** Find stops counting here; the bar then shows "10000+". */
+export const FIND_LIMIT = 10_000;
+
 export interface FindOptions {
   caseSensitive: boolean;
+  /** `foldCase(text)`, when the caller caches it across keystrokes. */
+  folded?: string;
 }
 
 // Lowercase one UTF-16 unit at a time so offsets never move (a whole-string
 // toLowerCase can change the length, e.g. U+0130).
-function fold(s: string): string {
+export function foldCase(s: string): string {
   let out = '';
   for (let i = 0; i < s.length; i++) {
     const c = s.charCodeAt(i);
@@ -32,14 +37,18 @@ function fold(s: string): string {
   return out;
 }
 
-/** Start offsets of every non-overlapping match of `needle` in `text`. */
+/**
+ * Start offsets of the non-overlapping matches of `needle` in `text`, at most
+ * FIND_LIMIT + 1 of them (one past the limit tells the caller there are more),
+ * so a one-character needle over a megabyte never builds a huge mark set.
+ */
 export function findAll(text: string, needle: string, opts: FindOptions): number[] {
   if (needle === '') return [];
-  const hay = opts.caseSensitive ? text : fold(text);
-  const pin = opts.caseSensitive ? needle : fold(needle);
+  const hay = opts.caseSensitive ? text : (opts.folded ?? foldCase(text));
+  const pin = opts.caseSensitive ? needle : foldCase(needle);
   const out: number[] = [];
   let at = hay.indexOf(pin);
-  while (at >= 0) {
+  while (at >= 0 && out.length <= FIND_LIMIT) {
     out.push(at);
     at = hay.indexOf(pin, at + pin.length);
   }

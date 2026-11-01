@@ -241,3 +241,58 @@ test('Ctrl+F opens find inside the viewer and is not swallowed outside it', asyn
   await page.keyboard.press('Control+f');
   await expect(resp.getByTestId('detail-findbar-input')).toBeFocused();
 });
+
+test('a 2 MiB form of empty pairs: Pretty stays responsive and caps the table', async ({ page }) => {
+  const form = Buffer.from('a=&'.repeat(Math.floor((2 * 1024 * 1024) / 3)));
+  await mockExchange(
+    page,
+    { head: 'GET /x HTTP/1.1\r\nHost: api.example\r\n\r\n', body: null },
+    { head: 'HTTP/1.1 200 OK\r\nContent-Type: application/x-www-form-urlencoded\r\n\r\n', body: form },
+  );
+  await openDetail(page);
+  const resp = await pane(page, 'resp');
+  const t0 = Date.now();
+  await expect(resp.getByTestId('detail-tab-pretty')).toHaveAttribute('aria-selected', 'true');
+  const table = page.getByTestId('detail-resp-pretty-form');
+  await expect(table.getByTestId('detail-resp-pretty-form-more')).toHaveText(
+    `Showing 1000 of ${Math.floor((2 * 1024 * 1024) / 3)} fields; Raw shows all.`,
+  );
+  await expect(table.getByTestId('detail-resp-pretty-form-key')).toHaveCount(1000);
+  await expect(table.getByTestId('detail-resp-pretty-form-raw-clipped')).toBeVisible();
+  // A round trip through the tabs stays quick.
+  await resp.getByTestId('detail-tab-headers').click();
+  await expect(page.getByTestId('detail-resp-headers')).toBeVisible();
+  await resp.getByTestId('detail-tab-pretty').click();
+  await expect(table.getByTestId('detail-resp-pretty-form-more')).toBeVisible();
+  expect(Date.now() - t0).toBeLessThan(2000);
+});
+
+test('find over 1 MiB with a one-character needle stops counting at 10000+', async ({ page }) => {
+  await mockExchange(
+    page,
+    { head: 'GET /x HTTP/1.1\r\nHost: api.example\r\n\r\n', body: null },
+    { head: 'HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\n', body: Buffer.alloc(1024 * 1024, 0x61) },
+  );
+  await openDetail(page);
+  const resp = await pane(page, 'resp');
+  await resp.getByTestId('detail-find').click();
+  const t0 = Date.now();
+  await resp.getByTestId('detail-findbar-input').fill('a');
+  await expect(resp.getByTestId('detail-findbar-count')).toHaveText('1/10000+');
+  expect(Date.now() - t0).toBeLessThan(2000);
+});
+
+test('a JSON body that is not strict UTF-8 says so in Pretty', async ({ page }) => {
+  await mockExchange(
+    page,
+    { head: 'GET /x HTTP/1.1\r\nHost: api.example\r\n\r\n', body: null },
+    {
+      head: 'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n',
+      body: Buffer.concat([Buffer.from('{"a":"x'), Buffer.from([0xff, 0xfe]), Buffer.from('"}')]),
+    },
+  );
+  await openDetail(page);
+  await pane(page, 'resp');
+  await expect(page.getByTestId('detail-resp-pretty-utf8')).toContainText('invalid UTF-8');
+  await expect(page.getByTestId('detail-resp-pretty-json').locator('.cm-content')).toContainText('"a": "x��"');
+});

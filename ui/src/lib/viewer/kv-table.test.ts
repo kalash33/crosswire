@@ -14,7 +14,7 @@ describe('KvTable', () => {
     document.body.replaceChildren();
   });
 
-  function render(props: { rows: KeyValue[]; raw?: string; label: string; testid: string }) {
+  function render(props: { rows: KeyValue[]; raw?: string; label: string; testid: string; total?: number; limit?: number }) {
     const target = document.createElement('div');
     document.body.append(target);
     const c = mount(KvTable, { target, props });
@@ -42,5 +42,27 @@ describe('KvTable', () => {
     expect(cells[1].getAttribute('title')).toBeNull();
     expect(cells[1].textContent).toBe('a␍␊b');
     expect(t.querySelector('[data-testid="kv-raw"]')).toBeNull();
+  });
+
+  it('renders at most 1000 rows and says how many there are', () => {
+    const rows = Array.from({ length: 5000 }, (_, i) => ({ key: `k${i}`, value: `<b>${i}</b>` }));
+    const t = render({ rows, testid: 'kv', label: 'Form' });
+    expect(t.querySelectorAll('[data-testid="kv-key"]')).toHaveLength(1000);
+    expect(t.querySelector('b')).toBeNull();
+    expect(t.querySelector('[data-testid="kv-more"]')?.textContent).toBe('Showing 1000 of 5000 fields; Raw shows all.');
+  });
+
+  it('takes the true total when the rows were already capped', () => {
+    const rows = Array.from({ length: 1001 }, (_, i) => ({ key: `k${i}`, value: '' }));
+    const t = render({ rows, total: 699050, testid: 'kv', label: 'Form' });
+    expect(t.querySelectorAll('[data-testid="kv-key"]')).toHaveLength(1000);
+    expect(t.querySelector('[data-testid="kv-more"]')?.textContent).toBe('Showing 1000 of 699050 fields; Raw shows all.');
+  });
+
+  it('shows no note at or under the limit and clips a huge raw string', () => {
+    const t = render({ rows: [{ key: 'a', value: '1' }], raw: 'x'.repeat(200_000), testid: 'kv', label: 'F' });
+    expect(t.querySelector('[data-testid="kv-more"]')).toBeNull();
+    expect(t.querySelector('[data-testid="kv-raw"]')!.textContent!.length).toBeLessThan(70_000);
+    expect(t.querySelector('[data-testid="kv-raw-clipped"]')).not.toBeNull();
   });
 });

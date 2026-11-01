@@ -9,6 +9,7 @@
     query = $bindable(''),
     caseSensitive = $bindable(false),
     count,
+    capped = false,
     current,
     onnext,
     onprev,
@@ -18,6 +19,8 @@
     query?: string;
     caseSensitive?: boolean;
     count: number;
+    /** More matches exist than were counted (FIND_LIMIT). */
+    capped?: boolean;
     current: number;
     onnext: () => void;
     onprev: () => void;
@@ -50,7 +53,9 @@
     }
   }
 
-  const status = $derived(query === '' ? '' : count === 0 ? 'No matches' : `${current + 1}/${count}`);
+  const status = $derived(
+    query === '' ? '' : count === 0 ? 'No matches' : `${current + 1}/${count}${capped ? '+' : ''}`,
+  );
 </script>
 
 <div class="findbar" role="search" data-testid={testid}>

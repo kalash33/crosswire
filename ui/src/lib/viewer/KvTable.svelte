@@ -7,11 +7,20 @@
 
   let {
     rows,
+    total = undefined,
+    limit = 1000,
+    noun = 'fields',
     raw = null,
     label,
     testid,
   }: {
     rows: readonly KeyValue[];
+    /** The true number of pairs when `rows` was already capped by the caller. */
+    total?: number;
+    /** At most this many rows render (a hostile body can hold ~700k pairs). */
+    limit?: number;
+    /** What the rows are, for the "Showing N of M" note. */
+    noun?: string;
     /** The undecoded string, shown underneath. */
     raw?: string | null;
     /** Accessible caption, e.g. "Form fields". */
@@ -21,13 +30,20 @@
 
   // A value longer than this is clipped by CSS; the full text sits in `title`.
   const LONG = 120;
+  // The raw string underneath is a reference, not the source of truth: Raw
+  // shows every byte, so a huge body is cut here to keep layout cheap.
+  const RAW_LIMIT = 64 * 1024;
+
+  const count = $derived(total ?? rows.length);
+  const shownRows = $derived(rows.length > limit ? rows.slice(0, limit) : rows);
+  const rawShown = $derived(raw !== null && raw.length > RAW_LIMIT ? raw.slice(0, RAW_LIMIT) : raw);
 </script>
 
 <div class="kv" data-testid={testid}>
   <table>
-    <caption>{label} <span class="count">{rows.length}</span></caption>
+    <caption>{label} <span class="count">{count}</span></caption>
     <tbody>
-      {#each rows as r, i (i)}
+      {#each shownRows as r, i (i)}
         <tr>
           <th scope="row" data-testid={`${testid}-key`}>{visibleLineBreaks(r.key)}</th>
           <td data-testid={`${testid}-value`} title={r.value.length > LONG ? r.value : undefined}
@@ -37,8 +53,16 @@
       {/each}
     </tbody>
   </table>
-  {#if raw !== null}
-    <pre class="raw" data-testid={`${testid}-raw`}>{raw}</pre>
+  {#if count > shownRows.length}
+    <p class="note" data-testid={`${testid}-more`}>Showing {shownRows.length} of {count} {noun}; Raw shows all.</p>
+  {/if}
+  {#if rawShown !== null}
+    <pre class="raw" data-testid={`${testid}-raw`}>{rawShown}</pre>
+    {#if raw !== null && raw.length > rawShown.length}
+      <p class="note" data-testid={`${testid}-raw-clipped`}>
+        The raw string is cut at {RAW_LIMIT / 1024} KiB here; Raw shows all of it.
+      </p>
+    {/if}
   {/if}
 </div>
 
@@ -91,6 +115,11 @@
     line-clamp: 4;
     -webkit-box-orient: vertical;
     overflow: hidden;
+  }
+  .note {
+    margin: 0;
+    font-size: var(--fs-sm);
+    color: var(--warn);
   }
   .raw {
     margin: 0;

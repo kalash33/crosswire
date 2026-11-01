@@ -38,8 +38,8 @@
     PRETTY_LIMIT,
     type ViewerTab,
   } from './detect';
-  import { parseForm, parseQuery, prettyJson } from './pretty';
-  import { findAll, nextMatch, prevMatch, type EditorMatches } from './find';
+  import { countPairs, isValidUtf8, parseForm, parseQuery, prettyJson } from './pretty';
+  import { FIND_LIMIT, findAll, foldCase, nextMatch, prevMatch, type EditorMatches } from './find';
 
   interface Ids {
     /** Wrapper of the body editor in Raw. */
@@ -108,8 +108,17 @@
   const prettyText = $derived(
     detection.kind === 'json' && !detection.tooLarge && body !== null ? prettyJson(bytes) : null,
   );
-  const formRows = $derived(
-    detection.kind === 'form' && !detection.tooLarge && body !== null ? parseForm(bytes) : [],
+  // The table renders at most KV_LIMIT rows, so decode only one past that and
+  // count the rest without decoding (a 2 MiB body of `a=&` is ~700k pairs).
+  const KV_LIMIT = 1000;
+  const isForm = $derived(detection.kind === 'form' && !detection.tooLarge && body !== null);
+  const formRows = $derived(isForm ? parseForm(bytes, KV_LIMIT + 1) : []);
+  const formTotal = $derived(isForm ? countPairs(bytes) : 0);
+  // The raw string under the form table is a reference (KvTable cuts it at 64 KiB).
+  const formRaw = $derived(isForm ? bytesToLatin1(bytes.subarray(0, 65 * 1024)) : '');
+  // A Pretty body that is not strict UTF-8 shows U+FFFD; say so.
+  const lossy = $derived(
+    (prettyText !== null || isForm) && body !== null ? !isValidUtf8(bytes) : false,
   );
 
   // The tab follows the content until the user picks one.
@@ -147,9 +156,11 @@
   let findBar = $state<{ focus: () => void }>();
   let root = $state<HTMLElement>();
 
-  // The documents find searches, in display order.
+  // The documents find searches, in display order. They do not depend on the
+  // query, so their case-folded copies are built once per document, not on
+  // every keystroke.
   const docs = $derived.by((): { key: 'head' | 'body' | 'pretty'; text: string }[] => {
-    if (!findOpen || findQuery === '') return [];
+    if (!findOpen) return [];
     if (tab === 'raw') {
       const out: { key: 'head' | 'body' | 'pretty'; text: string }[] = [];
       if (head) out.push({ key: 'head', text: bytesToLatin1(head) });
@@ -159,7 +170,24 @@
     if (tab === 'pretty' && prettyText !== null) return [{ key: 'pretty', text: prettyText }];
     return [];
   });
-  const found = $derived(docs.map((d) => ({ key: d.key, positions: findAll(d.text, findQuery, { caseSensitive }) })));
+  const folded = $derived(caseSensitive ? [] : docs.map((d) => foldCase(d.text)));
+  // At most FIND_LIMIT matches over all documents; one more means "10000+".
+  const search = $derived.by(() => {
+    const out: { key: 'head' | 'body' | 'pretty'; positions: number[] }[] = [];
+    let left = FIND_LIMIT;
+    let capped = false;
+    docs.forEach((d, i) => {
+      if (findQuery === '') return;
+      // findAll itself stops one past FIND_LIMIT, so each call is bounded.
+      const hits = findAll(d.text, findQuery, { caseSensitive, folded: folded[i] });
+      if (hits.length > left) capped = true;
+      const kept = hits.slice(0, left);
+      left -= kept.length;
+      out.push({ key: d.key, positions: kept });
+    });
+    return { found: out, capped };
+  });
+  const found = $derived(search.found);
   const total = $derived(found.reduce((n, f) => n + f.positions.length, 0));
 
   // A new search starts at the first match.
@@ -255,6 +283,12 @@
   {/if}
 {/snippet}
 
+{#snippet utf8Note()}
+  <p class="note" data-testid={`${ids.pretty}-utf8`}>
+    Body contains invalid UTF-8; shown with replacement characters. Raw shows the bytes exactly.
+  </p>
+{/snippet}
+
 <div class="viewer" bind:this={root} tabindex="-1" data-testid={`${testidPrefix}-viewer`} data-side={side}>
   <div class="bar">
     {@render title?.()}
@@ -296,12 +330,17 @@
     {@render actions?.()}
   </div>
 
+
+  {@render above?.()}
+
+  <!-- The find bar sits right above the text it searches. -->
   {#if findOpen && textual}
     <FindBar
       bind:this={findBar}
       bind:query={findQuery}
       bind:caseSensitive
       count={total}
+      capped={search.capped}
       {current}
       onnext={() => (current = nextMatch(total, current))}
       onprev={() => (current = prevMatch(total, current))}
@@ -309,8 +348,6 @@
       testid={`${testidPrefix}-findbar`}
     />
   {/if}
-
-  {@render above?.()}
 
   <div
     class="panel"
@@ -320,7 +357,7 @@
   >
     {#if tab === 'pretty'}
       {#if queryRows.length > 0}
-        <KvTable rows={queryRows} label="Query parameters" testid={`${ids.pretty}-query`} />
+        <KvTable rows={queryRows} noun="parameters" label="Query parameters" testid={`${ids.pretty}-query`} />
       {/if}
       {#if body === null}
         {@render bodyStatus?.()}
@@ -334,6 +371,7 @@
             The {sideWord} says JSON but the body does not parse. Raw shows it as recorded.
           </p>
         {:else}
+          {#if lossy}{@render utf8Note()}{/if}
           {#key prettyText}
             <PrettyJson
               text={prettyText}
@@ -345,8 +383,15 @@
           {/key}
         {/if}
       {:else if detection.kind === 'form'}
-        <KvTable rows={formRows} raw={bytesToLatin1(shown)} label="Form fields" testid={`${ids.pretty}-form`} />
-        {@render clipNote()}
+        {#if lossy}{@render utf8Note()}{/if}
+        <KvTable
+          rows={formRows}
+          total={formTotal}
+          limit={KV_LIMIT}
+          raw={formRaw}
+          label="Form fields"
+          testid={`${ids.pretty}-form`}
+        />
       {:else if queryRows.length === 0}
         <p class="note" data-testid={`${ids.pretty}-note`}>
           No pretty view: this {sideWord} has no JSON or form body{side === 'req' ? ' and no query string' : ''}.
@@ -407,11 +452,24 @@
   .viewer:focus {
     outline: none;
   }
+  /* One row at any pane width: the tab strip gives up width first (it
+     scrolls), the toggles and host actions never wrap under it. */
   .bar {
     display: flex;
     align-items: center;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     gap: var(--s-2);
+    min-width: 0;
+  }
+  .bar > :global(*) {
+    flex: none;
+  }
+  .bar > :global(.tabs) {
+    flex: 0 1 auto;
+    min-width: 0;
+  }
+  .bar > .spacer {
+    flex: 1 1 0;
     min-width: 0;
   }
   .spacer {
