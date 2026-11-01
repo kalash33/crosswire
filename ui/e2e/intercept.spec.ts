@@ -150,3 +150,37 @@ test('rules editor round-trips a RulesDto PUT', async ({ page }) => {
     on_timeout: 'respond-504',
   });
 });
+
+test('Copy raw copies the EDITED bytes, by button and by chord', async ({ page }) => {
+  await page.addInitScript(() => {
+    (window as unknown as { __clip: string[] }).__clip = [];
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: async (t: string) => void (window as unknown as { __clip: string[] }).__clip.push(t) },
+    });
+  });
+  await mockApi(page, [A]);
+  await openIntercept(page);
+  await page.getByTestId('intercept-toggle').click();
+  await page.getByTestId('nav-history').click();
+  await page.getByTestId('nav-intercept').click();
+  await expect(page.getByTestId('held-row')).toHaveCount(1);
+  // The inline editor button is gone; the toolbar one carries the chord hint.
+  await expect(page.locator('[data-testid="copy-raw"]')).toHaveCount(1);
+  await expect(page.getByTestId('copy-raw')).toContainText('Ctrl+Shift+S');
+
+  const content = page.locator('.cm-content').first();
+  await expect(content).toContainText('POST /a HTTP/1.1');
+  await content.click();
+  await page.keyboard.press('ControlOrMeta+a');
+  await page.keyboard.press('ArrowRight');
+  await page.keyboard.type('X');
+
+  const clip = () => page.evaluate(() => (window as unknown as { __clip: string[] }).__clip);
+  await page.getByTestId('copy-raw').click();
+  await expect.poll(async () => (await clip()).length).toBe(1);
+  expect((await clip())[0]).toBe(HEAD + BODY + 'X');
+  await page.keyboard.press('Control+Shift+S');
+  await expect.poll(async () => (await clip()).length).toBe(2);
+  expect((await clip())[1]).toBe(HEAD + BODY + 'X');
+});

@@ -128,11 +128,16 @@ test('the enforce-strict toggle PUTs {enabled}', async ({ page }) => {
 });
 
 test('the strict switch reflects enforce_strict from GET and drops the unknown hint', async ({ page }) => {
-  await mockApi(page, { strict: true });
+  const h = await mockApi(page, { strict: true });
   await openScope(page);
   await expect(page.getByTestId('strict-toggle')).toBeChecked();
   await expect(page.locator('.hint')).toHaveCount(0);
   await expect(page.getByTestId('status-scope')).toContainText('strict ON');
+  // The read-only flag must never ride along in a PUT.
+  await page.getByTestId('rule-row').first().getByTestId('rule-host-value').fill('b.test');
+  await page.getByTestId('scope-save').click();
+  await expect.poll(() => h.puts.length).toBe(1);
+  expect(Object.keys(h.puts[0] as object)).not.toContain('enforce_strict');
 });
 
 test('without enforce_strict the switch stays off and a neutral hint shows', async ({ page }) => {

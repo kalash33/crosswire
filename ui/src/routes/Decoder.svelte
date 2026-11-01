@@ -15,13 +15,11 @@
     if (next) seed = next;
   });
 
-  // A page, left through the rail; there is no dismiss.
-  function noop(): void {}
 </script>
 
 <div class="decoder-view" data-testid="decoder-view">
   {#key seed}
-    <DecoderPane embedded initial={seed.bytes} initialNonLatin1={seed.nonLatin1} onClose={noop} />
+    <DecoderPane initial={seed.bytes} initialNonLatin1={seed.nonLatin1} />
   {/key}
 </div>
 

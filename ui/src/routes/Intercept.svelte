@@ -28,6 +28,7 @@
   // The whole editor buffer as Latin-1 text (byte b -> U+00b): every byte
   // survives a round trip through another tool.
   async function copyRaw() {
+    if (!focus || !original) return;
     try {
       await navigator.clipboard.writeText(bytesToLatin1(bytes));
       toasts.push({ kind: 'success', text: `Copied raw request (${bytes.length} bytes).` });
@@ -49,6 +50,7 @@
       keymap.register('forward', () => void forward()),
       keymap.register('drop', () => void drop()),
       keymap.register('send-to-repeater', () => toRepeater()),
+      keymap.register('copy-raw', () => void copyRaw()),
     ];
     return () => offs.forEach((off) => off());
   });
@@ -189,6 +191,7 @@
             >
             <Button
               icon="copy"
+              kbd={chordLabel('copy-raw')}
               data-testid="copy-raw"
               disabled={!original}
               onclick={() => void copyRaw()}>Copy raw</Button

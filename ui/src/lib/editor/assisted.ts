@@ -81,6 +81,7 @@ export function assistedChips(raw: Uint8Array, toggles: AssistedToggles): Chip[]
 /** A reason is a string, or a one-key object whose key names the variant. */
 function reasonLabel(reason: ChangeDto['reason']): string {
   if (typeof reason === 'string') return reason;
+  if (typeof reason !== 'object' || reason === null || Array.isArray(reason)) return 'unknown';
   return Object.keys(reason)[0] ?? 'unknown';
 }
 
