@@ -14,7 +14,8 @@ export const RULES = {
   overflow: 'forward-newest',
   on_timeout: 'forward',
 };
-export const HEALTH = { status: 'ok', schema_version: 3, format_version: 7 };
+export const PROJECT = { name: 'acme-web', path: '/home/tester/work/acme-web' };
+export const HEALTH = { status: 'ok', schema_version: 3, format_version: 7, project: PROJECT };
 
 export interface Row {
   id: string; created_at: number; method: string; host: string; path: string;

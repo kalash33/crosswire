@@ -65,10 +65,9 @@ fn respond(req: &Request, api_port: u16) -> Response {
     let rel = path.trim_start_matches('/');
     if !rel.is_empty() && rel != "index.html" {
         if let Some(file) = Assets::get(rel) {
-            let mime = mime_guess::from_path(rel).first_or_octet_stream();
             return build(
                 StatusCode::OK,
-                mime.as_ref(),
+                &content_type(rel),
                 file.data.into_owned(),
                 api_port,
                 &nonce,
@@ -89,6 +88,17 @@ fn respond(req: &Request, api_port: u16) -> Response {
 
     // A non-`GET` request to an unknown UI path.
     ApiError::not_found("not_found", "not found").into_response()
+}
+
+/// The `Content-Type` of an embedded file, from its extension. mime_guess
+/// knows every type the bundle ships, including the installable-app files:
+/// `manifest.webmanifest` is `application/manifest+json`, `icons/*.svg`
+/// `image/svg+xml` and `icons/*.png` `image/png` (pinned by a test below).
+fn content_type(rel: &str) -> String {
+    mime_guess::from_path(rel)
+        .first_or_octet_stream()
+        .as_ref()
+        .to_string()
 }
 
 /// Serves `index.html` with the per-response nonce injected as a `<meta>` tag.
@@ -146,4 +156,24 @@ fn new_nonce() -> String {
     let mut bytes = [0u8; 16];
     rand::rng().fill_bytes(&mut bytes);
     base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bundle_files_get_their_content_types() {
+        for (path, want) in [
+            ("manifest.webmanifest", "application/manifest+json"),
+            ("icons/icon.svg", "image/svg+xml"),
+            ("icons/icon-192.png", "image/png"),
+            ("icons/icon-512.png", "image/png"),
+            ("assets/index-abc.js", "text/javascript"),
+            ("assets/index-abc.css", "text/css"),
+            ("unknown.bin-ext", "application/octet-stream"),
+        ] {
+            assert_eq!(content_type(path), want, "{path}");
+        }
+    }
 }

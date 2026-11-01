@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createConnection } from './connection.svelte';
+import { createConnection, parseProject } from './connection.svelte';
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -41,5 +41,44 @@ describe('connection.load', () => {
     const c = createConnection();
     await c.load();
     expect(c.proxyAddr).toBe('127.0.0.1:9090');
+  });
+});
+
+describe('project', () => {
+  it('takes a reported project and keeps it null when absent', async () => {
+    const health = { status: 'ok', schema_version: 3, format_version: 7 };
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValueOnce(new Response(JSON.stringify(health), { status: 200 }))
+        .mockResolvedValueOnce(
+          new Response(
+            JSON.stringify({ ...health, project: { name: 'acme', path: '/work/acme' } }),
+            { status: 200 },
+          ),
+        ),
+    );
+    const absent = createConnection();
+    await absent.load();
+    expect(absent.project).toBeNull();
+    const named = createConnection();
+    await named.load();
+    expect(named.project).toEqual({ name: 'acme', path: '/work/acme' });
+  });
+
+  it('drops a malformed or oversized project', () => {
+    expect(parseProject(undefined)).toBeNull();
+    expect(parseProject('acme')).toBeNull();
+    expect(parseProject({ name: 'acme' })).toBeNull();
+    expect(parseProject({ name: 1, path: '/a' })).toBeNull();
+    expect(parseProject({ name: ' ', path: '/a' })).toBeNull();
+    expect(parseProject({ name: 'a'.repeat(256), path: '/a' })).toBeNull();
+    expect(parseProject({ name: 'a', path: '/'.repeat(4097) })).toBeNull();
+    const xss = '<img src=x onerror=alert(1)>';
+    expect(parseProject({ name: xss, path: `/w/${xss}`, extra: 1 })).toEqual({
+      name: xss,
+      path: `/w/${xss}`,
+    });
   });
 });

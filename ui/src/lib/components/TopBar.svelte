@@ -7,16 +7,30 @@
   import { keymap, formatChord } from '../keymap';
   import IconButton from '../ui/IconButton.svelte';
   import Icon from '../ui/Icon.svelte';
+  import ProjectChip from './ProjectChip.svelte';
+  import { windowTitle } from '../title';
 
   let { onShortcuts }: { onShortcuts: () => void } = $props();
 
   const title = $derived(routes.find((r) => r.path === router.path)?.label ?? '');
   const toggleChord = formatChord(keymap.chordFor('toggle-intercept') ?? '');
   const on = $derived(intercept.loaded && intercept.enabled);
+
+  // Health names the project; the StatusBar loads it too (one shared fetch).
+  $effect(() => {
+    void connection.load();
+  });
+  // `project · view · Crosswire`, kept in step with the route.
+  $effect(() => {
+    document.title = windowTitle(connection.project?.name ?? null, title);
+  });
 </script>
 
 <header class="top" data-testid="topbar">
   <strong class="brand">Crosswire</strong>
+  {#if connection.project}
+    <ProjectChip project={connection.project} />
+  {/if}
   <span class="here" data-testid="topbar-title">{title}</span>
 
   <span class="spacer"></span>

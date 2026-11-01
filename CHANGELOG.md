@@ -37,6 +37,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **crosswire-api**: `GET /api/v1/health` carries an optional
   `project: {name, path}` (the project directory's name and absolute path),
   which `serve` sets, so clients can show which project they are attached to.
+- **Web UI identity**: the top bar shows the project name (path on hover) and
+  the window title reads `project · view · Crosswire`; a favicon, an
+  apple-touch icon and a web app manifest (`display: standalone`, drawn
+  in-repo) let Chrome and Edge install Crosswire as its own window.
 - **Release pipeline and governance** (R2): one workspace version; release-plz
   opens the release PR and cuts the `v<version>` tag; cargo-dist builds the
   `crosswire` binary for `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`
