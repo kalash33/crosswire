@@ -284,6 +284,19 @@ describe('keymap overrides (persisted)', () => {
     expect(km.chordFor('tab-next')).toBe('ctrl+shift+x');
   });
 
+  it('ignores bare special keys on load', () => {
+    localStorage.setItem(KEY, JSON.stringify({ drop: 'tab', send: 'enter', forward: 'f1', copy: 'x', 'tab-next': 'shift+tab', 'tab-prev': 'space', 'copy-raw': 'escape' }));
+    const km = createKeymap(DEFAULT_BINDINGS, { storageKey: KEY });
+    expect(km.bindings().map((b) => b.chord)).toEqual(ACTIONS.map((a) => DEFAULT_BINDINGS[a]));
+  });
+
+  it('load is independent of storage order (swap onto a vacated default)', () => {
+    localStorage.setItem(KEY, JSON.stringify({ send: 'ctrl+shift+e', drop: 'ctrl+space' }));
+    const km = createKeymap(DEFAULT_BINDINGS, { storageKey: KEY });
+    expect(km.chordFor('drop')).toBe('ctrl+space');
+    expect(km.chordFor('send')).toBe('ctrl+shift+e');
+  });
+
   it('reset cascades when a restored default is held by another override', () => {
     const km = createKeymap(DEFAULT_BINDINGS, { storageKey: KEY });
     km.remap('send-to-repeater', 'ctrl+shift+e');
@@ -320,6 +333,13 @@ describe('validateChord', () => {
     expect(km.validateChord('7', 'drop').ok).toBe(false);
     expect(km.validateChord('ctrl+e', 'drop').ok).toBe(true);
     expect(km.validateChord('alt+7', 'drop').ok).toBe(true);
+  });
+  it('refuses bare special keys', () => {
+    for (const c of ['tab', 'enter', 'space', 'escape', 'f1', 'shift+tab', 'backspace', 'arrowup']) {
+      expect(km.validateChord(c, 'drop').ok).toBe(false);
+    }
+    expect(km.validateChord('?', 'show-shortcuts').ok).toBe(true);
+    expect(km.validateChord('ctrl+tab', 'drop').ok).toBe(true);
   });
   it('refuses a conflict naming the other action, allows its own chord', () => {
     const r = km.validateChord('Ctrl+F', 'drop');

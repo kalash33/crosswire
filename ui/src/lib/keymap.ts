@@ -198,7 +198,10 @@ function modifierless(chord: string): boolean {
   const parts = chord.split(/\+(?=.)/);
   const key = parts[parts.length - 1];
   const hasCtrlAlt = parts.includes('ctrl') || parts.includes('alt');
-  return !hasCtrlAlt && /^[a-z0-9]$/.test(key);
+  // Only a single printable symbol (the "?" case) may stand without Ctrl/Alt;
+  // letters, digits and named keys (tab, enter, space, f1...) would hijack
+  // typing or focus navigation app-wide.
+  return !hasCtrlAlt && !(key.length === 1 && !/[a-z0-9]/.test(key));
 }
 
 export function createKeymap(
@@ -228,11 +231,20 @@ export function createKeymap(
 
   function loadOverrides(): void {
     if (storageKey === null) return;
-    for (const [action, chord] of Object.entries(readOverrides(storageKey)) as [Action, string][]) {
-      // A stored chord that collides with another action's current chord is
-      // ignored rather than allowed to shadow it.
-      const holder = [...bindings].find(([a, c]) => c === chord && a !== action);
-      if (holder) continue;
+    const stored = readOverrides(storageKey);
+    // Resolve against the FINAL override set (not storage order): drop an
+    // override whose chord another action ends up holding, until stable.
+    for (;;) {
+      const finalChord = (a: Action): string => stored[a] ?? defaults[a];
+      const clash = ACTIONS.find(
+        (a) =>
+          stored[a] !== undefined &&
+          ACTIONS.some((o) => o !== a && finalChord(o) === stored[a] && (stored[o] === undefined || o < a)),
+      );
+      if (!clash) break;
+      delete stored[clash];
+    }
+    for (const [action, chord] of Object.entries(stored) as [Action, string][]) {
       bindings.set(action, chord);
       if (chord !== defaults[action]) overrides.set(action, chord);
     }
@@ -326,7 +338,7 @@ export function createKeymap(
         };
       }
       if (modifierless(norm)) {
-        return { ok: false, reason: 'Add Ctrl or Alt: a bare key would fire while you type.' };
+        return { ok: false, reason: 'Add Ctrl or Alt: a bare key would fire while you type or break navigation.' };
       }
       const holder = actionFor(norm);
       if (holder && holder !== action) {
