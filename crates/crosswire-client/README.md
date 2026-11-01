@@ -39,7 +39,7 @@ wire.
 | --- | --- |
 | `Transport` | `new(Arc<dyn TlsBackend>, Arc<DestinationGate>)`; `connect(&Target) -> Connection` |
 | `Target` | `plain(host, port)`, `tls(host, port, sni, VerifyMode)`, `with_tls_config` |
-| `DestinationGate`, `GateRefusal` | the destination policy and why it refused (`Loopback`, `LinkLocal`, `Metadata`, `OwnListener`) |
+| `DestinationGate`, `GateRefusal`, `canonical` | the destination policy, why it refused (`Loopback`, `LinkLocal`, `Metadata`, `MetadataName`, `OwnListener`, `Unresolved`, `Multicast`, `Broadcast`, `Unspecified`), and the transition-form unwrapping it applies |
 | `Connection` | the stream plus `ConnectionInfo`, `connect_ms`, `tls_ms`, `chain_error` |
 | `TlsBackend`, `RustlsBackend` | the pluggable TLS client trait and its rustls implementation (TLS 1.2 and up, ring provider) |
 | `TlsConnectConfig`, `VerifyMode`, `TlsInfo` | handshake parameters (SNI, ALPN, client certificate), `WebPki` or `AcceptInvalid`, and what was negotiated |
@@ -72,16 +72,32 @@ partial response as if it were whole.
 
 - **Destination gate.** `DestinationGate::check` runs on the resolved
   addresses, so the spelling of the host (`localhost`, `127.1`, `2130706433`,
-  `::ffff:127.0.0.1`, a name that resolves to loopback) does not matter. It
-  refuses loopback and unspecified addresses, link-local ranges
-  (`169.254.0.0/16`, `fe80::/10`), and the metadata addresses `169.254.169.254`,
-  `100.100.100.200` and `fd00:ec2::254`. IPv4-mapped IPv6 addresses are treated
-  as IPv4. Every resolved address must pass, and an empty result is refused.
-  Private ranges such as `10.0.0.0/8` are not blocked: testers need them.
-- **Allowlist.** `allow(host, port)` is an exact pair, compared without case or a
-  trailing dot, and it lifts the loopback, link-local and metadata checks for
-  that name, whatever it resolves to. The own-listener ports passed to
-  `DestinationGate::new` are refused on loopback even when allowlisted.
+  `::ffff:127.0.0.1`, a name that resolves to loopback) does not matter. IPv6
+  transition forms are first unwrapped to the IPv4 they carry (`canonical`:
+  IPv4-mapped `::ffff:a.b.c.d`, IPv4-compatible `::a.b.c.d`, NAT64
+  `64:ff9b::/96`, 6to4 `2002::/16`, Teredo `2001:0::/32`), and the rules run on
+  both the unwrapped and the original address. Every resolved address must
+  pass; an empty result is refused as `Unresolved`.
+- **Always refused, never allowlistable:** unspecified (`0.0.0.0/8`, `::`),
+  multicast (`224.0.0.0/4`, `ff00::/8`), broadcast (`255.255.255.255`), the
+  cloud metadata addresses `169.254.169.254`, `100.100.100.200`,
+  `fd00:ec2::254` and `fd20:ce::254`, and the metadata host names
+  `metadata.google.internal` and `metadata` (any case, trailing dot ignored),
+  which `Transport::connect` refuses before any DNS lookup
+  (`DestinationGate::check_name`).
+- **Own listener ports.** A destination on one of the ports passed to
+  `DestinationGate::new` is refused as `OwnListener` when the address is
+  loopback, unspecified, or owned by this host. Ownership is probed by binding
+  a UDP socket to that address (port 0, dropped at once, nothing sent); any
+  probe error counts as "not local". The probe runs only when the port matches.
+  An allowlist entry does not lift this.
+- **Allowlistable:** loopback (`127.0.0.0/8`, `::1`) and link-local
+  (`169.254.0.0/16`, `fe80::/10`). `allow(host, port)` is an exact pair,
+  compared without case or a trailing dot, and it lifts only these two checks
+  for that name.
+- **Allowed by default:** private ranges such as RFC 1918, CGNAT
+  `100.64.0.0/10`, ULA `fc00::/7` and `198.18.0.0/15` are not blocked: testers
+  need them.
 - **No second lookup.** `connect` dials the addresses the gate checked; it does
   not resolve the name again, so DNS rebinding between check and connect does not
   apply.

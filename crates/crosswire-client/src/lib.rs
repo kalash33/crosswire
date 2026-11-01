@@ -16,7 +16,7 @@ mod transport;
 mod write_plan;
 
 pub use error::ClientError;
-pub use gate::{DestinationGate, GateRefusal};
+pub use gate::{canonical, DestinationGate, GateRefusal};
 pub use rustls_backend::RustlsBackend;
 pub use session::Session;
 pub use stream::{BodyPiece, ResponseStream};
