@@ -14,8 +14,9 @@
 //!   equality-led queries (host / method+status / scope) use their index on a
 //!   fresh project. The open-ended `resp_len >= ?` range only uses its index
 //!   once the planner has statistics for the (skewed) size distribution, which
-//!   an `ANALYZE` provides — so its plan is asserted on an analysed, populated
-//!   project (the §13 scenario), in `analysed_*`.
+//!   the store gathers itself on a clean close (`analyze_threshold`) — so its
+//!   plan is asserted after a clean close of a populated project (the §13
+//!   scenario), in `clean_close_*`.
 //! * **keyset paging** — a filtered result paged to exhaustion via
 //!   `next_cursor` yields every matching id exactly once, descending.
 
@@ -341,57 +342,51 @@ fn keyset_paging_a_filtered_host_is_exhaustive() {
     assert_uses(&store, &filter, "idx_exchanges_host");
 }
 
-/// Gathers planner statistics on a closed project, as the retired v2→v3
-/// migration did, so the open-ended `resp_len >= ?` range can pick its index.
-fn analyse(db: &Path) {
-    let conn = rusqlite::Connection::open(db).unwrap();
-    conn.execute_batch("ANALYZE;").unwrap();
+/// Opens the closed project's database read-only, outside the store.
+fn raw_ro(dir: &Path) -> rusqlite::Connection {
+    rusqlite::Connection::open_with_flags(
+        dir.join("project.db"),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .unwrap()
+}
+
+/// Whether `sqlite_stat1` holds a row for the `exchanges` table.
+fn has_exchanges_stats(dir: &Path) -> bool {
+    raw_ro(dir)
+        .query_row(
+            "SELECT 1 FROM sqlite_stat1 WHERE tbl = 'exchanges' LIMIT 1",
+            [],
+            |_| Ok(()),
+        )
+        .is_ok()
+}
+
+fn cfg_threshold(n: usize) -> StoreConfig {
+    StoreConfig {
+        analyze_threshold: n,
+        ..cfg()
+    }
 }
 
 #[test]
-fn analysed_populated_project_serves_size_query_from_its_index() {
+fn clean_close_gathers_statistics_above_threshold() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path().join("p");
-    let db = dir.join("project.db");
 
     // Seed a populated project with rare large responses, then close cleanly.
     let (attrs, before) = {
-        let store = create(&dir);
+        let store = Store::open(Project::create(&dir).unwrap(), cfg_threshold(100)).unwrap();
         let mut ev = store.subscribe();
-        let attrs = seed_skewed(&store, &mut ev, 250);
+        let attrs = seed_skewed(&store, &mut ev, 150);
         let before = list_all(&store, &size_filter());
         store.close().unwrap();
         (attrs, before)
     };
-    assert_eq!(before.len(), 5, "every 50th of 250 rows is over 1 MiB");
+    assert_eq!(before.len(), 3, "every 50th of 150 rows is over 1 MiB");
+    assert!(has_exchanges_stats(&dir), "close ran ANALYZE");
 
-    analyse(&db);
     let store = reopen(&dir);
-
-    let conn = store.reader().unwrap();
-    let version: u32 = conn
-        .pragma_query_value(None, "user_version", |r| r.get(0))
-        .unwrap();
-    assert_eq!(version, 6, "project stays at the current format (6)");
-    let mut stmt = conn
-        .prepare("SELECT name FROM sqlite_master WHERE type='index' AND name LIKE 'idx_exchanges_%' ORDER BY name")
-        .unwrap();
-    let indexes: Vec<String> = stmt
-        .query_map([], |r| r.get::<_, String>(0))
-        .unwrap()
-        .map(Result::unwrap)
-        .collect();
-    assert_eq!(
-        indexes,
-        vec![
-            "idx_exchanges_host",
-            "idx_exchanges_method_status",
-            "idx_exchanges_resp_len",
-            "idx_exchanges_scope",
-        ],
-        "all four indexes present"
-    );
-
     let want = expected(&attrs, |a| a.resp_len >= OVER_1_MIB);
     assert_eq!(list_all(&store, &size_filter()), want, "size parity");
     assert_eq!(list_all(&store, &size_filter()), before);
@@ -399,4 +394,42 @@ fn analysed_populated_project_serves_size_query_from_its_index() {
     // With statistics the selective range uses its index rather than scanning
     // the whole table (the §13 performance contract).
     assert_uses(&store, &size_filter(), "idx_exchanges_resp_len");
+}
+
+/// The recorded row count of the `exchanges` table's first statistics row.
+fn stat_rows(dir: &Path) -> i64 {
+    let stat: String = raw_ro(dir)
+        .query_row(
+            "SELECT stat FROM sqlite_stat1 WHERE tbl = 'exchanges' LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    stat.split(' ').next().unwrap().parse().unwrap()
+}
+
+#[test]
+fn clean_close_runs_optimize_below_threshold() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("p");
+    // A project that never gathered statistics is analysed on its first clean
+    // close whatever the threshold.
+    {
+        let store = Store::open(Project::create(&dir).unwrap(), cfg_threshold(100)).unwrap();
+        let mut ev = store.subscribe();
+        seed_skewed(&store, &mut ev, 50);
+        store.close().unwrap();
+    }
+    assert!(has_exchanges_stats(&dir), "first clean close analyses");
+    assert_eq!(stat_rows(&dir), 50);
+
+    // With statistics present and fewer new rows than the threshold, the close
+    // runs `PRAGMA optimize` only: the recorded count is not refreshed.
+    {
+        let store = Store::open(Project::open(&dir).unwrap(), cfg_threshold(100)).unwrap();
+        let mut ev = store.subscribe();
+        seed_skewed(&store, &mut ev, 10);
+        store.close().unwrap();
+    }
+    assert_eq!(stat_rows(&dir), 50, "below the threshold: not re-analysed");
 }

@@ -139,6 +139,9 @@ pub(crate) struct Writer {
     stuck: HashSet<PathBuf>,
     /// Journal files that failed to read with a transient error, and how often.
     transient: HashMap<PathBuf, u32>,
+    /// Exchanges committed by this writer (counted for the close-time
+    /// statistics policy).
+    session_inserts: usize,
 }
 
 impl Writer {
@@ -155,6 +158,7 @@ impl Writer {
             failing: false,
             stuck: HashSet::new(),
             transient: HashMap::new(),
+            session_inserts: 0,
         }
     }
 
@@ -288,6 +292,7 @@ impl Writer {
             self.shared.release_slot(size);
         }
         if clean {
+            self.gather_statistics();
             self.checkpoint("TRUNCATE");
         }
     }
@@ -573,6 +578,7 @@ impl Writer {
     /// never only in an unsynced WAL), then broadcasts.
     fn after_commit(&mut self, items: Vec<Item>, done: Committed) -> usize {
         let Committed { ids, markers } = done;
+        self.session_inserts += ids.len();
         for (_, size) in std::mem::take(&mut self.markers) {
             self.shared.release_slot(size);
         }
@@ -756,6 +762,36 @@ impl Writer {
                     .events
                     .error(format!("cannot sync the WAL: {e}"));
             }
+        }
+    }
+
+    /// Clean close only: refreshes the planner statistics the size-query plan
+    /// contract (`resp_len >= ?` over its index) depends on. A project with no
+    /// `exchanges` row in `sqlite_stat1`, or a session that stored at least
+    /// `analyze_threshold` exchanges, gets a full `ANALYZE`; otherwise the
+    /// cheap `PRAGMA optimize` runs. An abandoned or dropped store runs
+    /// neither, so a kill -9 style stop is unchanged.
+    fn gather_statistics(&mut self) {
+        let conn = self.project.writer_mut();
+        let has_stats = conn
+            .query_row(
+                "SELECT 1 FROM sqlite_stat1 WHERE tbl = 'exchanges' LIMIT 1",
+                [],
+                |_| Ok(()),
+            )
+            .optional()
+            // A missing `sqlite_stat1` table is an error here: no statistics.
+            .is_ok_and(|row| row.is_some());
+        let analyse = !has_stats || self.session_inserts >= self.cfg.analyze_threshold;
+        let sql = if analyse {
+            "ANALYZE"
+        } else {
+            "PRAGMA optimize"
+        };
+        if let Err(e) = conn.execute_batch(sql) {
+            self.shared
+                .events
+                .error(format!("{sql} at close failed: {e}"));
         }
     }
 

@@ -42,6 +42,10 @@ pub struct StoreConfig {
     pub event_capacity: usize,
     /// Size at which `audit.jsonl` rotates to `audit.jsonl.1` (64 MiB).
     pub audit_rotate_bytes: u64,
+    /// Exchanges stored in one session at which a clean close runs a full
+    /// `ANALYZE` (1,000). Below it the close runs `PRAGMA optimize`, except
+    /// that a project with no statistics for `exchanges` is always analysed.
+    pub analyze_threshold: usize,
     /// Test hook: the writer holds this lock while it receives and commits
     /// each batch, so a test can stall it.
     #[doc(hidden)]
@@ -91,6 +95,7 @@ impl Default for StoreConfig {
             journal_cap: 1024 * MIB as u64,
             event_capacity: 10_000,
             audit_rotate_bytes: 64 * MIB as u64,
+            analyze_threshold: 1_000,
             test_pause: None,
             #[cfg(test)]
             hooks: Arc::default(),

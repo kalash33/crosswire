@@ -60,6 +60,8 @@ pub(crate) fn migrate(conn: &mut Connection, from: u32) -> Result<(), StoreError
         // distribution so the selective range uses `idx_exchanges_resp_len`.
         // A fresh project (`init`) is empty, so it is not analysed here; it
         // gathers statistics once it holds representative data.
+        // (Retired step: statistics are now gathered by the writer on a clean
+        // close, see `Writer::gather_statistics` and `StoreConfig::analyze_threshold`.)
         tx.execute_batch("ANALYZE;")?;
         tx.pragma_update(None, "user_version", 3)?;
         tx.commit()?;
@@ -100,6 +102,7 @@ pub(crate) fn migrate(conn: &mut Connection, from: u32) -> Result<(), StoreError
         tx.execute_batch(METHOD_STATUS_ORDER)?;
         // Statistics for the rebuilt index, so the planner picks it over a
         // primary-key scan on an existing, populated project.
+        // (Retired step; see the close-time policy in `Writer::gather_statistics`.)
         tx.execute_batch("ANALYZE;")?;
         tx.pragma_update(None, "user_version", 5)?;
         tx.commit()?;
