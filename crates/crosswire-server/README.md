@@ -139,6 +139,11 @@ bootstrap url written to /path/to/file (valid for 60 s)
 argv entry and never through a shell; the URL is still printed (or written to
 `--bootstrap-file`), so a failed open costs nothing. The token is single-use, so
 once the opened page has exchanged it, the copy in the browser's argv is spent.
+Until then another local user can read it from the process list (`ps`,
+`/proc/<pid>/cmdline`) and race the browser for the session, so on a shared
+multi-user host prefer `--bootstrap-file` without `--open`. With both flags the
+0600 file is still written, but after a successful open it holds a token that
+has already been used.
 
 ### `crosswire token`
 
@@ -194,6 +199,9 @@ wired browser uses `<project>/browser-profile`, so the two are separate browser
 instances. With no Chromium-based browser the UI falls back to the default
 browser and the wired launch is skipped with a warning naming the proxy
 address; serving continues. Ctrl-C (or SIGTERM) stops `serve` and both browsers.
+Only browsers this run started are stopped: if an earlier run was killed with
+`kill -9` and left its app window open, the next launch on the same profile is
+handed to that window, which a later Ctrl-C does not close.
 
 ### `crosswire ca`
 

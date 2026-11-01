@@ -37,6 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **crosswire-api**: `GET /api/v1/health` carries an optional
   `project: {name, path}` (the project directory's name and absolute path),
   which `serve` sets, so clients can show which project they are attached to.
+  It is reported to loopback peers only.
 - **Web UI identity**: the top bar shows the project name (path on hover) and
   the window title reads `project · view · Crosswire`; a favicon, an
   apple-touch icon and a web app manifest (`display: standalone`, drawn

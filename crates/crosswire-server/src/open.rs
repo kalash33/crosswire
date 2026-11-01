@@ -107,6 +107,9 @@ fn default_opener(url: &str, env: &OpenEnv<'_>) -> Launch {
         (Some(opener), _) => (opener.as_os_str().to_owned(), Vec::new()),
         (None, "macos") => ("open".into(), Vec::new()),
         // `start`'s first quoted argument is the window title, hence `""`.
+        // `cmd` re-parses its command line, so this is safe only while the
+        // URL holds no `cmd` metacharacter: any change to the bootstrap URL
+        // format must keep `bootstrap_urls_hold_no_cmd_metacharacter` passing.
         (None, "windows") => ("cmd".into(), vec!["/c".into(), "start".into(), "".into()]),
         (None, _) => ("xdg-open".into(), Vec::new()),
     };
@@ -218,13 +221,18 @@ impl Launched {
 }
 
 /// Sends SIGTERM through `kill(1)` (the crate forbids `unsafe`, so no direct
-/// `libc::kill`); falls back to [`Child::kill`] when that fails.
+/// `libc::kill`): `/bin/kill` first, then `kill` from `PATH`, and
+/// [`Child::kill`] (SIGKILL) when neither succeeds.
 #[cfg(unix)]
 fn terminate(child: &mut Child) {
-    let mut cmd = Command::new("kill");
-    cmd.arg("-TERM").arg(child.id().to_string());
-    quiet(&mut cmd);
-    if !cmd.status().is_ok_and(|s| s.success()) {
+    let pid = child.id().to_string();
+    let sent = ["/bin/kill", "kill"].iter().any(|program| {
+        let mut cmd = Command::new(program);
+        cmd.arg("-TERM").arg(&pid);
+        quiet(&mut cmd);
+        cmd.status().is_ok_and(|s| s.success())
+    });
+    if !sent {
         let _ = child.kill();
     }
 }

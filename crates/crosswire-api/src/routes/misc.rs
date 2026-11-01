@@ -25,11 +25,16 @@ pub struct HealthResponse {
     /// The project database format (`user_version`) this build reads and writes.
     pub format_version: u32,
     /// The proxy listener's bound address as `host:port` (`[v6]:port` for
-    /// IPv6). Absent when no proxy is running alongside the API.
+    /// IPv6). Absent when no proxy is running alongside the API. Reported to
+    /// every peer, unlike `project`: it is a socket address the peer could
+    /// probe for anyway, not a filesystem path.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub proxy_addr: Option<String>,
     /// The project the server is attached to (directory name and absolute
-    /// path). Absent when the embedder names none.
+    /// path). Absent when the embedder names none, and omitted for a
+    /// non-loopback peer: the path can carry the local user and engagement
+    /// names, and a non-loopback `--api-bind` would otherwise hand them to
+    /// anyone on the network without a credential.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub project: Option<ProjectInfo>,
 }
@@ -40,13 +45,22 @@ pub struct HealthResponse {
     path = "/api/v1/health",
     responses((status = 200, description = "The API is serving", body = HealthResponse))
 )]
-pub async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
+pub async fn health(
+    State(state): State<AppState>,
+    extensions: http::Extensions,
+) -> Json<HealthResponse> {
+    // No connection info (an embedder serving without it) counts as
+    // loopback, matching the gate's `peer_ip`. An IPv4-mapped peer (a
+    // dual-stack `[::]` bind) is judged by its IPv4 address.
+    let loopback = extensions
+        .get::<ConnectInfo<SocketAddr>>()
+        .is_none_or(|c| c.0.ip().to_canonical().is_loopback());
     Json(HealthResponse {
         status: "ok",
         schema_version: crosswire_model::SCHEMA_VERSION,
         format_version: crosswire_store::FORMAT_VERSION,
         proxy_addr: state.proxy_addr.map(|a| a.to_string()),
-        project: state.project.clone(),
+        project: state.project.clone().filter(|_| loopback),
     })
 }
 
