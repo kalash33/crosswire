@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, tick } from 'svelte';
+  import { onMount, tick, untrack } from 'svelte';
   import { SvelteSet } from 'svelte/reactivity';
   import { clientFilter, history, type ExchangeFilter, type Row } from '../lib/stores/history.svelte';
   import { events } from '../lib/stores/events.svelte';
@@ -159,6 +159,14 @@
     else selected.add(id);
   }
 
+  // A hidden row cannot be seen or unchecked, so a search drops its selection.
+  $effect(() => {
+    const visible = new Set(visibleRows.map((r) => r.id));
+    untrack(() => {
+      for (const id of [...selected]) if (!visible.has(id)) selected.delete(id);
+    });
+  });
+
   function toggleAll(): void {
     if (checkedIds.length === visibleRows.length && visibleRows.length > 0) {
       for (const r of visibleRows) selected.delete(r.id);
@@ -270,7 +278,8 @@
   }
 
   function onDetailKey(e: KeyboardEvent): void {
-    if (e.key !== 'Escape' || e.defaultPrevented) return;
+    // Escape inside a field (tag input, notes, CodeMirror) keeps the field's own meaning.
+    if (e.key !== 'Escape' || e.defaultPrevented || isTypingTarget(e.target)) return;
     e.preventDefault();
     focusList();
   }

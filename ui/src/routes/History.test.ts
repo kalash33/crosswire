@@ -167,6 +167,36 @@ describe('History view', () => {
     expect(localStorage.getItem('crosswire.history.columns')).toBe('["method","status","len","state"]');
   });
 
+  it('Escape in a detail field keeps focus there; Escape elsewhere in the detail returns to the list', async () => {
+    const t = await render();
+    const body = t.querySelector<HTMLElement>('.detail-body')!;
+    const notes = document.createElement('textarea');
+    body.append(notes);
+    notes.focus();
+    key(notes, 'Escape');
+    expect(document.activeElement).toBe(notes);
+
+    const btn = document.createElement('button');
+    body.append(btn);
+    btn.focus();
+    key(btn, 'Escape');
+    expect(rows(t).includes(document.activeElement as HTMLElement)).toBe(true);
+  });
+
+  it('drops hidden rows from the selection when the search changes', async () => {
+    const t = await render();
+    const boxes = () => t.querySelectorAll<HTMLInputElement>('tbody input[type="checkbox"]');
+    for (const b of boxes()) b.click();
+    flushSync();
+    expect(t.querySelector('[data-testid="history-count"]')!.textContent).toContain('3 selected');
+    type(t, 'idor');
+    flushSync();
+    expect(t.querySelector('[data-testid="history-count"]')!.textContent).toContain('1 selected');
+    type(t, '');
+    flushSync();
+    expect(t.querySelector('[data-testid="history-count"]')!.textContent).toContain('1 selected');
+  });
+
   it('shows every column by default, with Tags cells present', async () => {
     const t = await render();
     expect(t.querySelectorAll('td.tags')).toHaveLength(3);
