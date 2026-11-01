@@ -46,4 +46,7 @@ export function timeCell(iso: string | number, now: Date = new Date()): string {
   const today =
     d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
   return today ? clock : `${MONTHS[d.getMonth()]} ${d.getDate()} ${clock}`;
+/** The current time as an ISO 8601 string (UTC). */
+export function isoNow(): string {
+  return new Date().toISOString();
 }

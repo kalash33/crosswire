@@ -31,7 +31,8 @@
   onMount(() => {
     void (async () => {
       await repeater.loadTabs();
-      if (repeater.tabs.length === 0) repeater.newTab();
+      // Not an explicit "New": leave keyboard focus where it is.
+      if (repeater.tabs.length === 0) repeater.newTab({}, { focus: false });
     })();
     const offs = [
       keymap.register('send', () => {

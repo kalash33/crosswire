@@ -100,6 +100,12 @@
   --find-match: #e0a04038;
   --find-current: #e0a04080;
 
+  /* Response compare (repeater): added / removed line backgrounds and signs. */
+  --diff-add-bg: #5fb87824;
+  --diff-del-bg: #e5645c24;
+  --diff-add-fg: #7fcf95;
+  --diff-del-fg: #f08a83;
+
   /* Captured HTML preview always renders on white, as a browser would */
   --preview-bg: #ffffff;
 
@@ -220,6 +226,11 @@
   --syn-status: #925600;
   --find-match: #e0a04040;
   --find-current: #e0a04099;
+
+  --diff-add-bg: #277a421f;
+  --diff-del-bg: #c43c331c;
+  --diff-add-fg: #1e6b38;
+  --diff-del-fg: #a8322a;
 
   --shadow-pop: 0 8px 24px #1a1d2429, 0 0 0 1px #1a1d241a;
 }

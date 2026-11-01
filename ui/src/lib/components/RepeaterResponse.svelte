@@ -1,10 +1,11 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import MessageViewer from '../viewer/MessageViewer.svelte';
   import CopyMenu from './CopyMenu.svelte';
   import HeadersTable from './HeadersTable.svelte';
   import ResultHeader from './ResultHeader.svelte';
   import { parseHeadLines, type HeaderLine } from '../http/headers';
-  import { responseView, type RepeaterTab } from '../stores/repeater.svelte';
+  import { repeater, responseView, type RepeaterTab } from '../stores/repeater.svelte';
   import type { ExchangeDto } from '../stores/history.svelte';
   import { latin1ToBytes, bytesToLatin1 } from '../editor/encoding';
   import { apiGet, apiGetBytes } from '../api/client';
@@ -117,6 +118,14 @@
         head = noteOnly(`Headers unavailable: ${msg}`);
       }
     })();
+  });
+
+  // Report the status and size to the tab's send history once both are read.
+  $effect(() => {
+    const id = tab.outcome?.exchange_id;
+    if (!id || head === null || resp === null) return;
+    const note = { status: status === null ? null : Number(status), size: resp.error ? null : resp.bytes.length };
+    untrack(() => repeater.noteResponse(tab.id, id, note));
   });
 
   // The media type of a normalized head (a raw head is read by the viewer).
