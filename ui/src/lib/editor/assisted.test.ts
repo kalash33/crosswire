@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { assistedChips, renderChanges } from './assisted';
+import type { ChangeDto } from '../api/types';
 
 // Build request-head bytes from an ASCII head string. Heads are ASCII on the
 // wire, so UTF-8 encoding equals the raw bytes here; the production detection
@@ -58,13 +59,19 @@ describe('assistedChips', () => {
 describe('renderChanges', () => {
   it('maps a SendOutcomeDto.changes list to labeled result chips', () => {
     const chips = renderChanges([
-      { op: 'content-length', reason: 'recomputed', start: 20, end: 35 },
-      { op: 'line-endings', reason: 'normalized to CRLF', start: 0, end: 120 },
+      { op: 'replace', reason: 'hop-by-hop', start: 20, end: 35 },
+      { op: 'replace', reason: { 'intruder-position': 3 }, start: 40, end: 44 },
     ]);
     expect(chips).toEqual([
-      { label: 'content-length @ 20‥35', state: 'recomputed' },
-      { label: 'line-endings @ 0‥120', state: 'normalized to CRLF' },
+      { label: 'replace @ 20‥35', state: 'hop-by-hop' },
+      { label: 'replace @ 40‥44', state: 'intruder-position' },
     ]);
+  });
+
+  it('falls back to unknown for a null, array or empty reason', () => {
+    const bad = [null, [], {}] as unknown as ChangeDto['reason'][];
+    const chips = renderChanges(bad.map((reason) => ({ op: 'replace', reason, start: 0, end: 1 })));
+    expect(chips.map((c) => c.state)).toEqual(['unknown', 'unknown', 'unknown']);
   });
 
   it('returns an empty list for no changes', () => {

@@ -88,7 +88,7 @@
   </button>
   <span class="item" data-testid="status-scope">Scope {scopeLabel}{#if scope.strictKnown} · strict {scope.enforceStrict ? 'ON' : 'OFF'}{/if}</span>
   <span class="item counts" data-testid="status-counts">
-    {#if counts}History {counts.history} · Repeater {counts.repeater} · Intruder {counts.intruder}{:else}Counts …{/if}
+    {#if counts}History {counts.history} · Repeater {counts.repeater}{:else}Counts …{/if}
   </span>
   {#if failed}<span class="item error" data-testid="status-error">status unavailable</span>{/if}
 </footer>

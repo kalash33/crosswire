@@ -382,3 +382,19 @@ async fn bracketed_ipv6_host_matches_unbracketed_allowlist_entry() {
     let c = t.connect(&Target::plain("[::1]", port)).await.unwrap();
     assert_eq!(c.info().port(), port);
 }
+
+#[tokio::test]
+async fn metadata_host_name_is_refused_without_a_lookup() {
+    let t = Transport::new(
+        Arc::new(RustlsBackend::webpki_roots()),
+        Arc::new(DestinationGate::new(vec![])),
+    );
+    for h in ["metadata.google.internal", "Metadata."] {
+        let err = t.connect(&Target::plain(h, 80)).await.unwrap_err();
+        assert!(
+            matches!(err, ClientError::Refused(GateRefusal::MetadataName(_))),
+            "{h}: {err:?}"
+        );
+    }
+    assert_eq!(t.dns_count(), 0);
+}

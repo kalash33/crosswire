@@ -221,11 +221,13 @@ impl Transport {
     /// same addresses, so the name is not resolved a second time.
     ///
     /// # Errors
-    /// [`ClientError::Refused`] when the gate refuses any resolved address;
-    /// otherwise DNS, I/O, TLS or timeout errors.
+    /// [`ClientError::Refused`] when the gate refuses the host name or any
+    /// resolved address; otherwise DNS, I/O, TLS or timeout errors.
     pub async fn connect(&self, target: &Target) -> Result<Connection, ClientError> {
         self.connect_count.fetch_add(1, Ordering::Relaxed);
         let host = target.host.trim_start_matches('[').trim_end_matches(']');
+        // Metadata host names are refused before any lookup.
+        DestinationGate::check_name(host).map_err(ClientError::Refused)?;
         let ips = self.resolve(host, target.port).await?;
         self.gate
             .check(host, target.port, &ips)

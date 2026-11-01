@@ -31,5 +31,5 @@ test('Shortcuts card lists the keymap', async ({ page }) => {
   await page.goto('/settings');
   const card = page.getByTestId('settings-shortcuts');
   await expect(card).toContainText('Toggle intercept');
-  await expect(card).toContainText('Ctrl+T');
+  await expect(card).toContainText('Ctrl+I');
 });

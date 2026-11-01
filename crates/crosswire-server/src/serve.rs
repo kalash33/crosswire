@@ -176,7 +176,13 @@ async fn serve_with_store(
         .map_err(|e| CliError::runtime("reading the listener address", e))?
         .port();
 
-    let mut gate = DestinationGate::new(vec![own_port]);
+    // Bind the API (a separate socket) before building the gates, so both
+    // gates protect both listener ports even when either was asked for port 0.
+    let (api_listener, api_addr) = api_cmd::bind_api(args.api_bind).await?;
+    let api_port = api_addr.port();
+    let own_ports = vec![own_port, api_port];
+
+    let mut gate = DestinationGate::new(own_ports.clone());
     for (host, port) in &args.allow {
         gate.allow(host, *port);
         audit("allow.add", &host_port(host, *port))?;
@@ -229,7 +235,7 @@ async fn serve_with_store(
     // The repeater dials through its own transport (mirroring --allow) and
     // records security-relevant sends to the audit log. A no-op hook here would
     // silently drop the out-of-scope-send audit requirement.
-    let mut repeater_gate = DestinationGate::new(Vec::new());
+    let mut repeater_gate = DestinationGate::new(own_ports);
     for (host, port) in &args.allow {
         repeater_gate.allow(host, *port);
     }
@@ -249,9 +255,7 @@ async fn serve_with_store(
         limits.parse,
     ));
 
-    // Bind the API (a separate socket) and build its shared state.
-    let (api_listener, api_addr) = api_cmd::bind_api(args.api_bind).await?;
-    let api_port = api_addr.port();
+    // The API's shared state (its listener is already bound above).
     let api_config = ApiConfig {
         bind: api_addr,
         idle_timeout: DEFAULT_IDLE_TIMEOUT,

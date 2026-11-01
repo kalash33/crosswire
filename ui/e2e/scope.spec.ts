@@ -27,7 +27,7 @@ interface Harness {
   strict: unknown[];
 }
 
-async function mockApi(page: Page, opts: { putStatus?: number } = {}): Promise<Harness> {
+async function mockApi(page: Page, opts: { putStatus?: number; strict?: boolean } = {}): Promise<Harness> {
   const h: Harness = { puts: [], imports: [], strict: [] };
   let live: unknown = LIVE;
   await page.route('**/api/v1/counts', (r) => r.fulfill({ status: 200, json: COUNTS }));
@@ -47,7 +47,8 @@ async function mockApi(page: Page, opts: { putStatus?: number } = {}): Promise<H
       live = r.request().postDataJSON();
       return r.fulfill({ status: 200, body: '' });
     }
-    return r.fulfill({ status: 200, json: live });
+    const body = opts.strict === undefined ? live : { ...(live as object), enforce_strict: opts.strict };
+    return r.fulfill({ status: 200, json: body });
   });
   await page.route(/\/api\/v1\/scope\/import$/, (r) => {
     h.imports.push(r.request().postDataJSON());
@@ -124,4 +125,24 @@ test('the enforce-strict toggle PUTs {enabled}', async ({ page }) => {
   await page.getByTestId('strict-toggle').click();
   await expect.poll(() => h.strict).toEqual([{ enabled: true }]);
   await expect(page.getByTestId('status-scope')).toContainText('strict');
+});
+
+test('the strict switch reflects enforce_strict from GET and drops the unknown hint', async ({ page }) => {
+  const h = await mockApi(page, { strict: true });
+  await openScope(page);
+  await expect(page.getByTestId('strict-toggle')).toBeChecked();
+  await expect(page.locator('.hint')).toHaveCount(0);
+  await expect(page.getByTestId('status-scope')).toContainText('strict ON');
+  // The read-only flag must never ride along in a PUT.
+  await page.getByTestId('rule-row').first().getByTestId('rule-host-value').fill('b.test');
+  await page.getByTestId('scope-save').click();
+  await expect.poll(() => h.puts.length).toBe(1);
+  expect(Object.keys(h.puts[0] as object)).not.toContain('enforce_strict');
+});
+
+test('without enforce_strict the switch stays off and a neutral hint shows', async ({ page }) => {
+  await mockApi(page);
+  await openScope(page);
+  await expect(page.getByTestId('strict-toggle')).not.toBeChecked();
+  await expect(page.getByText('Strict state not reported by this server.')).toBeVisible();
 });

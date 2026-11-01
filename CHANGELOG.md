@@ -38,6 +38,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Web UI**: the intercept toggle moves from Ctrl+T (reserved by browsers)
+  to Ctrl+I; every shortcut hint is derived from the keymap; the status bar no
+  longer shows an Intruder count (no such tool yet); Intercept gains a Copy raw
+  button; the Decoder page has no Back button; the Scope view reads the
+  server's strict flag.
+- **crosswire-api**: repeater change `op` and `reason` now use the frozen wire
+  codes (`replace`, `content-length`, `{"intruder-position":3}`) instead of Rust
+  debug names, and `GET /api/v1/scope` reports `enforce_strict`.
 - **Breaking, wire format** (`SCHEMA_VERSION` 2): enum codes are frozen
   (kebab-case or snake_case, no PascalCase), tagged unions use a `type` tag, and
   defaults are fixed. Unknown enum codes read back as an `Unknown` variant
@@ -50,6 +58,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 
 - `cert_override` is no longer on the wire.
+
+### Security
+
+- **Destination gate** (crosswire-client, used by the proxy relay, the
+  repeater and the CLI): IPv6 transition forms (IPv4-mapped, SIIT,
+  IPv4-compatible, NAT64 including local-use `64:ff9b:1::/48`, 6to4, Teredo)
+  are unwrapped before the rules run. Unspecified (`0.0.0.0/8`), multicast,
+  broadcast, more cloud credential endpoints (GCP `fd20:ce::254`, ECS
+  `169.254.170.2`, EKS Pod Identity, Azure `168.63.129.16`) and the
+  `metadata.google.internal`/`metadata` host names (refused before DNS) are
+  now refused. An `--allow` entry exempts only loopback and link-local, no
+  longer metadata or own ports. Own listener ports are refused on any local
+  address, and both gates now protect both the proxy and the API port. An
+  empty resolution is refused (`Unresolved` from the gate; the transport
+  reports it as a DNS error before the gate is reached).
 
 ## [0.1.0-alpha.2] - 2026-10-26
 

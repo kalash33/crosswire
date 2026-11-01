@@ -7,7 +7,7 @@
     icon: IconName;
     /** Required accessible name; also the tooltip. */
     label: string;
-    /** Shortcut appended to the tooltip, e.g. "Ctrl+T". */
+    /** Shortcut appended to the tooltip, e.g. "Ctrl+I". */
     kbd?: string;
     size?: 'sm' | 'md';
     active?: boolean;

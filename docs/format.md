@@ -279,7 +279,7 @@ A failure caused by one exchange (an oversized body, a JSON or constraint error)
 
 `Store::close` drains the queue and the journal. Dropping a `Store` without `close` drains only the in-memory queue; the journal waits for the next open.
 
-`PRAGMA wal_checkpoint(PASSIVE)` runs every 30 s or when the WAL passes 64 MiB, followed by an fsync of the WAL; `close` ends with `wal_checkpoint(TRUNCATE)`.
+`PRAGMA wal_checkpoint(PASSIVE)` runs every 30 s or when the WAL passes 64 MiB, followed by an fsync of the WAL; `close` ends with `wal_checkpoint(TRUNCATE)`. Before that checkpoint a clean `close` (never `Drop` or a crash) refreshes planner statistics: a full `ANALYZE` when `sqlite_stat1` has no `exchanges` row or the session stored at least `analyze_threshold` (default 1,000) exchanges, otherwise `PRAGMA optimize=0x10002` (every table is considered, so one that grew about tenfold is re-analysed); this is what keeps the `resp_len >= ?` size query on its index.
 
 ## Journal
 

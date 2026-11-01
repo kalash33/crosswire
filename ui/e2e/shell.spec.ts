@@ -37,6 +37,7 @@ test('? opens the shortcuts sheet; Escape closes it and restores focus', async (
   await expect(dialog).toBeVisible();
   await expect(dialog).toContainText('Send to Repeater');
   await expect(dialog).toContainText('Ctrl+Shift+D');
+  await expect(dialog).toContainText('Ctrl+I');
   await page.keyboard.press('Escape');
   await expect(dialog).toHaveCount(0);
   await expect(anchor).toBeFocused();
@@ -128,7 +129,7 @@ test('global chords do not fire while the shortcuts sheet is open', async ({ pag
   await expect(page.getByTestId('topbar-intercept')).toBeEnabled();
   await page.getByTestId('shortcuts-button').click();
   await expect(page.getByTestId('shortcuts-dialog')).toBeVisible();
-  await page.keyboard.press('Control+t');
+  await page.keyboard.press('Control+i');
   await page.keyboard.press('Control+Shift+D');
   await expect(page.getByTestId('shortcuts-dialog')).toBeVisible();
   await expect(page).toHaveURL(/\/$/);

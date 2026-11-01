@@ -9,6 +9,7 @@
   import { assistedChips, type AssistedToggles } from '../editor/assisted';
   import { bytesToLatin1, latin1ToBytes } from '../editor/encoding';
   import { toasts } from '../ui/toasts.svelte';
+  import { chordLabel } from '../copy-actions.svelte';
   import Button from '../ui/Button.svelte';
   import Segmented from '../ui/Segmented.svelte';
   import Splitter from '../ui/Splitter.svelte';
@@ -115,7 +116,7 @@
           <Button
             variant="primary"
             icon="send"
-            kbd="Ctrl+Space"
+            kbd={chordLabel('send')}
             data-testid="send"
             disabled={tab.sending}
             onclick={() => onsend(tab.id)}>{tab.sending ? 'Sending…' : 'Send'}</Button
@@ -130,7 +131,7 @@
             variant="ghost"
             icon="decoder"
             data-testid="decode-selection"
-            title="Decode selection (Ctrl+Shift+D)"
+            title={`Decode selection (${chordLabel('decode-selection') ?? ''})`}
             onclick={decodeSelection}>Decode selection</Button
           >
           <span class="spacer"></span>

@@ -154,6 +154,57 @@ test('corpus in list and detail renders as inert text', async ({ page, baseURL }
   expect(violations).toEqual([]);
 });
 
+test('hex_tab_and_diagnostics_groups_render_hostile_data_as_text', async ({ page, baseURL }) => {
+  const origin = new URL(baseURL!).origin;
+  // Hostile diagnostic code and severity strings; one group per payload.
+  const diagnostics = XSS_CORPUS.map((p, i) => ({
+    code: p.value,
+    severity: i % 2 === 0 ? p.value : 'warn',
+    span: { start: i, end: i + 3 },
+  }));
+  const hostile = {
+    ...DETAIL,
+    request: { ...DETAIL.request, diagnostics },
+    response: { ...DETAIL.response, diagnostics },
+  };
+  await mockApi(page);
+  await page.route(/\/api\/v1\/exchanges\/[^/?]+$/, (r) => r.fulfill({ status: 200, json: hostile }));
+  const violations = watch(page, origin);
+  await page.goto('/');
+  const startUrl = page.url();
+  await page.getByTestId('history-row').locator('td.open').first().click();
+  await expect(page.getByTestId('exchange-detail')).toBeVisible();
+
+  for (const side of ['resp', 'req'] as const) {
+    await showSide(page, side);
+    const pane = page.getByTestId(side === 'req' ? 'detail-request' : 'detail-response');
+    // Raw tab: expand every diagnostics group (the code is attacker data).
+    const groups = pane.getByTestId('diag-group');
+    await expect(groups).toHaveCount(XSS_CORPUS.length);
+    for (let i = 0; i < XSS_CORPUS.length; i++) {
+      await groups.nth(i).locator('summary').click();
+      await expect(groups.nth(i)).toHaveAttribute('open', '');
+      await expect(groups.nth(i).locator('.code')).toHaveText(XSS_CORPUS[i].value, {
+        useInnerText: false,
+      });
+    }
+    // Hex tab: the captured bytes, rendered as text cells.
+    await pane.getByTestId('detail-tab-hex').click();
+    await expect(page.getByTestId(`detail-${side}-hex`)).toBeVisible();
+    await expect(page.getByTestId(`detail-${side}-hex`)).toContainText('00000000');
+    await pane.getByTestId('detail-tab-raw').click();
+  }
+
+  await page.mouse.move(5, 5);
+  await page.mouse.move(300, 300);
+  await page.waitForTimeout(300);
+  const live = await liveProbe(page);
+  expect(live.pwned).toBe(0);
+  expect(live.injected).toBe(0);
+  expect(page.url()).toBe(startUrl);
+  expect(violations).toEqual([]);
+});
+
 test('typed_tag_and_notes_payloads_render_as_text', async ({ page, baseURL }) => {
   const origin = new URL(baseURL!).origin;
   // Stateful mock: PATCH records the body and answers 200 with an EMPTY body (like the real route).

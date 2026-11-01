@@ -33,6 +33,21 @@ describe('scope store', () => {
     expect(s.loaded).toBe(true);
   });
 
+  it('load adopts enforce_strict when the server reports it', async () => {
+    const api = mockApi({ getScope: vi.fn().mockResolvedValue({ ...LIVE, enforce_strict: true }) });
+    const s = createScope({ api });
+    await s.load();
+    expect(s.enforceStrict).toBe(true);
+    expect(s.strictKnown).toBe(true);
+    expect(s.scope).toEqual(LIVE);
+  });
+
+  it('load leaves strict unknown when the server omits the flag', async () => {
+    const s = createScope({ api: mockApi() });
+    await s.load();
+    expect(s.strictKnown).toBe(false);
+  });
+
   it('save PUTs the scope JSON and adopts it', async () => {
     const api = mockApi();
     const s = createScope({ api });

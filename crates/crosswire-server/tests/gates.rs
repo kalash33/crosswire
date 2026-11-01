@@ -795,11 +795,13 @@ fn spawn_serve_capturing(project: &Path, ca_dir: &Path, extra: &[&str]) -> (Reap
     });
 
     let deadline = Instant::now() + Duration::from_secs(30);
-    let (mut api, mut bootstrap) = (None, None);
-    while api.is_none() || bootstrap.is_none() {
+    let (mut proxy, mut api, mut bootstrap) = (None, None, None);
+    while proxy.is_none() || api.is_none() || bootstrap.is_none() {
         let left = deadline.saturating_duration_since(Instant::now());
         let line = rx.recv_timeout(left).expect("a serve startup line in time");
-        if let Some(a) = line.strip_prefix("api listening on ") {
+        if let Some(a) = line.strip_prefix("proxy listening on ") {
+            proxy = Some(a.trim().parse().unwrap());
+        } else if let Some(a) = line.strip_prefix("api listening on ") {
             api = Some(a.trim().parse().unwrap());
         } else if line.starts_with("open http://localhost")
             || line.starts_with("bootstrap url written to")
@@ -811,6 +813,7 @@ fn spawn_serve_capturing(project: &Path, ca_dir: &Path, extra: &[&str]) -> (Reap
         Reap(child),
         CapturedServe {
             startup: Startup {
+                proxy: proxy.unwrap(),
                 api: api.unwrap(),
                 bootstrap_line: bootstrap.unwrap(),
             },
@@ -818,6 +821,88 @@ fn spawn_serve_capturing(project: &Path, ca_dir: &Path, extra: &[&str]) -> (Reap
             joins: vec![h_out, h_err],
         },
     )
+}
+
+// -- own listener ports (gate 7, both gates) ---------------------------------
+
+/// `--allow 127.0.0.1:<api port>` must not open the API to the proxy relay or
+/// the repeater: the API port is an own listener port of both gates.
+#[tokio::test(flavor = "multi_thread")]
+async fn allowlisted_api_port_is_refused_by_proxy_and_repeater() {
+    let tmp = tempfile::tempdir().unwrap();
+    let project = tmp.path().join("proj");
+    let ca_dir = tmp.path().join("ca");
+    // Choose the API port up front so it can be allowlisted.
+    let api_port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let api_bind = format!("127.0.0.1:{api_port}");
+    let child = Command::new(BIN)
+        .args([
+            "serve",
+            "--project",
+            project.to_str().unwrap(),
+            "--ca-dir",
+            ca_dir.to_str().unwrap(),
+            "--proxy-bind",
+            "127.0.0.1:0",
+            "--api-bind",
+            &api_bind,
+            "--allow",
+            &api_bind,
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .unwrap();
+    let mut child = Reap(child);
+    let startup = tokio::task::block_in_place(|| wait_serve_startup(&mut child.0));
+    assert_eq!(startup.api.port(), api_port);
+    let refusal = format!("own listener port {api_port}");
+
+    // The proxy relay.
+    let mut s = TcpStream::connect(startup.proxy).await.unwrap();
+    let req = format!(
+        "GET http://127.0.0.1:{api_port}/api/v1/counts HTTP/1.1\r\nHost: 127.0.0.1:{api_port}\r\nConnection: close\r\n\r\n"
+    );
+    s.write_all(req.as_bytes()).await.unwrap();
+    let mut resp = Vec::new();
+    tokio::time::timeout(Duration::from_secs(10), s.read_to_end(&mut resp))
+        .await
+        .expect("the proxy answers in time")
+        .unwrap();
+    let resp = String::from_utf8_lossy(&resp);
+    assert!(resp.starts_with("HTTP/1.1 502"), "proxy: {resp}");
+    assert!(resp.contains(&refusal), "proxy: {resp}");
+
+    // The repeater.
+    let cookie = api_session(
+        startup.api,
+        &token_from_bootstrap_line(&startup.bootstrap_line),
+    )
+    .await;
+    let raw = base64::engine::general_purpose::STANDARD
+        .encode("GET /api/v1/counts HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
+    let send = format!(
+        "{{\"host\":\"127.0.0.1\",\"port\":{api_port},\"tls\":false,\"raw\":\"{raw}\",\"allow_out_of_scope\":true}}"
+    );
+    let (st, _, body) = http(
+        startup.api,
+        "POST",
+        "/api/v1/repeater/send",
+        &[
+            ("Cookie", cookie.as_str()),
+            ("Sec-Fetch-Site", "same-origin"),
+            ("Content-Type", "application/json"),
+        ],
+        Some(send.as_bytes()),
+    )
+    .await;
+    let body = String::from_utf8_lossy(&body);
+    assert_ne!(st, 200, "repeater: {body}");
+    assert!(body.contains(&refusal), "repeater: {st} {body}");
 }
 
 // -- shared helpers (a self-contained raw HTTP/1 client and process driver) --
@@ -853,6 +938,7 @@ fn spawn_serve(project: &Path, ca_dir: &Path, extra: &[&str]) -> Child {
 }
 
 struct Startup {
+    proxy: SocketAddr,
     api: SocketAddr,
     bootstrap_line: String,
 }
@@ -867,11 +953,13 @@ fn wait_serve_startup(child: &mut Child) -> Startup {
         }
     });
     let deadline = Instant::now() + Duration::from_secs(30);
-    let (mut api, mut bootstrap) = (None, None);
-    while api.is_none() || bootstrap.is_none() {
+    let (mut proxy, mut api, mut bootstrap) = (None, None, None);
+    while proxy.is_none() || api.is_none() || bootstrap.is_none() {
         let left = deadline.saturating_duration_since(Instant::now());
         let line = rx.recv_timeout(left).expect("a serve startup line in time");
-        if let Some(a) = line.strip_prefix("api listening on ") {
+        if let Some(a) = line.strip_prefix("proxy listening on ") {
+            proxy = Some(a.trim().parse().unwrap());
+        } else if let Some(a) = line.strip_prefix("api listening on ") {
             api = Some(a.trim().parse().unwrap());
         } else if line.starts_with("open http://localhost")
             || line.starts_with("bootstrap url written to")
@@ -880,6 +968,7 @@ fn wait_serve_startup(child: &mut Child) -> Startup {
         }
     }
     Startup {
+        proxy: proxy.unwrap(),
         api: api.unwrap(),
         bootstrap_line: bootstrap.unwrap(),
     }

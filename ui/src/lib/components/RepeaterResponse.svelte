@@ -1,21 +1,19 @@
 <script lang="ts">
   import ByteEditor from '../editor/ByteEditor.svelte';
-  import HexPane from '../editor/HexPane.svelte';
+  import HexWindow from './HexWindow.svelte';
   import CopyMenu from './CopyMenu.svelte';
   import HeadersTable from './HeadersTable.svelte';
   import ResultHeader from './ResultHeader.svelte';
   import { parseHeadLines, type HeaderLine } from '../http/headers';
-  import { HEX_PAGE, hexPage } from '../editor/hex-window';
   import { responseView, type RepeaterTab } from '../stores/repeater.svelte';
   import type { ExchangeDto } from '../stores/history.svelte';
   import { latin1ToBytes, bytesToLatin1 } from '../editor/encoding';
   import { apiGet, apiGetBytes } from '../api/client';
   import { ApiError } from '../api/errors';
-  import { humanBytes } from '../format';
   import EmptyState from '../ui/EmptyState.svelte';
   import Kbd from '../ui/Kbd.svelte';
+  import { chordLabel } from '../copy-actions.svelte';
   import Tabs from '../ui/Tabs.svelte';
-  import IconButton from '../ui/IconButton.svelte';
 
   // The response side of one repeater tab: empty state before the first send,
   // then a status line and Headers / Raw / Hex sub-tabs. Everything shown is
@@ -49,7 +47,6 @@
     note: string | null;
   }
   let head = $state<HeadState | null>(null);
-  let pageNo = $state(0);
 
   function b64ToBytes(b64: string): Uint8Array {
     return latin1ToBytes(atob(b64));
@@ -92,7 +89,6 @@
     const id = tab.outcome?.exchange_id;
     resp = null;
     head = null;
-    pageNo = 0;
     if (!id) return;
     const current = id;
     const enc = encodeURIComponent(current);
@@ -135,9 +131,6 @@
     { id: 'hex', label: 'Hex', testid: 'resp-tab-hex' },
   ]);
 
-  // ---- Hex paging: never more than one HEX_PAGE (32 KiB) window in the DOM ----------------
-  const win = $derived(hexPage(resp?.bytes.length ?? 0, pageNo));
-  const hexBytes = $derived(resp ? resp.bytes.subarray(win.start, win.end) : new Uint8Array());
 </script>
 
 <div class="response" data-testid="repeater-response">
@@ -149,7 +142,7 @@
       testid="response-empty"
     >
       {#snippet actions()}
-        <span class="hint">Press <Kbd keys="Ctrl+Space" /> to send</span>
+        <span class="hint">Press <Kbd keys={chordLabel('send') ?? ''} /> to send</span>
       {/snippet}
     </EmptyState>
   {:else if view === 'sending'}
@@ -205,33 +198,9 @@
           </div>
         {/key}
       {:else}
-        <div class="hex">
-          {#if win.pages > 1}
-            <div class="pager" data-testid="hex-pager">
-              <IconButton
-                icon="chevron-right"
-                class="flip"
-                size="sm"
-                label={`Previous ${HEX_PAGE / 1024} KiB`}
-                data-testid="hex-prev"
-                disabled={win.page === 0}
-                onclick={() => (pageNo = win.page - 1)}
-              />
-              <span class="range" data-testid="hex-range"
-                >{`Bytes ${win.start}–${win.end - 1} of ${resp.bytes.length} (${humanBytes(resp.bytes.length)}), page ${win.page + 1} of ${win.pages}`}</span
-              >
-              <IconButton
-                icon="chevron-right"
-                size="sm"
-                label={`Next ${HEX_PAGE / 1024} KiB`}
-                data-testid="hex-next"
-                disabled={win.page >= win.pages - 1}
-                onclick={() => (pageNo = win.page + 1)}
-              />
-            </div>
-          {/if}
-          <HexPane bytes={hexBytes} base={win.start} />
-        </div>
+        {#key `${tab.outcome.exchange_id}-${resp.bytes.length}`}
+          <HexWindow bytes={resp.bytes} testid="resp-hex" />
+        {/key}
       {/if}
     </div>
   {/if}
@@ -319,16 +288,5 @@
     margin: 0;
     font-size: var(--fs-sm);
     color: var(--fg-muted);
-  }
-  .pager {
-    display: flex;
-    align-items: center;
-    gap: var(--s-2);
-    margin-bottom: var(--s-2);
-    font-size: var(--fs-sm);
-    color: var(--fg-muted);
-  }
-  .pager :global(.flip svg) {
-    transform: scaleX(-1);
   }
 </style>

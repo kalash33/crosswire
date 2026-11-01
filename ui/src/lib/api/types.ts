@@ -5,6 +5,7 @@
 // client.test.ts loads the real document and checks MIRRORED_SCHEMAS against it.
 
 export const MIRRORED_SCHEMAS = [
+  'ChangeDto',
   'CountsDto',
   'CreateBody',
   'EnabledBody',
@@ -14,6 +15,7 @@ export const MIRRORED_SCHEMAS = [
   'PatchBody',
   'RulesDto',
   'SendBody',
+  'SendOutcomeDto',
   'SessionRequest',
   'SessionResponse',
 ] as const;
@@ -114,15 +116,25 @@ export interface SessionResponse {
 
 /**
  * One recorded edit from a repeater send (`SendOutcomeDto.changes`), from
- * `routes/repeater.rs`. Not in openapi.json (responses are untyped there).
+ * `routes/repeater.rs`. The codes are the frozen core serde codes.
  */
 export interface ChangeDto {
-  /** What was changed, e.g. "content-length" / "line-endings". */
+  /** `insert`, `delete`, `replace` or `unknown`. */
   op: string;
-  /** Why, e.g. "recomputed" / "normalized to CRLF". */
-  reason: string;
+  /**
+   * A kebab string (`hop-by-hop`, `content-length`, `intercept-edit`,
+   * `unknown`) or a single-key object (`{"match-replace":{"rule":"x"}}`,
+   * `{"intruder-position":3}`, `{"custom":"why"}`). Unrecognised codes mean unknown.
+   */
+  reason: string | Record<string, unknown>;
   /** Byte offset where the change starts (in the sent bytes). */
   start: number;
   /** Byte offset where the change ends. */
   end: number;
+}
+
+/** The extra field `GET /scope` returns beside the scope document. */
+export interface ScopeStrictFlag {
+  /** Whether strict scope enforcement is on. */
+  enforce_strict: boolean;
 }

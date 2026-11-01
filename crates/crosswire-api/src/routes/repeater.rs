@@ -55,12 +55,17 @@ pub struct SendBody {
 }
 
 /// One recorded edit, summarised.
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct ChangeDto {
-    /// The edit operation (debug name).
+    /// The edit operation, a frozen kebab-case code: `insert`, `delete`,
+    /// `replace` or `unknown`.
     pub op: String,
-    /// Why the edit was made (debug name).
-    pub reason: String,
+    /// Why the edit was made: a kebab-case string (`hop-by-hop`,
+    /// `content-length`, `intercept-edit`, `unknown`) or a single-key object
+    /// (`{"match-replace":{"rule":"x"}}`, `{"intruder-position":3}`,
+    /// `{"custom":"why"}`). Taken from the core serde, so it cannot drift.
+    #[schema(value_type = serde_json::Value)]
+    pub reason: serde_json::Value,
     /// The affected span's inclusive start offset.
     pub start: u32,
     /// The affected span's exclusive end offset.
@@ -68,7 +73,7 @@ pub struct ChangeDto {
 }
 
 /// The outcome of a send.
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct SendOutcomeDto {
     /// The primary recorded exchange id.
     pub exchange_id: String,
@@ -100,8 +105,14 @@ impl From<SendOutcome> for SendOutcomeDto {
                 .changes
                 .iter()
                 .map(|c| ChangeDto {
-                    op: format!("{:?}", c.op()),
-                    reason: format!("{:?}", c.reason()),
+                    op: match serde_json::to_value(c.op()) {
+                        Ok(serde_json::Value::String(s)) => s,
+                        _ => "unknown".to_owned(),
+                    },
+                    reason: serde_json::to_value(c.reason()).unwrap_or_else(|e| {
+                        tracing::warn!(error = %e, "serializing a change reason");
+                        serde_json::Value::Null
+                    }),
                     start: c.span().start(),
                     end: c.span().end(),
                 })
@@ -131,7 +142,7 @@ pub struct DraftDto {
     post,
     path = "/api/v1/repeater/send",
     responses(
-        (status = 200, description = "The send outcome"),
+        (status = 200, description = "The send outcome", body = SendOutcomeDto),
         (status = 403, description = "Out of scope"),
         (status = 422, description = "The request could not be parsed"),
         (status = 502, description = "The upstream exchange failed")
@@ -330,5 +341,51 @@ pub async fn delete_tab(
         Ok(StatusCode::OK)
     } else {
         Err(ApiError::not_found("not_found", "no such draft"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crosswire_core::{Change, ChangeOp, ChangeReason, Span};
+    use crosswire_model::ScopeState;
+    use serde_json::json;
+
+    /// Runs one change through the production `SendOutcome` -> DTO path and
+    /// returns the serialized `changes[0]`.
+    fn wire(reason: ChangeReason) -> serde_json::Value {
+        let outcome = SendOutcome {
+            exchange_id: Ulid::nil(),
+            scope_state: ScopeState::Empty,
+            changes: vec![Change::new(
+                ChangeOp::Replace,
+                Span::new(1, 2),
+                Bytes::from_static(b"a"),
+                Bytes::from_static(b"b"),
+                reason,
+            )],
+            skipped: Vec::new(),
+            cert_override: false,
+            ttfb_ms: 0,
+            total_ms: 0,
+            redirects: Vec::new(),
+        };
+        let v = serde_json::to_value(SendOutcomeDto::from(outcome)).unwrap();
+        v["changes"][0].clone()
+    }
+
+    #[test]
+    fn intruder_position_reason_is_a_single_key_object() {
+        let c = wire(ChangeReason::IntruderPosition(3));
+        assert_eq!(c["op"], "replace");
+        assert_eq!(c["reason"], json!({"intruder-position": 3}));
+        assert_eq!((c["start"].clone(), c["end"].clone()), (json!(1), json!(2)));
+    }
+
+    #[test]
+    fn custom_reason_is_a_single_key_object() {
+        let c = wire(ChangeReason::Custom("why".into()));
+        assert_eq!(c["op"], "replace");
+        assert_eq!(c["reason"], json!({"custom": "why"}));
     }
 }

@@ -98,3 +98,35 @@ async fn compile_error_is_422_scope_invalid() {
     assert_eq!(resp.status, 422);
     assert_eq!(resp.json()["error"]["code"], "scope_invalid");
 }
+
+#[tokio::test]
+async fn get_scope_reports_enforce_strict() {
+    let app = TestApp::new().await;
+    let cookie = app.session_cookie().await;
+    let h = admin(&cookie);
+    let read = [
+        ("Cookie", cookie.as_str()),
+        ("Sec-Fetch-Site", "same-origin"),
+    ];
+
+    let fresh = app.get("/api/v1/scope", &read).await;
+    assert_eq!(fresh.status, 200);
+    assert_eq!(fresh.json()["enforce_strict"], false, "fresh project");
+
+    for want in [true, false] {
+        let body = format!("{{\"enabled\":{want}}}");
+        let put = app
+            .send(
+                "PUT",
+                "/api/v1/settings/enforce_scope_strictly",
+                &h,
+                Some(body.as_bytes()),
+            )
+            .await;
+        assert_eq!(put.status, 200, "{}", put.body_string());
+        let got = app.get("/api/v1/scope", &read).await;
+        let v = got.json();
+        assert_eq!(v["enforce_strict"], want);
+        assert!(v["include"].is_array(), "the scope fields are still there");
+    }
+}

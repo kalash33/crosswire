@@ -124,7 +124,7 @@ describe('types match openapi.json', () => {
   };
 
   it('every schema name types.ts mirrors exists in components.schemas', () => {
-    expect(MIRRORED_SCHEMAS.length).toBe(11);
+    expect(MIRRORED_SCHEMAS.length).toBe(13);
     for (const name of MIRRORED_SCHEMAS) {
       expect(Object.keys(doc.components.schemas), name).toContain(name);
     }

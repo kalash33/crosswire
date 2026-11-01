@@ -16,14 +16,9 @@
   let {
     initial,
     initialNonLatin1 = false,
-    onClose,
-    embedded = false,
   }: {
     initial: Uint8Array;
     initialNonLatin1?: boolean;
-    onClose: () => void;
-    /** Fill the host (the /decoder route) instead of floating as a dialog. */
-    embedded?: boolean;
   } = $props();
 
   interface Step {
@@ -82,19 +77,7 @@
     }
   }
 
-  // The pane's own dismiss; app chords stay in the keymap. Embedded in the
-  // /decoder route, Escape typed inside a field (input, textarea, select,
-  // CodeMirror) is left to the field so a stray Escape never discards the
-  // chain; Escape anywhere else in the pane still goes back.
-  function onKeydown(e: KeyboardEvent) {
-    if (e.key !== 'Escape') return;
-    if (embedded && e.target instanceof Element && e.target.closest(FIELD)) return;
-    e.stopPropagation();
-    onClose();
-  }
-  const FIELD = 'input, textarea, select, [contenteditable]:not([contenteditable="false"])';
-
-  // Take focus so Escape works right after the chord; give it back on close.
+  // Take focus on arrival (after the chord); give it back on leave.
   onMount(() => {
     const prev = document.activeElement;
     root.focus();
@@ -106,27 +89,16 @@
 
 <div
   class="decoder"
-  class:embedded
   data-testid="decoder-pane"
-  role={embedded ? 'region' : 'dialog'}
+  role="region"
   aria-label="Decoder"
   tabindex="-1"
   bind:this={root}
-  onkeydown={onKeydown}
 >
   <Toolbar label="Decoder">
-    {#if embedded}
-      <Button size="sm" variant="ghost" icon="chevron-right" class="back" kbd="Esc" data-testid="decoder-close" onclick={onClose}
-        >Back</Button
-      >
-    {:else}
-      <strong class="title">Decoder</strong>
-    {/if}
+    <strong class="title">Decoder</strong>
     <span class="spacer"></span>
     <span class="hint">Chain codecs; each step reads the previous output.</span>
-    {#if !embedded}
-      <IconButton icon="close" size="sm" label="Close" kbd="Esc" data-testid="decoder-close" onclick={onClose} />
-    {/if}
   </Toolbar>
 
   <section class="block" aria-labelledby="decoder-input-label">
@@ -222,42 +194,16 @@
 </div>
 
 <style>
+  /* A routed page: fills the main area, no floating chrome. */
   .decoder {
     display: flex;
     flex-direction: column;
     gap: var(--s-3);
-    position: fixed;
-    right: var(--s-3);
-    bottom: calc(var(--statusbar-h) + var(--s-2));
-    z-index: var(--z-overlay);
-    width: min(36rem, 92vw);
-    max-height: 70vh;
-    overflow: auto;
-    padding: var(--s-2) var(--s-3);
-    font-size: var(--fs-sm);
-    background: var(--bg-overlay);
-    border: 1px solid var(--border-strong);
-    border-radius: var(--r-2);
-    box-shadow: var(--shadow-pop);
-  }
-  /* Route-hosted: fill the main area, no floating chrome. */
-  .decoder.embedded {
-    position: static;
-    width: auto;
     max-width: 64rem;
-    max-height: none;
-    overflow: visible;
-    padding: 0;
     font-size: var(--fs-md);
-    background: transparent;
-    border: none;
-    box-shadow: none;
   }
   .decoder:focus {
     outline: none;
-  }
-  .decoder :global(.back .icon) {
-    transform: rotate(180deg);
   }
   .title {
     font-weight: 600;
