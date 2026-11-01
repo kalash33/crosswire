@@ -11,7 +11,7 @@ import { test, expect, type Page, type Request } from '@playwright/test';
 //
 // The loop: select a history exchange (focus a row + Enter), send-to-repeater
 // (Ctrl+R chord), confirm the repeater tab opened, edit a byte in the editor,
-// send (Ctrl+Space chord), toggle intercept (Ctrl+T chord), then forward a held
+// send (Ctrl+Space chord), toggle intercept (Ctrl+I chord), then forward a held
 // item (Ctrl+F chord).
 //
 // Non-chord steps used, and why:
@@ -200,9 +200,9 @@ test('mouse-free core loop: history -> repeater -> send -> intercept via Burp ch
   expect(body.host).toBe('shop.example');
   expect(decoded.startsWith('ZGET /cart')).toBe(true);
 
-  // ---- 5. toggle-intercept (Ctrl+T chord) from anywhere. --------------------
+  // ---- 5. toggle-intercept (Ctrl+I chord) from anywhere. --------------------
   await expect(page.getByTestId('status-intercept')).toContainText('OFF');
-  await page.keyboard.press('Control+t');
+  await page.keyboard.press('Control+i');
   await expect.poll(() => h.enabledPuts).toEqual([{ enabled: true }]);
   await expect(page.getByTestId('status-intercept')).toContainText('ON');
 
@@ -217,7 +217,7 @@ test('mouse-free core loop: history -> repeater -> send -> intercept via Burp ch
   await expect.poll(() => h.forwards.length).toBe(1);
   expect(h.forwards[0].id).toBe(HELD_ID);
 
-  // ---- 7. decode-selection (Ctrl+Shift+D chord) opens the decoder; Escape closes.
+  // ---- 7. decode-selection (Ctrl+Shift+D chord) opens the decoder; Escape is a no-op.
   await page.evaluate(() => {
     const el = document.querySelector('.cm-content');
     if (!el) throw new Error('no editor');
@@ -230,7 +230,7 @@ test('mouse-free core loop: history -> repeater -> send -> intercept via Burp ch
   await page.keyboard.press('Control+Shift+D');
   await expect(page.getByTestId('decoder-pane')).toBeVisible();
   await page.keyboard.press('Escape');
-  await expect(page.getByTestId('decoder-pane')).toHaveCount(0);
+  await expect(page.getByTestId('decoder-pane')).toBeVisible();
 });
 
 test('mouse-free: drop a held item via the Ctrl+D chord', async ({ page }) => {
@@ -241,12 +241,12 @@ test('mouse-free: drop a held item via the Ctrl+D chord', async ({ page }) => {
 
   // READINESS: the global toggle-intercept handler no-ops until the intercept
   // status has loaded (the status bar shows "…" until then, "OFF"/"ON" after).
-  // Waiting for "OFF" guarantees `intercept.loaded` is true, so the Ctrl+T chord
+  // Waiting for "OFF" guarantees `intercept.loaded` is true, so the Ctrl+I chord
   // cannot land before the handler can act — the fix for the earlier race.
   await expect(page.getByTestId('status-intercept')).toContainText('OFF');
 
   // Turn intercept on with the chord, then open the intercept view.
-  await page.keyboard.press('Control+t');
+  await page.keyboard.press('Control+i');
   await expect.poll(() => h.enabledPuts).toEqual([{ enabled: true }]);
   await page.getByTestId('nav-intercept').focus();
   await page.keyboard.press('Enter');

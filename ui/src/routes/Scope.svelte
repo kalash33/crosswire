@@ -24,7 +24,7 @@
       <span class="name">Enforce scope strictly</span>
     </label>
     {#if !scope.strictKnown}
-      <span class="hint">Current server state unknown; the API has no read.</span>
+      <span class="hint">Strict state not reported by this server.</span>
     {/if}
   </header>
 

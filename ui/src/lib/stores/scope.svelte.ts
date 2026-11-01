@@ -1,9 +1,9 @@
 // Scope store. The server validates a PUT before swapping, so a 422 leaves the
 // live scope untouched; this store mirrors that: `scope` only changes on a
 // successful load/save, never on a failed one.
-// There is no GET for enforce_scope_strictly in the API, so `enforceStrict`
-// is tracked locally (default false) and `strictKnown` stays false until this
-// UI session has set it.
+// `GET /api/v1/scope` reports `enforce_strict`; when present it seeds
+// `enforceStrict` and sets `strictKnown`. An older server omits it, so the
+// flag stays unknown until this UI session sets it.
 import * as wire from '../api/scope';
 import type { Scope } from '../api/scope';
 
@@ -31,7 +31,11 @@ export function createScope(opts: ScopeOptions = {}) {
 
   async function load(): Promise<void> {
     try {
-      const next = await api.getScope();
+      const { enforce_strict, ...next } = await api.getScope();
+      if (typeof enforce_strict === 'boolean') {
+        enforceStrict = enforce_strict;
+        strictKnown = true;
+      }
       // Keep the object identity when nothing changed, so an editor seeded
       // from `scope` is not re-seeded (and its unsaved edits clobbered).
       if (JSON.stringify(next) !== JSON.stringify(scope)) scope = next;

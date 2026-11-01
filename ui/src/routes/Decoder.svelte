@@ -4,7 +4,6 @@
   // here; a chord pressed while already here reseeds (the store generation).
   import DecoderPane from '../lib/components/DecoderPane.svelte';
   import { decoder, type DecoderSeed } from '../lib/stores/decoder.svelte';
-  import { router } from '../lib/router.svelte';
 
   const EMPTY: DecoderSeed = { bytes: new Uint8Array(), nonLatin1: false };
 
@@ -16,16 +15,13 @@
     if (next) seed = next;
   });
 
-  // Escape / × return to the view the chord came from (History by default).
-  function back(): void {
-    const prev = router.previous;
-    router.navigate(prev && prev !== '/decoder' ? prev : '/');
-  }
+  // A page, left through the rail; there is no dismiss.
+  function noop(): void {}
 </script>
 
 <div class="decoder-view" data-testid="decoder-view">
   {#key seed}
-    <DecoderPane embedded initial={seed.bytes} initialNonLatin1={seed.nonLatin1} onClose={back} />
+    <DecoderPane embedded initial={seed.bytes} initialNonLatin1={seed.nonLatin1} onClose={noop} />
   {/key}
 </div>
 

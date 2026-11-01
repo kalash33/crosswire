@@ -78,10 +78,16 @@ export function assistedChips(raw: Uint8Array, toggles: AssistedToggles): Chip[]
   return chips;
 }
 
+/** A reason is a string, or a one-key object whose key names the variant. */
+function reasonLabel(reason: ChangeDto['reason']): string {
+  if (typeof reason === 'string') return reason;
+  return Object.keys(reason)[0] ?? 'unknown';
+}
+
 /**
  * Turn a `SendOutcomeDto.changes` list (what the server actually changed) into
  * labeled result chips for display after a send.
  */
 export function renderChanges(changes: ChangeDto[]): Chip[] {
-  return changes.map((c) => ({ label: `${c.op} @ ${c.start}‥${c.end}`, state: c.reason }));
+  return changes.map((c) => ({ label: `${c.op} @ ${c.start}‥${c.end}`, state: reasonLabel(c.reason) }));
 }

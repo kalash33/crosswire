@@ -36,7 +36,7 @@
   // The ONE keydown dispatch for the whole app.
   onMount(() => {
     // While the cheat sheet is open the page behind it is inert: no global
-    // chord (Ctrl+T, Ctrl+Shift+D, …) may act on it.
+    // chord (Ctrl+I, Ctrl+Shift+D, …) may act on it.
     const on = (e: KeyboardEvent) => {
       if (!shortcutsOpen) keymap.dispatch(e);
     };

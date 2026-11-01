@@ -113,10 +113,12 @@ test('copy_writes_clipboard', async ({ page, context }) => {
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe('Hello world');
 });
 
-test('escape_closes_pane', async ({ page }) => {
+test('escape_is_a_noop_on_the_page', async ({ page }) => {
   await openSeeded(page);
+  await page.getByTestId('decoder-pane').focus();
   await page.keyboard.press('Escape');
-  await expect(page.getByTestId('decoder-pane')).toHaveCount(0);
+  await expect(page.getByTestId('decoder-pane')).toBeVisible();
+  await expect(page.getByTestId('decoder-close')).toHaveCount(0);
 });
 
 test('empty_selection_opens_empty_pane', async ({ page }) => {
@@ -242,9 +244,10 @@ test('escape_inside_a_field_keeps_the_route', async ({ page }) => {
   await expect(page.getByTestId('decoder-pane')).toBeVisible();
 });
 
-test('back_button_returns_to_history', async ({ page }) => {
+test('rail_leaves_the_decoder_for_history', async ({ page }) => {
   await openSeeded(page);
-  await page.getByTestId('decoder-close').click();
+  await expect(page.getByTestId('decoder-close')).toHaveCount(0);
+  await page.getByTestId('nav-history').click();
   await expect(page.getByTestId('decoder-pane')).toHaveCount(0);
   await expect(page.getByTestId('history-view')).toBeVisible();
 });

@@ -3,6 +3,7 @@
 // mirrored from crates/crosswire-scope/src/{rule.rs,input.rs,scope.rs}.
 // Hosts, paths and regexes are attacker-influenced: render as text only (§11.1).
 import { apiGet, apiSend } from './client';
+import type { ScopeStrictFlag } from './types';
 
 /** serde `tag="type", content="value", rename_all="kebab-case"`. */
 export type HostPattern =
@@ -30,11 +31,14 @@ export interface Scope {
   exclude: Rule[];
 }
 
+/** `GET /api/v1/scope`: the scope plus the live strict-enforcement flag (absent on older servers). */
+export interface ScopeResponse extends Scope, Partial<ScopeStrictFlag> {}
+
 export const HOST_TYPES = ['exact', 'suffix', 'regex', 'ip', 'cidr'] as const;
 export const PATH_TYPES = ['prefix', 'regex'] as const;
 
-export function getScope(): Promise<Scope> {
-  return apiGet<Scope>('/api/v1/scope');
+export function getScope(): Promise<ScopeResponse> {
+  return apiGet<ScopeResponse>('/api/v1/scope');
 }
 /** Needs `admin`. 422 `scope_invalid` leaves the live scope untouched. */
 export function putScope(scope: Scope): Promise<void> {

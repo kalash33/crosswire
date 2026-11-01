@@ -27,7 +27,7 @@ describe('keymap defaults (Burp-consistent)', () => {
       send: 'ctrl+space',
       forward: 'ctrl+f',
       drop: 'ctrl+d',
-      'toggle-intercept': 'ctrl+t',
+      'toggle-intercept': 'ctrl+i',
       'decode-selection': 'ctrl+shift+d',
       'tab-next': 'ctrl+shift+]',
       'tab-prev': 'ctrl+shift+[',

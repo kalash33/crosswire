@@ -11,6 +11,8 @@
   import Button from '../lib/ui/Button.svelte';
   import Toolbar from '../lib/ui/Toolbar.svelte';
   import { toasts } from '../lib/ui/toasts.svelte';
+  import { chordLabel } from '../lib/copy-actions.svelte';
+  import { bytesToLatin1 } from '../lib/editor/encoding';
 
   // The store records a failure in `intercept.error` instead of throwing, so
   // the outcome of every action is read back from it.
@@ -22,6 +24,16 @@
     if (!focus) return;
     await intercept.drop(focus.id);
     report('Dropped');
+  }
+  // The whole editor buffer as Latin-1 text (byte b -> U+00b): every byte
+  // survives a round trip through another tool.
+  async function copyRaw() {
+    try {
+      await navigator.clipboard.writeText(bytesToLatin1(bytes));
+      toasts.push({ kind: 'success', text: `Copied raw request (${bytes.length} bytes).` });
+    } catch {
+      toasts.push({ kind: 'error', text: 'Copy failed: the clipboard is unavailable.' });
+    }
   }
   async function forwardAll() {
     await intercept.forwardAll();
@@ -159,21 +171,27 @@
             <Button
               variant="primary"
               icon="forward"
-              kbd="Ctrl+F"
+              kbd={chordLabel('forward')}
               data-testid="forward"
               disabled={!original}
               onclick={() => void forward()}
               >Forward{dirty && focus.editable ? ' (edited)' : ''}</Button
             >
-            <Button variant="danger" icon="drop" kbd="Ctrl+D" data-testid="drop" onclick={() => void drop()}
+            <Button variant="danger" icon="drop" kbd={chordLabel('drop')} data-testid="drop" onclick={() => void drop()}
               >Drop</Button
             >
             <Button
               icon="repeater"
-              kbd="Ctrl+R"
+              kbd={chordLabel('send-to-repeater')}
               data-testid="to-repeater"
               disabled={!original}
               onclick={toRepeater}>Send to Repeater</Button
+            >
+            <Button
+              icon="copy"
+              data-testid="copy-raw"
+              disabled={!original}
+              onclick={() => void copyRaw()}>Copy raw</Button
             >
             {#if !focus.editable}
               <span class="not-editable" data-testid="not-editable-badge"
@@ -185,7 +203,7 @@
             <p class="alert" role="alert" data-testid="held-load-error">{loadError}</p>
           {:else if original}
             {#key `${focus.id}:${epoch}`}
-              <ByteEditor bind:bytes readonly={!focus.editable} />
+              <ByteEditor bind:bytes readonly={!focus.editable} showCopyRaw={false} />
             {/key}
           {:else}
             <p class="placeholder">Loading held bytes…</p>

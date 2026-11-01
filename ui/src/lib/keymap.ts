@@ -27,7 +27,8 @@ export type Handler = (event: KeyboardEvent) => void;
 
 // Burp Suite defaults where Burp binds the action:
 //   send-to-repeater Ctrl+R, forward Ctrl+F, drop Ctrl+D, send Ctrl+Space
-//   (Repeater "Send"), toggle-intercept Ctrl+T (Proxy intercept on/off),
+//   (Repeater "Send"), toggle-intercept Ctrl+I (Burp's Ctrl+T is the browser's new-tab chord and
+//   is not interceptable in a web page),
 //   tab-next/prev Ctrl+Shift+] / [ (Burp's next/previous tab).
 // decode-selection has no Burp default; Ctrl+Shift+D (Burp's "send to
 // Decoder" neighbourhood) is our consistent Ctrl-chord choice.
@@ -36,7 +37,7 @@ export const DEFAULT_BINDINGS: Readonly<Record<Action, string>> = {
   send: 'ctrl+space',
   forward: 'ctrl+f',
   drop: 'ctrl+d',
-  'toggle-intercept': 'ctrl+t',
+  'toggle-intercept': 'ctrl+i',
   'decode-selection': 'ctrl+shift+d',
   'tab-next': 'ctrl+shift+]',
   'tab-prev': 'ctrl+shift+[',

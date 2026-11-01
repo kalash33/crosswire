@@ -27,7 +27,7 @@
   import { history } from '../stores/history.svelte';
   import { decoder } from '../stores/decoder.svelte';
   import { router } from '../router.svelte';
-  import { copyStatus } from '../copy-actions.svelte';
+  import { chordLabel, copyStatus } from '../copy-actions.svelte';
   import { selectionBytes } from '../decode/selection';
   import { bytesToLatin1 } from '../editor/encoding';
   import { parseHeadLines, type HeaderLine } from '../http/headers';
@@ -372,7 +372,7 @@
           size="sm"
           variant="ghost"
           icon="decoder"
-          kbd="Ctrl+Shift+D"
+          kbd={chordLabel('decode-selection')}
           data-testid="decode-selection"
           onpointerdown={grabSelection}
           onclick={decodeSelection}>Decode selection</Button

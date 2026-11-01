@@ -58,12 +58,12 @@ describe('assistedChips', () => {
 describe('renderChanges', () => {
   it('maps a SendOutcomeDto.changes list to labeled result chips', () => {
     const chips = renderChanges([
-      { op: 'content-length', reason: 'recomputed', start: 20, end: 35 },
-      { op: 'line-endings', reason: 'normalized to CRLF', start: 0, end: 120 },
+      { op: 'replace', reason: 'hop-by-hop', start: 20, end: 35 },
+      { op: 'replace', reason: { 'intruder-position': 3 }, start: 40, end: 44 },
     ]);
     expect(chips).toEqual([
-      { label: 'content-length @ 20‥35', state: 'recomputed' },
-      { label: 'line-endings @ 0‥120', state: 'normalized to CRLF' },
+      { label: 'replace @ 20‥35', state: 'hop-by-hop' },
+      { label: 'replace @ 40‥44', state: 'intruder-position' },
     ]);
   });
 

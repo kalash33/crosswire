@@ -82,17 +82,14 @@
     }
   }
 
-  // The pane's own dismiss; app chords stay in the keymap. Embedded in the
-  // /decoder route, Escape typed inside a field (input, textarea, select,
-  // CodeMirror) is left to the field so a stray Escape never discards the
-  // chain; Escape anywhere else in the pane still goes back.
+  // The pane's own dismiss, for the floating dialog only; app chords stay in
+  // the keymap. Embedded in the /decoder route the pane is a page, left via
+  // the rail, so Escape does nothing and never discards the chain.
   function onKeydown(e: KeyboardEvent) {
-    if (e.key !== 'Escape') return;
-    if (embedded && e.target instanceof Element && e.target.closest(FIELD)) return;
+    if (e.key !== 'Escape' || embedded) return;
     e.stopPropagation();
     onClose();
   }
-  const FIELD = 'input, textarea, select, [contenteditable]:not([contenteditable="false"])';
 
   // Take focus so Escape works right after the chord; give it back on close.
   onMount(() => {
@@ -115,13 +112,7 @@
   onkeydown={onKeydown}
 >
   <Toolbar label="Decoder">
-    {#if embedded}
-      <Button size="sm" variant="ghost" icon="chevron-right" class="back" kbd="Esc" data-testid="decoder-close" onclick={onClose}
-        >Back</Button
-      >
-    {:else}
-      <strong class="title">Decoder</strong>
-    {/if}
+    <strong class="title">Decoder</strong>
     <span class="spacer"></span>
     <span class="hint">Chain codecs; each step reads the previous output.</span>
     {#if !embedded}
@@ -255,9 +246,6 @@
   }
   .decoder:focus {
     outline: none;
-  }
-  .decoder :global(.back .icon) {
-    transform: rotate(180deg);
   }
   .title {
     font-weight: 600;
