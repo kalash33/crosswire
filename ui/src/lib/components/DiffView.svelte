@@ -5,6 +5,8 @@
     lineNumbers,
     splitLines,
     tooLargeToDiff,
+    DIFF_LINE_SHOW,
+    DIFF_MAX_BYTES,
     DIFF_MAX_LINES,
     type DiffLine,
     type DiffRow,
@@ -18,10 +20,13 @@
     newerText,
     olderLabel,
     newerLabel,
+    tooLarge = false,
     onclose,
   }: {
     olderText: string;
     newerText: string;
+    /** A side is over DIFF_MAX_BYTES (checked by the caller before decoding). */
+    tooLarge?: boolean;
     /** Short descriptions of the two sends (time and status). */
     olderLabel: string;
     newerLabel: string;
@@ -31,6 +36,7 @@
   type Result = { tooLarge: true } | { tooLarge: false; lines: DiffLine[]; exact: boolean };
 
   const result = $derived.by((): Result => {
+    if (tooLarge) return { tooLarge: true };
     const a = splitLines(olderText);
     const b = splitLines(newerText);
     if (tooLargeToDiff(a, b)) return { tooLarge: true };
@@ -59,6 +65,7 @@
   });
 
   const SIGN = { same: ' ', add: '+', del: '-' } as const;
+  const MIB = DIFF_MAX_BYTES / (1024 * 1024);
 </script>
 
 <section class="diff" data-testid="diff-view" aria-label="Response comparison">
@@ -83,7 +90,8 @@
 
   {#if result.tooLarge}
     <p class="note" data-testid="diff-too-large">
-      These responses are too large to diff (over {DIFF_MAX_LINES.toLocaleString('en-US')} lines on a side).
+      These responses are too large to diff (over {MIB} MiB or {DIFF_MAX_LINES.toLocaleString('en-US')} lines
+      on a side).
     </p>
   {:else}
     {#if !result.exact}
@@ -108,7 +116,11 @@
             <span class="no">{nums && nums.a[r.index] ? nums.a[r.index] : ''}</span>
             <span class="no">{nums && nums.b[r.index] ? nums.b[r.index] : ''}</span>
             <span class="sign">{SIGN[r.kind]}</span>
-            <span class="text" data-testid="diff-text">{r.text}</span>
+            <span class="text" data-testid="diff-text"
+              >{#if r.text.length > DIFF_LINE_SHOW}{r.text.slice(0, DIFF_LINE_SHOW)}<span class="more"
+                  >… ({r.text.length - DIFF_LINE_SHOW} more chars)</span
+                >{:else}{r.text}{/if}</span
+            >
           </div>
         {/if}
       {/each}
@@ -249,6 +261,10 @@
   .text {
     padding-right: var(--s-3);
     white-space: pre;
+  }
+  .more {
+    color: var(--fg-faint);
+    font-style: italic;
   }
   .fold {
     display: block;

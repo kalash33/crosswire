@@ -7,6 +7,8 @@ import {
   deriveTitle,
   responseView,
   hostCaret,
+  hostHeader,
+  targetFromHost,
   responseRawText,
   NEW_TAB_TEMPLATE,
   HISTORY_MAX,
@@ -20,6 +22,7 @@ import { hexPage, HEX_PAGE } from '../editor/hex-window';
 import { bytesToLatin1 } from '../editor/encoding';
 import type { SendOutcomeDto } from '../api/repeater';
 import { sha256Hex } from '../sha256';
+import { DIFF_MAX_BYTES } from '../diff/lines';
 
 const ID_RE = /^[0-9A-HJKMNP-TV-Z]{26}$/;
 
@@ -524,12 +527,20 @@ describe('send history', () => {
     const good = { at: '2026-11-01T00:00:00.000Z', request_sha256: 'ab', request_len: 1, conn: { host: 'h', port: 1, tls: false, reuse: false, follow: 'off' }, mode: 'raw' };
     const back = fromJson('X', {
       raw: '',
-      history: [good, null, { at: 5 }, { ...good, status: 'x', exchange_id: 9 }, ...new Array(60).fill(good)],
+      history: [
+        good,
+        null,
+        { at: 5 },
+        { ...good, at: 'x1', status: 'x', exchange_id: 9 },
+        ...Array.from({ length: 60 }, (_, i) => ({ ...good, at: `t${i}` })),
+      ],
     })!;
     expect(back.history).toHaveLength(50);
     expect(back.history![1].status).toBeUndefined();
     expect(back.history![1].exchange_id).toBeUndefined();
     expect(fromJson('X', { raw: '', history: 'nope' })!.history).toEqual([]);
+    // A stored duplicate (same time, digest and exchange) is dropped: it is the list key.
+    expect(fromJson('X', { raw: '', history: [good, good, { ...good, exchange_id: 'E' }] })!.history).toHaveLength(2);
   });
 
   it('keeps the draft under the server limit by dropping the oldest request bytes first', async () => {
@@ -709,5 +720,111 @@ describe('compare with previous', () => {
     );
     expect(t).toBe(':status: 204\r\na: b\r\n\r\n');
     expect(responseRawText({}, new Uint8Array([0x7a]))).toBe('z');
+  });
+});
+
+describe('target from the Host header', () => {
+  it('hostHeader reads the head only', () => {
+    expect(hostHeader(enc('GET / HTTP/1.1\r\nHOST:  a.test:8443 \r\n\r\n'))).toBe('a.test:8443');
+    expect(hostHeader(enc('GET / HTTP/1.1\r\n\r\nHost: body.test\r\n'))).toBeNull();
+    expect(hostHeader(enc('GET / HTTP/1.1\r\nHost: \r\n\r\n'))).toBe('');
+  });
+
+  it('targetFromHost parses host, port and bracketed IPv6', () => {
+    const t = (s: string) => targetFromHost(enc(`GET / HTTP/1.1\r\nHost: ${s}\r\n\r\n`));
+    expect(t('api.test')).toEqual({ host: 'api.test' });
+    expect(t('api.test:443')).toEqual({ host: 'api.test', port: 443 });
+    expect(t('[::1]:8080')).toEqual({ host: '::1', port: 8080 });
+    expect(t('[2001:db8::2]')).toEqual({ host: '2001:db8::2' });
+    expect(t('a.test:0')).toBeNull();
+    expect(t('a.test:65536')).toBeNull();
+    expect(t('a b')).toBeNull();
+    expect(t('')).toBeNull();
+    expect(t('a.test:')).toBeNull();
+    expect(targetFromHost(enc('GET / HTTP/1.1\r\n\r\n'))).toBeNull();
+  });
+
+  it('send fills an empty target from Host:port 443 and turns TLS on', async () => {
+    const api = mockApi();
+    const r = createRepeater({ api });
+    const id = r.newTab();
+    r.setRaw(id, enc('GET / HTTP/1.1\r\nHost: api.example.test:443\r\n\r\n'));
+    await r.send(id);
+    const body = (api.sendRequest as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(body).toMatchObject({ host: 'api.example.test', port: 443, tls: true });
+    expect(r.tabs[0].conn).toMatchObject({ host: 'api.example.test', port: 443, tls: true });
+    await r.flushDrafts();
+    expect((api.putTab as ReturnType<typeof vi.fn>).mock.calls.at(-1)![1]).toMatchObject({
+      conn: { host: 'api.example.test', port: 443, tls: true },
+    });
+  });
+
+  it('a bare Host keeps port 80 without TLS; a non-standard port keeps TLS as set', async () => {
+    const api = mockApi();
+    const r = createRepeater({ api });
+    const a = r.newTab({ raw: enc('GET / HTTP/1.1\r\nHost: plain.test\r\n\r\n') });
+    await r.send(a);
+    expect((api.sendRequest as ReturnType<typeof vi.fn>).mock.calls[0][0]).toMatchObject({
+      host: 'plain.test',
+      port: 80,
+      tls: false,
+    });
+    const b = r.newTab({ conn: { tls: true }, raw: enc('GET / HTTP/1.1\r\nHost: odd.test:8443\r\n\r\n') });
+    await r.send(b);
+    expect((api.sendRequest as ReturnType<typeof vi.fn>).mock.calls[1][0]).toMatchObject({
+      host: 'odd.test',
+      port: 8443,
+      tls: true,
+    });
+  });
+
+  it('never overwrites a target the user set', async () => {
+    const api = mockApi();
+    const r = createRepeater({ api });
+    const id = r.newTab({ conn: { host: 'set.test', port: 9000 }, raw: enc('GET / HTTP/1.1\r\nHost: other.test:443\r\n\r\n') });
+    await r.send(id);
+    expect((api.sendRequest as ReturnType<typeof vi.fn>).mock.calls[0][0]).toMatchObject({ host: 'set.test', port: 9000, tls: false });
+    expect(r.tabs[0].conn.host).toBe('set.test');
+  });
+
+  it('a blank or garbage Host leaves the target empty for the server to refuse', async () => {
+    const api = mockApi();
+    const r = createRepeater({ api });
+    const a = r.newTab();
+    await r.send(a);
+    const b = r.newTab({ raw: enc('GET / HTTP/1.1\r\nHost: bad host:99999\r\n\r\n') });
+    await r.send(b);
+    const calls = (api.sendRequest as ReturnType<typeof vi.fn>).mock.calls;
+    expect(calls[0][0].host).toBe('');
+    expect(calls[1][0].host).toBe('');
+  });
+});
+
+describe('compare size cap', () => {
+  it('a side over DIFF_MAX_BYTES is reported too large without decoding it', async () => {
+    const huge = new Uint8Array(DIFF_MAX_BYTES + 1).fill(0x61);
+    const api = mockApi({
+      sendRequest: vi
+        .fn()
+        .mockResolvedValueOnce(outcome({ exchange_id: 'A' }))
+        .mockResolvedValueOnce(outcome({ exchange_id: 'B' })),
+      getExchange: vi.fn().mockResolvedValue({ response: { head: { type: 'http1-raw', bytes: btoa('HTTP/1.1 200 OK\r\n\r\n') } } }),
+      getRespBody: vi.fn().mockImplementation(async (x: string) => (x === 'B' ? huge : new Uint8Array([0x61]))),
+    });
+    const r = createRepeater({ api });
+    const id = r.newTab({ raw: RAW });
+    await r.send(id);
+    await r.send(id);
+    const c = (await r.compareWithPrevious(id))!;
+    expect(c.tooLarge).toBe(true);
+    expect(c.newerText).toBe('');
+    expect(c.olderText).toBe('');
+  });
+
+  it('records the request line for the compare labels', async () => {
+    const r = createRepeater({ api: mockApi() });
+    const id = r.newTab({ raw: enc('POST /api/login?x=1 HTTP/1.1\r\nHost: a\r\n\r\n') });
+    await r.send(id);
+    expect(r.tabs[0].history![0].target).toBe('POST /api/login?x=1');
   });
 });

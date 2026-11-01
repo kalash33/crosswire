@@ -21,6 +21,12 @@ export interface DiffLine {
 /** Each side is bounded; beyond it the caller shows "too large to diff". */
 export const DIFF_MAX_LINES = 20000;
 
+/** Each side's Raw text (head + body) is bounded in bytes too, checked before decoding. */
+export const DIFF_MAX_BYTES = 2 * 1024 * 1024;
+
+/** A rendered line shows at most this many characters; the diff still uses the whole line. */
+export const DIFF_LINE_SHOW = 4096;
+
 export function tooLargeToDiff(a: readonly string[], b: readonly string[]): boolean {
   return a.length > DIFF_MAX_LINES || b.length > DIFF_MAX_LINES;
 }

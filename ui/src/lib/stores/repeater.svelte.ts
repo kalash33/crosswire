@@ -23,6 +23,7 @@ import type { SendBody } from '../api/types';
 import { bytesToLatin1, latin1ToBytes } from '../editor/encoding';
 import { sha256Hex } from '../sha256';
 import { isoNow, timeShort } from '../format';
+import { DIFF_MAX_BYTES } from '../diff/lines';
 
 export type Follow = 'off' | 'in-scope' | 'always';
 export type Mode = 'assisted' | 'raw';
@@ -58,12 +59,22 @@ export interface SendRecord {
   /** Lowercase hex SHA-256 of the sent bytes (always present). */
   request_sha256: string;
   request_len: number;
+  /** Method and request target from the request line (bounded), for labels. */
+  target?: string;
   /** The bytes were not kept (over HISTORY_REQUEST_MAX, or dropped to fit the draft). */
   truncated?: boolean;
   conn: TabConn;
   mode: Mode;
   /** Why the send failed. */
   error?: string;
+}
+
+/**
+ * A record's identity (the history list key). Sends of one tab never overlap,
+ * so this is unique; fromJson drops stored duplicates.
+ */
+export function historyKey(r: SendRecord): string {
+  return `${r.at}|${r.request_sha256}|${r.exchange_id ?? ''}`;
 }
 
 /** Records kept per tab. */
@@ -171,21 +182,52 @@ const METHOD_RE = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
  */
 export function deriveTitle(raw: Uint8Array, n: number): string {
   const head = bytesToLatin1(raw.subarray(0, TITLE_SCAN_BYTES));
-  const lines = head.split(/\r?\n/);
-  const method = (lines[0] ?? '').trim().split(/\s+/)[0] ?? '';
+  const method = (head.split(/\r?\n/, 1)[0] ?? '').trim().split(/\s+/)[0] ?? '';
   if (!method || !METHOD_RE.test(method)) return `Tab ${n}`;
-  let host = '';
+  const host = hostHeader(raw) ?? '';
+  const title = host ? `${method} ${host}` : method;
+  return title.length > TITLE_MAX ? `${title.slice(0, TITLE_MAX - 1)}…` : title;
+}
+
+/**
+ * The trimmed value of the first Host header in the request head (read as
+ * Latin-1, first TITLE_SCAN_BYTES only); null when the head has none.
+ */
+export function hostHeader(raw: Uint8Array): string | null {
+  const lines = bytesToLatin1(raw.subarray(0, TITLE_SCAN_BYTES)).split(/\r?\n/);
   for (let i = 1; i < lines.length; i++) {
     const line = lines[i];
     if (line === '' || line === '\r') break; // end of head
     const colon = line.indexOf(':');
-    if (colon > 0 && line.slice(0, colon).trim().toLowerCase() === 'host') {
-      host = line.slice(colon + 1).trim();
-      break;
-    }
+    if (colon > 0 && line.slice(0, colon).trim().toLowerCase() === 'host') return line.slice(colon + 1).trim();
   }
-  const title = host ? `${method} ${host}` : method;
-  return title.length > TITLE_MAX ? `${title.slice(0, TITLE_MAX - 1)}…` : title;
+  return null;
+}
+
+const HOST_RE = /^(?:\[([^\]\s]+)\]|([^:\s[\]]+))(?::(\d{1,5}))?$/;
+
+/**
+ * The connect target named by the Host header: `host[:port]` or a bracketed
+ * IPv6 address (returned without brackets). Null for a missing, blank or
+ * malformed value, or a port outside 1..65535.
+ */
+export function targetFromHost(raw: Uint8Array): { host: string; port?: number } | null {
+  const v = hostHeader(raw);
+  const m = v ? HOST_RE.exec(v) : null;
+  if (!m) return null;
+  const host = m[1] ?? m[2];
+  if (m[3] === undefined) return { host };
+  const port = Number(m[3]);
+  return port >= 1 && port <= 65535 ? { host, port } : null;
+}
+
+/** `METHOD target` from the request line, bounded; undefined when there is none. */
+function requestTarget(raw: Uint8Array): string | undefined {
+  const line = bytesToLatin1(raw.subarray(0, 512)).split(/\r?\n/, 1)[0] ?? '';
+  const [method, target] = line.trim().split(/\s+/);
+  if (!method || !METHOD_RE.test(method)) return undefined;
+  const t = target ? `${method} ${target}` : method;
+  return t.length > TITLE_MAX ? `${t.slice(0, TITLE_MAX - 1)}…` : t;
 }
 
 /**
@@ -274,6 +316,7 @@ function recordFrom(v: unknown): SendRecord | null {
   if (isNum(j.size)) rec.size = j.size;
   if (isStr(j.exchange_id)) rec.exchange_id = j.exchange_id;
   if (isStr(j.scope_state)) rec.scope_state = j.scope_state;
+  if (isStr(j.target)) rec.target = j.target.slice(0, TITLE_MAX);
   if (isStr(j.error)) rec.error = j.error;
   if (isStr(j.request) && j.truncated !== true) rec.request = j.request;
   else rec.truncated = true;
@@ -286,11 +329,14 @@ export function fromJson(id: string, json: unknown): RepeaterTab | null {
   const j = json as { conn?: Partial<TabConn>; mode?: unknown; raw?: unknown; title?: unknown; history?: unknown };
   if (typeof j.raw !== 'string') return null;
   const history: SendRecord[] = [];
+  const seen: Record<string, true> = Object.create(null);
   if (Array.isArray(j.history)) {
     for (const v of j.history) {
       if (history.length >= HISTORY_MAX) break;
       const rec = recordFrom(v);
-      if (rec) history.push(rec);
+      if (!rec || seen[historyKey(rec)]) continue;
+      seen[historyKey(rec)] = true;
+      history.push(rec);
     }
   }
   const tab: RepeaterTab = {
@@ -536,6 +582,20 @@ export function createRepeater(opts: RepeaterOptions = {}) {
   async function send(id: string, o: { allowOutOfScope?: boolean } = {}): Promise<void> {
     const t = find(id);
     if (!t || t.sending) return;
+    // No target yet (a fresh template tab): take it from the Host header, and
+    // show it in the Target card. A target the user set is never replaced; a
+    // blank or malformed Host leaves it empty for the server to refuse.
+    if (t.conn.host.trim() === '') {
+      const tgt = targetFromHost(t.raw);
+      if (tgt) {
+        const patch: Partial<TabConn> = { host: tgt.host };
+        if (tgt.port !== undefined) {
+          patch.port = tgt.port;
+          patch.tls = tgt.port === 443 ? true : tgt.port === 80 ? false : t.conn.tls;
+        }
+        setConn(id, patch);
+      }
+    }
     const body: SendBody = {
       host: t.conn.host,
       port: t.conn.port,
@@ -554,6 +614,7 @@ export function createRepeater(opts: RepeaterOptions = {}) {
       request_sha256: sha256Hex(sent),
       request_len: sent.length,
       conn: { ...t.conn },
+      target: requestTarget(sent),
       mode: t.mode,
     };
     if (sent.length <= HISTORY_REQUEST_MAX) base.request = body.raw;
@@ -677,8 +738,8 @@ export function createRepeater(opts: RepeaterOptions = {}) {
     return prev < 0 ? null : { newer: h[start], older: h[prev] };
   }
 
-  /** A response's Raw text by exchange id. A missing body (404) is empty. */
-  async function responseText(exchangeId: string): Promise<string> {
+  /** A response's head and body by exchange id. A missing body (404) is empty. */
+  async function responseParts(exchangeId: string): Promise<{ ex: unknown; body: Uint8Array }> {
     const [ex, body] = await Promise.all([
       api.getExchange(exchangeId),
       api.getRespBody(exchangeId).catch((e: unknown) => {
@@ -686,21 +747,38 @@ export function createRepeater(opts: RepeaterOptions = {}) {
         throw e;
       }),
     ]);
-    return responseRawText(ex, body);
+    return { ex, body };
   }
 
-  /** Load both sides of comparePair as Raw text; null when there is nothing to compare. */
-  async function compareWithPrevious(
-    id: string,
-  ): Promise<{ newer: SendRecord; older: SendRecord; newerText: string; olderText: string } | null> {
+  /**
+   * Load both sides of comparePair as Raw text; null when there is nothing to
+   * compare. A side over DIFF_MAX_BYTES is not decoded: `tooLarge` is set and
+   * both texts are empty.
+   */
+  async function compareWithPrevious(id: string): Promise<{
+    newer: SendRecord;
+    older: SendRecord;
+    newerText: string;
+    olderText: string;
+    tooLarge: boolean;
+  } | null> {
     const t = find(id);
     const pair = t ? comparePair(t) : null;
     if (!pair) return null;
-    const [newerText, olderText] = await Promise.all([
-      responseText(pair.newer.exchange_id!),
-      responseText(pair.older.exchange_id!),
+    const [n, o] = await Promise.all([
+      responseParts(pair.newer.exchange_id!),
+      responseParts(pair.older.exchange_id!),
     ]);
-    return { ...pair, newerText, olderText };
+    const size = (p: { ex: unknown; body: Uint8Array }) => responseRawText(p.ex, new Uint8Array()).length + p.body.length;
+    if (size(n) > DIFF_MAX_BYTES || size(o) > DIFF_MAX_BYTES) {
+      return { ...pair, newerText: '', olderText: '', tooLarge: true };
+    }
+    return {
+      ...pair,
+      newerText: responseRawText(n.ex, n.body),
+      olderText: responseRawText(o.ex, o.body),
+      tooLarge: false,
+    };
   }
 
   async function loadTabs(): Promise<void> {

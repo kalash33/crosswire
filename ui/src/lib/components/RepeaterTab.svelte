@@ -117,13 +117,13 @@
   type Compare =
     | { state: 'loading' }
     | { state: 'error'; message: string }
-    | { state: 'ready'; older: string; newer: string; olderLabel: string; newerLabel: string };
+    | { state: 'ready'; older: string; newer: string; tooLarge: boolean; olderLabel: string; newerLabel: string };
   let compare = $state<Compare | null>(null);
   let compareSeq = 0;
 
   function sendLabel(r: SendRecord): string {
     const status = r.status !== undefined ? String(r.status) : 'status unknown';
-    return `${timeShort(r.at)}  ${status}`;
+    return [timeShort(r.at), status, r.target].filter(Boolean).join('  ');
   }
 
   async function toggleCompare(): Promise<void> {
@@ -141,6 +141,7 @@
             state: 'ready',
             older: c.olderText,
             newer: c.newerText,
+            tooLarge: c.tooLarge,
             olderLabel: sendLabel(c.older),
             newerLabel: sendLabel(c.newer),
           }
@@ -283,6 +284,7 @@
           <DiffView
             olderText={compare.older}
             newerText={compare.newer}
+            tooLarge={compare.tooLarge}
             olderLabel={compare.olderLabel}
             newerLabel={compare.newerLabel}
             onclose={closeCompare}

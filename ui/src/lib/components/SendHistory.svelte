@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { SendRecord } from '../stores/repeater.svelte';
+  import { historyKey, type SendRecord } from '../stores/repeater.svelte';
   import { humanBytes, timeShort } from '../format';
   import Badge from '../ui/Badge.svelte';
   import Button from '../ui/Button.svelte';
@@ -130,7 +130,7 @@
       {#if history.length === 0}
         <p class="empty" data-testid="send-history-empty">Each send is kept here. Click one to load it back.</p>
       {/if}
-      {#each history as r, i (i)}
+      {#each history as r, i (historyKey(r))}
         <div role="listitem" class="item">
           <button
             type="button"

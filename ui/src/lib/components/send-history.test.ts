@@ -3,6 +3,7 @@ import { flushSync, mount, unmount } from 'svelte';
 import SendHistory from './SendHistory.svelte';
 import DiffView from './DiffView.svelte';
 import type { SendRecord } from '../stores/repeater.svelte';
+import { DIFF_LINE_SHOW } from '../diff/lines';
 
 const XSS = '<img src=x onerror=alert(1)>';
 const conn = { host: XSS, port: 80, tls: false, reuse: false, follow: 'off' as const };
@@ -124,6 +125,29 @@ describe('DiffView', () => {
     flushSync();
     expect(folds()).toHaveLength(0);
     expect(t.querySelectorAll('[data-testid="diff-line"]')).toHaveLength(31);
+  });
+
+  it('caps a long rendered line at 4 KiB but still diffs the whole line', () => {
+    const long = 'a'.repeat(10 * 1024);
+    const t = render(DiffView, {
+      olderText: `${long}x`,
+      newerText: `${long}y`,
+      olderLabel: 'a',
+      newerLabel: 'b',
+      onclose: vi.fn(),
+    });
+    const texts = Array.from(t.querySelectorAll('[data-testid="diff-text"]'));
+    expect(texts.map((x) => x.getAttribute('data-kind') ?? x.parentElement?.getAttribute('data-kind'))).toEqual(['del', 'add']);
+    for (const x of texts) {
+      expect(x.textContent!.startsWith('a'.repeat(DIFF_LINE_SHOW))).toBe(true);
+      expect(x.textContent!.length).toBeLessThan(DIFF_LINE_SHOW + 40);
+      expect(x.textContent).toContain(`… (${10 * 1024 + 1 - DIFF_LINE_SHOW} more chars)`);
+    }
+  });
+
+  it('shows the too-large state when told the responses are over the byte cap', () => {
+    const t = render(DiffView, { olderText: '', newerText: '', tooLarge: true, olderLabel: 'a', newerLabel: 'b', onclose: vi.fn() });
+    expect(t.querySelector('[data-testid="diff-too-large"]')).not.toBeNull();
   });
 
   it('says when the responses are too large to diff', () => {
