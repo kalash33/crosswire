@@ -768,8 +768,10 @@ impl Writer {
     /// Clean close only: refreshes the planner statistics the size-query plan
     /// contract (`resp_len >= ?` over its index) depends on. A project with no
     /// `exchanges` row in `sqlite_stat1`, or a session that stored at least
-    /// `analyze_threshold` exchanges, gets a full `ANALYZE`; otherwise the
-    /// cheap `PRAGMA optimize` runs. An abandoned or dropped store runs
+    /// `analyze_threshold` exchanges, gets a full `ANALYZE`; otherwise
+    /// `PRAGMA optimize=0x10002` runs (0x10000 considers every table, not only
+    /// those this insert-mostly connection queried; 0x2 runs the analysis it
+    /// picks, so a table that grew about tenfold is re-analysed). An abandoned or dropped store runs
     /// neither, so a kill -9 style stop is unchanged.
     fn gather_statistics(&mut self) {
         let conn = self.project.writer_mut();
@@ -786,7 +788,7 @@ impl Writer {
         let sql = if analyse {
             "ANALYZE"
         } else {
-            "PRAGMA optimize"
+            "PRAGMA optimize=0x10002"
         };
         if let Err(e) = conn.execute_batch(sql) {
             self.shared

@@ -380,7 +380,9 @@ fn clean_close_gathers_statistics_above_threshold() {
         let mut ev = store.subscribe();
         let attrs = seed_skewed(&store, &mut ev, 150);
         let before = list_all(&store, &size_filter());
+        let t = Instant::now();
         store.close().unwrap();
+        eprintln!("close (incl. ANALYZE at 150 rows): {:?}", t.elapsed());
         (attrs, before)
     };
     assert_eq!(before.len(), 3, "every 50th of 150 rows is over 1 MiB");
