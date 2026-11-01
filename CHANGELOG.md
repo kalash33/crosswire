@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **Destination gate** (crosswire-client, used by the proxy relay, the
+  repeater and the CLI): IPv6 transition forms (IPv4-mapped, SIIT,
+  IPv4-compatible, NAT64 including local-use `64:ff9b:1::/48`, 6to4, Teredo)
+  are unwrapped before the rules run. Unspecified (`0.0.0.0/8`), multicast,
+  broadcast, more cloud credential endpoints (GCP `fd20:ce::254`, ECS
+  `169.254.170.2`, EKS Pod Identity, Azure `168.63.129.16`) and the
+  `metadata.google.internal`/`metadata` host names (refused before DNS) are
+  now refused. An `--allow` entry exempts only loopback and link-local, no
+  longer metadata or own ports. Own listener ports are refused on any local
+  address, and both gates now protect both the proxy and the API port. An
+  empty resolution reports `Unresolved`.
+
 ### Added
 
 - **Web UI overhaul** (U1): a redesigned, dark-by-default interface with a

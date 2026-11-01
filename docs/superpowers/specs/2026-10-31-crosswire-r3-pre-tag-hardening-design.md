@@ -49,5 +49,6 @@ No new dependency; `unsafe_code = "forbid"`; MSRV 1.88; `cargo build` Node-free 
 
 ## 6. Risks
 - The UDP-bind probe could misbehave on a host that forbids unprivileged UDP binds (rare; failure = "not local", i.e. the old behaviour, never a false refusal).
+- On Linux with `net.ipv4.ip_nonlocal_bind=1` (or `net.ipv6.ip_nonlocal_bind=1`) binding to any address succeeds, so the probe reports every address as local and remote targets on the two own listener ports are refused: fail-closed, limited to those ports. Link-local addresses count as local for the own-port rule because the probe cannot bind `fe80::` without a scope id.
 - Teredo decoding is rarely exercised; the test fixes the vectors from RFC 4380 §4.
 - The `ANALYZE` on close adds milliseconds per clean close at 1k+ rows; measured in the store test log.

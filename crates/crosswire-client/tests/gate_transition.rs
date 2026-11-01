@@ -18,6 +18,12 @@ fn canonical_unwraps_transition_forms() {
         // 6to4.
         ("2002:7f00:1::", "127.0.0.1"),
         ("2002:7f00:0001:1234:5678::1", "127.0.0.1"),
+        // Local-use NAT64 (RFC 8215), last 32 bits.
+        ("64:ff9b:1::a9fe:a9fe", "169.254.169.254"),
+        ("64:ff9b:1:abcd:1:2:7f00:1", "127.0.0.1"),
+        // SIIT IPv4-translated `::ffff:0:a.b.c.d`.
+        ("::ffff:0:7f00:1", "127.0.0.1"),
+        ("::ffff:0:a9fe:a9fe", "169.254.169.254"),
         // Teredo, RFC 4380 section 4 example: client 192.0.2.45.
         ("2001:0:4136:e378:8000:63bf:3fff:fdd2", "192.0.2.45"),
     ] {

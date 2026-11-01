@@ -3,7 +3,7 @@
 //! The gate decides on resolved addresses, so the spelling of the host
 //! (`localhost`, `127.1`, `2130706433`, `::ffff:127.0.0.1`, a DNS name that
 //! points at loopback) cannot get around it. IPv6 transition forms that carry
-//! an IPv4 address (IPv4-mapped, IPv4-compatible, NAT64, 6to4, Teredo) are
+//! an IPv4 address (IPv4-mapped, SIIT, IPv4-compatible, NAT64, 6to4, Teredo) are
 //! unwrapped by [`canonical`] first, and the rules run on both the unwrapped
 //! address and the original.
 //!
@@ -12,7 +12,8 @@
 //! - **Always refused**, whatever the allowlist says: unspecified
 //!   (`0.0.0.0/8`, `::`), multicast (`224.0.0.0/4`, `ff00::/8`), broadcast
 //!   (`255.255.255.255`), the cloud metadata addresses and host names, and the
-//!   server's own listener ports on any local address.
+//!   server's own listener ports on any local address (loopback, link-local,
+//!   or one a UDP bind probe shows this host owns).
 //! - **Allowlistable** per exact `(host, port)`: loopback (`127.0.0.0/8`,
 //!   `::1`) and link-local (`169.254.0.0/16`, `fe80::/10`).
 //!
@@ -81,9 +82,10 @@ fn v4_from(hi: u16, lo: u16) -> Ipv4Addr {
 /// Unwraps an IPv6 transition form to the IPv4 address it carries, so it gets
 /// the IPv4 rules. Any other address is returned unchanged.
 ///
-/// Handled forms: IPv4-mapped `::ffff:a.b.c.d`, IPv4-compatible `::a.b.c.d`
-/// (`::/96`, except `::` and `::1`), NAT64 `64:ff9b::/96` (last 32 bits),
-/// 6to4 `2002::/16` (bits 16 to 47) and Teredo `2001:0::/32` (last 32 bits,
+/// Handled forms: IPv4-mapped `::ffff:a.b.c.d`, SIIT IPv4-translated
+/// `::ffff:0:a.b.c.d`, IPv4-compatible `::a.b.c.d` (`::/96`, except `::` and
+/// `::1`), NAT64 `64:ff9b::/96` and local-use NAT64 `64:ff9b:1::/48` (last 32
+/// bits), 6to4 `2002::/16` (bits 16 to 47) and Teredo `2001:0::/32` (last 32 bits,
 /// XOR `0xffffffff`).
 #[must_use]
 pub fn canonical(ip: IpAddr) -> IpAddr {
@@ -96,7 +98,9 @@ pub fn canonical(ip: IpAddr) -> IpAddr {
     let s = v6.segments();
     let v4 = match s {
         [0, 0, 0, 0, 0, 0, hi, lo] if !(hi == 0 && lo <= 1) => v4_from(hi, lo),
+        [0, 0, 0, 0, 0xffff, 0, hi, lo] => v4_from(hi, lo),
         [0x0064, 0xff9b, 0, 0, 0, 0, hi, lo] => v4_from(hi, lo),
+        [0x0064, 0xff9b, 0x0001, _, _, _, hi, lo] => v4_from(hi, lo),
         [0x2002, hi, lo, ..] => v4_from(hi, lo),
         [0x2001, 0, _, _, _, _, hi, lo] => Ipv4Addr::from(!u32::from(v4_from(hi, lo))),
         _ => return ip,
@@ -106,16 +110,30 @@ pub fn canonical(ip: IpAddr) -> IpAddr {
 
 const AWS_V6_METADATA: Ipv6Addr = Ipv6Addr::new(0xfd00, 0x0ec2, 0, 0, 0, 0, 0, 0x0254);
 const GCP_V6_METADATA: Ipv6Addr = Ipv6Addr::new(0xfd20, 0x00ce, 0, 0, 0, 0, 0, 0x0254);
+const EKS_V6_POD_IDENTITY: Ipv6Addr = Ipv6Addr::new(0xfd00, 0x0ec2, 0, 0, 0, 0, 0, 0x0023);
+
+/// Cloud credential and metadata endpoints: AWS/GCP/Azure/OpenStack IMDS
+/// (`169.254.169.254`), Alibaba (`100.100.100.200`), ECS task credentials
+/// (`169.254.170.2`), EKS Pod Identity (`169.254.170.23`) and the Azure wire
+/// server (`168.63.129.16`).
+const V4_METADATA: [Ipv4Addr; 5] = [
+    Ipv4Addr::new(169, 254, 169, 254),
+    Ipv4Addr::new(100, 100, 100, 200),
+    Ipv4Addr::new(169, 254, 170, 2),
+    Ipv4Addr::new(169, 254, 170, 23),
+    Ipv4Addr::new(168, 63, 129, 16),
+];
+
+/// AWS IMDS and EKS Pod Identity over IPv6, and the GCP metadata server.
+const V6_METADATA: [Ipv6Addr; 3] = [AWS_V6_METADATA, EKS_V6_POD_IDENTITY, GCP_V6_METADATA];
 
 /// Host names of cloud metadata services, compared after [`norm_host`].
 const METADATA_NAMES: [&str; 2] = ["metadata.google.internal", "metadata"];
 
 fn is_metadata(ip: IpAddr) -> bool {
     match ip {
-        IpAddr::V4(v4) => {
-            v4 == Ipv4Addr::new(169, 254, 169, 254) || v4 == Ipv4Addr::new(100, 100, 100, 200)
-        }
-        IpAddr::V6(v6) => v6 == AWS_V6_METADATA || v6 == GCP_V6_METADATA,
+        IpAddr::V4(v4) => V4_METADATA.contains(&v4),
+        IpAddr::V6(v6) => V6_METADATA.contains(&v6),
     }
 }
 
@@ -230,10 +248,12 @@ impl DestinationGate {
             if let Some(r) = forms.iter().find_map(|&a| hard_refusal(a)) {
                 return Err(r);
             }
+            // Unspecified already returned above. Link-local counts as ours:
+            // the probe cannot bind `fe80::` without a scope id.
             if self.own_ports.contains(&port)
-                && (is_loopback(ip)
-                    || is_unspecified(ip)
-                    || forms.iter().any(|&a| is_local_address(a)))
+                && forms
+                    .iter()
+                    .any(|&a| is_loopback(a) || is_link_local(a) || is_local_address(a))
             {
                 return Err(GateRefusal::OwnListener(port));
             }

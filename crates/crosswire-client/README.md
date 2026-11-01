@@ -74,23 +74,31 @@ partial response as if it were whole.
   addresses, so the spelling of the host (`localhost`, `127.1`, `2130706433`,
   `::ffff:127.0.0.1`, a name that resolves to loopback) does not matter. IPv6
   transition forms are first unwrapped to the IPv4 they carry (`canonical`:
-  IPv4-mapped `::ffff:a.b.c.d`, IPv4-compatible `::a.b.c.d`, NAT64
-  `64:ff9b::/96`, 6to4 `2002::/16`, Teredo `2001:0::/32`), and the rules run on
+  IPv4-mapped `::ffff:a.b.c.d`, SIIT `::ffff:0:a.b.c.d`, IPv4-compatible
+  `::a.b.c.d`, NAT64 `64:ff9b::/96` and local-use `64:ff9b:1::/48`, 6to4
+  `2002::/16`, Teredo `2001:0::/32`), and the rules run on
   both the unwrapped and the original address. Every resolved address must
   pass; an empty result is refused as `Unresolved`.
 - **Always refused, never allowlistable:** unspecified (`0.0.0.0/8`, `::`),
   multicast (`224.0.0.0/4`, `ff00::/8`), broadcast (`255.255.255.255`), the
-  cloud metadata addresses `169.254.169.254`, `100.100.100.200`,
-  `fd00:ec2::254` and `fd20:ce::254`, and the metadata host names
+  cloud metadata and credential addresses `169.254.169.254` (AWS, GCP, Azure
+  IMDS), `100.100.100.200` (Alibaba), `169.254.170.2` (ECS task credentials),
+  `169.254.170.23` and `fd00:ec2::23` (EKS Pod Identity), `168.63.129.16`
+  (Azure wire server), `fd00:ec2::254` and `fd20:ce::254`, and the metadata
+  host names
   `metadata.google.internal` and `metadata` (any case, trailing dot ignored),
   which `Transport::connect` refuses before any DNS lookup
   (`DestinationGate::check_name`).
 - **Own listener ports.** A destination on one of the ports passed to
   `DestinationGate::new` is refused as `OwnListener` when the address is
-  loopback, unspecified, or owned by this host. Ownership is probed by binding
-  a UDP socket to that address (port 0, dropped at once, nothing sent); any
-  probe error counts as "not local". The probe runs only when the port matches.
-  An allowlist entry does not lift this.
+  loopback, link-local (the probe cannot bind `fe80::` without a scope id), or
+  owned by this host. Ownership is probed by binding a UDP socket to that
+  address (port 0, dropped at once, nothing sent); any probe error counts as
+  "not local". The probe runs only when the port matches. An allowlist entry
+  does not lift this. On Linux with `net.ipv4.ip_nonlocal_bind=1` (or the IPv6
+  equivalent) the bind succeeds for any address, so the probe reports every
+  address as local and remote targets on the own ports are refused too:
+  fail-closed, limited to those ports.
 - **Allowlistable:** loopback (`127.0.0.0/8`, `::1`) and link-local
   (`169.254.0.0/16`, `fe80::/10`). `allow(host, port)` is an exact pair,
   compared without case or a trailing dot, and it lifts only these two checks

@@ -283,3 +283,52 @@ fn own_port_on_local_interface_is_refused() {
     // A documentation address is not ours, so the own port is fine there.
     assert!(g.check("doc.example", 9000, &[ip("192.0.2.1")]).is_ok());
 }
+
+#[test]
+fn more_credential_endpoints_are_metadata() {
+    let mut g = DestinationGate::new(vec![]);
+    g.allow("x.example", 80);
+    for a in [
+        // ECS task credentials.
+        "169.254.170.2",
+        // EKS Pod Identity agent.
+        "169.254.170.23",
+        "fd00:ec2::23",
+        // Azure wire server / IMDS host.
+        "168.63.129.16",
+        // The same through transition forms.
+        "::ffff:a9fe:aa02",
+        "64:ff9b:1::a83f:8110",
+    ] {
+        let got = g.check("x.example", 80, &[ip(a)]).unwrap_err();
+        assert!(matches!(got, GateRefusal::Metadata(_)), "{a} -> {got:?}");
+    }
+}
+
+#[test]
+fn allowlisted_name_resolving_to_ecs_credentials_is_refused() {
+    let mut g = DestinationGate::new(vec![]);
+    g.allow("evil.example", 80);
+    assert!(matches!(
+        g.check("evil.example", 80, &[ip("203.0.113.5"), ip("169.254.170.2")]),
+        Err(GateRefusal::Metadata(a)) if a == ip("169.254.170.2")
+    ));
+}
+
+#[test]
+fn own_port_on_link_local_is_refused_even_when_allowlisted() {
+    let mut g = DestinationGate::new(vec![9000]);
+    g.allow("ll.example", 9000);
+    for a in ["fe80::1", "169.254.1.1"] {
+        assert!(
+            matches!(
+                g.check("ll.example", 9000, &[ip(a)]),
+                Err(GateRefusal::OwnListener(9000))
+            ),
+            "{a}"
+        );
+    }
+    // Another port on the same allowlisted link-local address is fine.
+    g.allow("ll.example", 9001);
+    assert!(g.check("ll.example", 9001, &[ip("fe80::1")]).is_ok());
+}
