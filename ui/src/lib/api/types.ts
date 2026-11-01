@@ -5,6 +5,7 @@
 // client.test.ts loads the real document and checks MIRRORED_SCHEMAS against it.
 
 export const MIRRORED_SCHEMAS = [
+  'ChangeDto',
   'CountsDto',
   'CreateBody',
   'EnabledBody',
@@ -14,6 +15,7 @@ export const MIRRORED_SCHEMAS = [
   'PatchBody',
   'RulesDto',
   'SendBody',
+  'SendOutcomeDto',
   'SessionRequest',
   'SessionResponse',
 ] as const;
