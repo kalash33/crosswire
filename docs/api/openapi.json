@@ -1093,6 +1093,17 @@
             "description": "The project database format (`user_version`) this build reads and writes.",
             "minimum": 0
           },
+          "project": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ProjectInfo",
+                "description": "The project the server is attached to (directory name and absolute\npath). Absent when the embedder names none."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "proxy_addr": {
             "type": [
               "string",
@@ -1145,6 +1156,24 @@
               "type": "string"
             },
             "description": "Replacement tags."
+          }
+        }
+      },
+      "ProjectInfo": {
+        "type": "object",
+        "description": "The project a server is attached to, as `/health` reports it. Both fields\nare display text for the operator (the UI renders them as text only).",
+        "required": [
+          "name",
+          "path"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "The project directory's name (its last path component)."
+          },
+          "path": {
+            "type": "string",
+            "description": "The project directory's absolute path."
           }
         }
       },

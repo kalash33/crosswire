@@ -42,6 +42,20 @@ pub struct ApiConfig {
     /// clients show the right proxy address. `None` when the embedder runs no
     /// proxy.
     pub proxy_addr: Option<SocketAddr>,
+    /// The project being served, reported on `/health` so the UI can show
+    /// which project it is attached to. `None` when the embedder has none to
+    /// name (test harnesses).
+    pub project: Option<ProjectInfo>,
+}
+
+/// The project a server is attached to, as `/health` reports it. Both fields
+/// are display text for the operator (the UI renders them as text only).
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, utoipa::ToSchema)]
+pub struct ProjectInfo {
+    /// The project directory's name (its last path component).
+    pub name: String,
+    /// The project directory's absolute path.
+    pub path: String,
 }
 
 impl Default for ApiConfig {
@@ -51,6 +65,7 @@ impl Default for ApiConfig {
             idle_timeout: DEFAULT_IDLE_TIMEOUT,
             bootstrap_ttl: DEFAULT_BOOTSTRAP_TTL,
             proxy_addr: None,
+            project: None,
         }
     }
 }
@@ -88,6 +103,8 @@ pub struct AppState {
     pub bootstrap_ttl: Duration,
     /// The proxy's bound address, if the embedder runs one.
     pub proxy_addr: Option<SocketAddr>,
+    /// The project `/health` names, if the embedder set one.
+    pub project: Option<ProjectInfo>,
     /// Per-peer authentication-failure rate limiter.
     pub auth_limiter: RateLimiter,
     /// The per-serve secret that signs preview capability tokens (§11.1).
@@ -137,6 +154,7 @@ impl AppState {
             idle_timeout: config.idle_timeout,
             bootstrap_ttl: config.bootstrap_ttl,
             proxy_addr: config.proxy_addr,
+            project: config.project.clone(),
             auth_limiter: RateLimiter::new(),
             preview_key: Arc::new(PreviewKey::random()),
         })

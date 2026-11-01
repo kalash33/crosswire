@@ -60,3 +60,24 @@ async fn health_reports_proxy_addr_when_configured() {
         assert_eq!(j["proxy_addr"], addr);
     }
 }
+
+#[tokio::test]
+async fn health_reports_the_project_when_configured() {
+    let unconfigured = TestApp::new().await;
+    let j = unconfigured.get("/api/v1/health", &[]).await.json();
+    assert!(j.get("project").is_none(), "absent when unconfigured: {j}");
+
+    let app = TestApp::with(Opts {
+        project: Some(crosswire_api::ProjectInfo {
+            name: "acme <script>".into(),
+            path: "/work/acme <script>".into(),
+        }),
+        ..Opts::default()
+    })
+    .await;
+    let j = app.get("/api/v1/health", &[]).await.json();
+    assert_eq!(
+        j["project"],
+        serde_json::json!({"name": "acme <script>", "path": "/work/acme <script>"})
+    );
+}

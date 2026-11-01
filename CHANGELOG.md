@@ -34,6 +34,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   60-second token is never copied by hand; off by default, a failure only
   warns. `crosswire app --project DIR` runs `serve --open=app` and launches the
   wired browser too, and stops both browsers when it stops.
+- **crosswire-api**: `GET /api/v1/health` carries an optional
+  `project: {name, path}` (the project directory's name and absolute path),
+  which `serve` sets, so clients can show which project they are attached to.
 - **Release pipeline and governance** (R2): one workspace version; release-plz
   opens the release PR and cuts the `v<version>` tag; cargo-dist builds the
   `crosswire` binary for `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`

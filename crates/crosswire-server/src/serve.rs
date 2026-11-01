@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 
 use crosswire_api::{
-    bootstrap_token, router_with_fallback, ApiConfig, AppState, DEFAULT_BOOTSTRAP_TTL,
+    bootstrap_token, router_with_fallback, ApiConfig, AppState, ProjectInfo, DEFAULT_BOOTSTRAP_TTL,
     DEFAULT_IDLE_TIMEOUT,
 };
 use crosswire_ca::{IssuerLimits, LeafIssuer};
@@ -263,6 +263,7 @@ async fn serve_with_store(
         idle_timeout: DEFAULT_IDLE_TIMEOUT,
         bootstrap_ttl: DEFAULT_BOOTSTRAP_TTL,
         proxy_addr: Some(addr),
+        project: Some(project_info(&args.project)),
     };
     let state = AppState::new(
         Arc::clone(&store),
@@ -428,6 +429,24 @@ fn resolved(path: &Path) -> Result<PathBuf, CliError> {
     Ok(out)
 }
 
+/// The project's name (its directory's last component) and absolute path,
+/// for `/health`. The directory exists by now, so it is canonicalised; a
+/// failure falls back to the lexically absolute path.
+fn project_info(project: &Path) -> ProjectInfo {
+    let abs = project
+        .canonicalize()
+        .or_else(|_| std::path::absolute(project))
+        .unwrap_or_else(|_| project.to_path_buf());
+    let name = abs
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| abs.display().to_string());
+    ProjectInfo {
+        name,
+        path: abs.display().to_string(),
+    }
+}
+
 /// `host:port`, bracketing an IPv6 host.
 fn host_port(host: &str, port: u16) -> String {
     if host.contains(':') {
@@ -477,5 +496,24 @@ fn shutdown_signal() -> impl std::future::Future<Output = ()> {
             tracing::warn!(error = %e, "cannot listen for Ctrl-C");
             std::future::pending::<()>().await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn project_info_is_the_canonical_directory_and_its_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("acme web");
+        std::fs::create_dir(&dir).unwrap();
+        // A relative-looking spelling with `..` still names the directory.
+        let spelled = tmp.path().join("x").join("..").join("acme web");
+        std::fs::create_dir(tmp.path().join("x")).unwrap();
+        let info = project_info(&spelled);
+        assert_eq!(info.name, "acme web");
+        assert_eq!(info.path, dir.canonicalize().unwrap().display().to_string());
+        assert!(Path::new(&info.path).is_absolute());
     }
 }

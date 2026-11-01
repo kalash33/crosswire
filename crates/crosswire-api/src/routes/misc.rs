@@ -11,7 +11,7 @@ use http::StatusCode;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use crate::app::AppState;
+use crate::app::{AppState, ProjectInfo};
 use crate::error::{ApiError, ApiResult};
 
 /// The health response body.
@@ -28,6 +28,10 @@ pub struct HealthResponse {
     /// IPv6). Absent when no proxy is running alongside the API.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub proxy_addr: Option<String>,
+    /// The project the server is attached to (directory name and absolute
+    /// path). Absent when the embedder names none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project: Option<ProjectInfo>,
 }
 
 /// Liveness probe.
@@ -42,6 +46,7 @@ pub async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
         schema_version: crosswire_model::SCHEMA_VERSION,
         format_version: crosswire_store::FORMAT_VERSION,
         proxy_addr: state.proxy_addr.map(|a| a.to_string()),
+        project: state.project.clone(),
     })
 }
 

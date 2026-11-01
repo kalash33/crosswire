@@ -1004,10 +1004,11 @@ fn wait_stderr(rx: &mpsc::Receiver<String>, needles: &[&str]) -> Vec<String> {
     seen
 }
 
-/// The API still answers `/health`.
-async fn assert_healthy(api: SocketAddr) {
+/// The API still answers `/health`; returns its body.
+async fn assert_healthy(api: SocketAddr) -> serde_json::Value {
     let (st, _, body) = http(api, "GET", "/api/v1/health", &[], None).await;
     assert_eq!(st, 200, "{}", String::from_utf8_lossy(&body));
+    serde_json::from_slice(&body).unwrap()
 }
 
 /// Review Focus 4: `serve --open` on a machine with no browser keeps serving,
@@ -1049,7 +1050,13 @@ async fn serve_open_without_a_browser_warns_and_keeps_serving() {
         !warning.contains("#bootstrap="),
         "the token leaked: {warning}"
     );
-    assert_healthy(startup.api).await;
+    // `serve` names its project on /health.
+    let health = assert_healthy(startup.api).await;
+    assert_eq!(health["project"]["name"], "proj");
+    assert_eq!(
+        health["project"]["path"],
+        project.canonicalize().unwrap().display().to_string()
+    );
     sigint_and_wait(&mut child.0);
 }
 

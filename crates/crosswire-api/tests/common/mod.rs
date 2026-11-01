@@ -41,6 +41,8 @@ pub struct Opts {
     pub bootstrap_ttl: Duration,
     /// The proxy address `/health` reports, if any.
     pub proxy_addr: Option<SocketAddr>,
+    /// The project `/health` reports, if any.
+    pub project: Option<crosswire_api::ProjectInfo>,
 }
 
 impl Default for Opts {
@@ -53,6 +55,7 @@ impl Default for Opts {
             idle_timeout: Duration::from_secs(30 * 60),
             bootstrap_ttl: Duration::from_secs(60),
             proxy_addr: None,
+            project: None,
         }
     }
 }
@@ -135,6 +138,7 @@ impl TestApp {
             idle_timeout: opts.idle_timeout,
             bootstrap_ttl: opts.bootstrap_ttl,
             proxy_addr: opts.proxy_addr,
+            project: opts.project.clone(),
         };
         let state = AppState::new(
             Arc::clone(&store),
