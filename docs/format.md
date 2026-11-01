@@ -16,6 +16,7 @@ A project is a directory. Everything Crosswire records lives in it. This documen
   audit.jsonl         append-only audit log, mode 0600
   audit.jsonl.1       the previous audit generation (after rotation)
   browser-profile/    the launcher's browser profile (optional); excluded from exports
+  app-profile/        the UI app window's browser profile (optional); excluded from exports
   project.db.v<n>.bak pre-migration copy of project.db (only after an upgrade from version n; see Migrations)
 ```
 
@@ -26,6 +27,11 @@ Directories are created 0700 and files 0600 on unix. Other platforms use the pla
 cookies, session storage and cache — not Crosswire records, so it is **excluded
 from exports** and is not part of the on-disk record contract; `crosswire browser
 reset-profile` deletes it.
+
+`app-profile/` is the same kind of directory for the UI's app window, created
+(mode 0700) by `serve --open=app` and `crosswire app`. It is kept apart from
+`browser-profile/` so the two run as separate browser instances; it is likewise
+excluded from exports and outside the record contract.
 
 ## Database
 

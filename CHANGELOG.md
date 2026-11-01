@@ -28,6 +28,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **crosswire-api**: `GET /api/v1/health` reports the proxy's bound address as
   an optional `proxy_addr`, so clients show the right address when
   `serve --proxy-bind` used a non-default one.
+- **crosswire-server**: `serve --open[=browser|app]` opens the one-time
+  bootstrap URL once the API listens, in the default browser or in a
+  Chromium-based browser's app mode (its own window and profile), so the
+  60-second token is never copied by hand; off by default, a failure only
+  warns. `crosswire app --project DIR` runs `serve --open=app` and launches the
+  wired browser too, and stops both browsers when it stops.
 - **Release pipeline and governance** (R2): one workspace version; release-plz
   opens the release PR and cuts the `v<version>` tag; cargo-dist builds the
   `crosswire` binary for `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`

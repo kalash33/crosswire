@@ -955,3 +955,237 @@ async fn scope_and_strict_persist_across_restart() {
         sigint_and_wait(&mut child.0);
     }
 }
+
+/// Spawns `crosswire <args>` with ephemeral proxy and API ports, the given
+/// environment, and stdout and stderr piped.
+fn spawn_piped(args: &[&str], env: &[(&str, &str)]) -> Child {
+    let mut cmd = Command::new(BIN);
+    cmd.args(args)
+        .args(["--proxy-bind", "127.0.0.1:0", "--api-bind", "127.0.0.1:0"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    // Never reach a real browser from a test, whatever the code path.
+    cmd.env("CROSSWIRE_OPENER", "/nonexistent/opener")
+        .env("BROWSER", "/nonexistent/browser");
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    cmd.spawn().unwrap()
+}
+
+/// Streams the child's stderr lines.
+fn stderr_lines(child: &mut Child) -> mpsc::Receiver<String> {
+    let stderr = child.stderr.take().unwrap();
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        for line in BufReader::new(stderr).lines() {
+            let Ok(line) = line else { return };
+            let _ = tx.send(line);
+        }
+    });
+    rx
+}
+
+/// Collects stderr lines until every needle has appeared in some line,
+/// within 15 s; returns every line seen.
+fn wait_stderr(rx: &mpsc::Receiver<String>, needles: &[&str]) -> Vec<String> {
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let mut seen = Vec::new();
+    while !needles
+        .iter()
+        .all(|n| seen.iter().any(|l: &String| l.contains(n)))
+    {
+        let left = deadline.saturating_duration_since(Instant::now());
+        match rx.recv_timeout(left) {
+            Ok(line) => seen.push(line),
+            Err(_) => panic!("stderr lacks one of {needles:?}; saw:\n{}", seen.join("\n")),
+        }
+    }
+    seen
+}
+
+/// The API still answers `/health`.
+async fn assert_healthy(api: SocketAddr) {
+    let (st, _, body) = http(api, "GET", "/api/v1/health", &[], None).await;
+    assert_eq!(st, 200, "{}", String::from_utf8_lossy(&body));
+}
+
+/// Review Focus 4: `serve --open` on a machine with no browser keeps serving,
+/// prints the URL, warns once, and exits 0 on Ctrl-C.
+#[tokio::test(flavor = "multi_thread")]
+async fn serve_open_without_a_browser_warns_and_keeps_serving() {
+    let tmp = tempfile::tempdir().unwrap();
+    let project = tmp.path().join("proj");
+    let ca_dir = tmp.path().join("ca");
+    let mut child = Reap(spawn_piped(
+        &[
+            "serve",
+            "--project",
+            project.to_str().unwrap(),
+            "--ca-dir",
+            ca_dir.to_str().unwrap(),
+            "--open",
+        ],
+        &[],
+    ));
+    let errs = stderr_lines(&mut child.0);
+    let startup = tokio::task::block_in_place(|| wait_serve_startup(&mut child.0));
+    assert!(
+        startup.bootstrap_line.contains("#bootstrap="),
+        "the URL is still printed: {}",
+        startup.bootstrap_line
+    );
+    let seen = tokio::task::block_in_place(|| {
+        wait_stderr(
+            &errs,
+            &["warning: could not open the UI with /nonexistent/opener"],
+        )
+    });
+    let warning = seen
+        .iter()
+        .find(|l| l.contains("could not open the UI"))
+        .unwrap();
+    assert!(
+        !warning.contains("#bootstrap="),
+        "the token leaked: {warning}"
+    );
+    assert_healthy(startup.api).await;
+    sigint_and_wait(&mut child.0);
+}
+
+/// `crosswire app` with no Chromium-based browser: the app window falls back
+/// to the default opener (which fails here), the wired browser is skipped,
+/// and serving continues.
+#[tokio::test(flavor = "multi_thread")]
+async fn app_without_a_browser_warns_and_keeps_serving() {
+    let tmp = tempfile::tempdir().unwrap();
+    let project = tmp.path().join("proj");
+    let ca_dir = tmp.path().join("ca");
+    let mut child = Reap(spawn_piped(
+        &[
+            "app",
+            "--project",
+            project.to_str().unwrap(),
+            "--ca-dir",
+            ca_dir.to_str().unwrap(),
+            "--browser-path",
+            "/nonexistent/chrome",
+        ],
+        &[],
+    ));
+    let errs = stderr_lines(&mut child.0);
+    let startup = tokio::task::block_in_place(|| wait_serve_startup(&mut child.0));
+    tokio::task::block_in_place(|| {
+        wait_stderr(
+            &errs,
+            &[
+                "no Chromium-based browser found for --open=app",
+                "could not open the UI with /nonexistent/opener",
+                &format!("point a browser at the proxy {}", startup.proxy),
+            ],
+        )
+    });
+    assert_healthy(startup.api).await;
+    sigint_and_wait(&mut child.0);
+}
+
+/// `crosswire app` launches the app window (`--app=<bootstrap url>`, its own
+/// profile) and the wired browser (the proxy, the browser profile), each
+/// with the URL as one argv entry, and stops both on Ctrl-C.
+#[tokio::test(flavor = "multi_thread")]
+async fn app_launches_both_browsers_and_stops_them_with_serve() {
+    let tmp = tempfile::tempdir().unwrap();
+    let project = tmp.path().join("proj");
+    let ca_dir = tmp.path().join("ca");
+    let log = tmp.path().join("argv.log");
+    // A fake browser: one line per launch, `<pid>` then each argument on its
+    // own `|`-prefixed field, then it idles as the same pid.
+    let fake = tmp.path().join("fake-chrome");
+    std::fs::write(
+        &fake,
+        format!(
+            "#!/bin/sh\nline=\"$$\"\nfor a in \"$@\"; do line=\"$line|$a\"; done\necho \"$line\" >> '{}'\nexec sleep 60\n",
+            log.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let mut child = Reap(spawn_piped(
+        &[
+            "app",
+            "--project",
+            project.to_str().unwrap(),
+            "--ca-dir",
+            ca_dir.to_str().unwrap(),
+            "--browser-path",
+            fake.to_str().unwrap(),
+        ],
+        &[],
+    ));
+    let _errs = stderr_lines(&mut child.0);
+    let startup = tokio::task::block_in_place(|| wait_serve_startup(&mut child.0));
+    let token = token_from_bootstrap_line(&startup.bootstrap_line);
+
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let launches: Vec<Vec<String>> = loop {
+        let text = std::fs::read_to_string(&log).unwrap_or_default();
+        let lines: Vec<Vec<String>> = text
+            .lines()
+            .map(|l| l.split('|').map(str::to_string).collect())
+            .collect();
+        if lines.len() >= 2 {
+            break lines;
+        }
+        assert!(Instant::now() < deadline, "two launches expected: {text:?}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    assert_eq!(launches.len(), 2, "{launches:?}");
+    let app = launches
+        .iter()
+        .find(|l| l.iter().any(|a| a.starts_with("--app=")))
+        .expect("an app-mode launch");
+    let wired = launches
+        .iter()
+        .find(|l| l.iter().any(|a| a.starts_with("--proxy-server=")))
+        .expect("a wired launch");
+    let url = format!("http://localhost:{}/#bootstrap={token}", startup.api.port());
+    assert_eq!(
+        app[1..],
+        [
+            format!("--app={url}"),
+            format!("--user-data-dir={}", project.join("app-profile").display()),
+            "--no-first-run".to_string(),
+            "--no-default-browser-check".to_string(),
+        ]
+    );
+    assert!(
+        wired.contains(&format!("--proxy-server={}", startup.proxy)),
+        "{wired:?}"
+    );
+    assert!(
+        wired.contains(&format!(
+            "--user-data-dir={}",
+            project.join("browser-profile").display()
+        )),
+        "{wired:?}"
+    );
+    assert!(
+        !wired.iter().any(|a| a.contains("#bootstrap=")),
+        "{wired:?}"
+    );
+
+    assert_healthy(startup.api).await;
+    sigint_and_wait(&mut child.0);
+
+    // Both fake browsers were stopped with serve.
+    for launch in &launches {
+        let alive = Command::new("kill")
+            .args(["-0", &launch[0]])
+            .stderr(Stdio::null())
+            .status()
+            .unwrap()
+            .success();
+        assert!(!alive, "browser pid {} still running", launch[0]);
+    }
+}

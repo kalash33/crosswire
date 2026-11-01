@@ -23,9 +23,11 @@ use tokio::net::TcpListener;
 use tokio::sync::watch;
 
 use crate::api_cmd;
+use crate::app_cmd;
 use crate::ca_cmd::{load_or_generate, resolve_ca_dir};
 use crate::cli::ServeArgs;
 use crate::error::CliError;
+use crate::open::{self, Launched};
 
 /// The actor recorded in the audit log for configuration given on the
 /// command line.
@@ -300,6 +302,26 @@ async fn serve_with_store(
     }
     tracing::info!(%addr, %api_addr, "proxy and api listening");
 
+    // The API listener is bound (connections queue until it is served just
+    // below), so the browsers can be started now. A failure only warns.
+    let mut launched = Launched::default();
+    if let Some(mode) = args.open {
+        launched.extend(open::open_ui(
+            mode,
+            &url,
+            args.browser_path.as_deref(),
+            &args.project,
+        ));
+    }
+    if args.wired_browser {
+        launched.extend(app_cmd::launch_wired(
+            args.browser_path.as_deref(),
+            &args.project,
+            addr,
+            &ca.spki_sha256_base64(),
+        ));
+    }
+
     let counters = proxy.counters();
     let (tx, rx) = watch::channel(false);
     let mut rx_api = rx.clone();
@@ -325,6 +347,10 @@ async fn serve_with_store(
     // dropped here, so the `AppState` (and its store clone) is gone.
     let (ran, api_res) = tokio::join!(proxy.run(rx), api_server);
     let ran = ran.map_err(|e| CliError::runtime("proxy", e));
+    // The browsers `serve` launched stop with it.
+    if let Err(e) = tokio::task::spawn_blocking(move || launched.stop()).await {
+        tracing::warn!(error = %e, "stopping the launched browsers failed");
+    }
     if let Err(e) = api_res {
         tracing::warn!(error = %e, "the API listener stopped with an error");
     }

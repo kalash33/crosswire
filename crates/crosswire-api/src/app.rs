@@ -145,7 +145,9 @@ impl AppState {
 
 /// Mints the single-use bootstrap token (256-bit secret, 60 s expiry by
 /// default), accepted only by `POST /api/v1/session`. The server (Task 7)
-/// delivers it out of band; it is never passed on argv.
+/// delivers it out of band; it is never passed on crosswire's own argv
+/// (`serve --open` hands the URL to the browser it launches, where the
+/// single-use token is spent on the first page load).
 #[must_use]
 pub fn bootstrap_token(state: &AppState) -> String {
     state.bootstrap.mint(state.bootstrap_ttl)
