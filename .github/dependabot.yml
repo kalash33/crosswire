@@ -7,6 +7,13 @@ updates:
     groups:
       rust-deps:
         patterns: ["*"]
+    # Most of our Rust dependencies are 0.x, where a minor bump is breaking
+    # (and several sit on security paths: rusqlite, sha2, webpki-roots).
+    # Take only patch updates automatically; minor and major upgrades are a
+    # planned, reviewed dependency refresh.
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
   - package-ecosystem: npm
     directory: /ui
     schedule:
