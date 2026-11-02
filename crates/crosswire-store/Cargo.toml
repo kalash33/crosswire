@@ -45,7 +45,7 @@ tokio = { workspace = true }
 rusqlite = { workspace = true }
 crosswire-core = { path = "../crosswire-core" }
 crosswire-h1 = { path = "../crosswire-h1" }
-criterion = { version = "0.5", default-features = false }
+criterion = { version = "0.8", default-features = false }
 
 # `phys_footprint` for the bench/test RSS probe (src/rss.rs). Linux reads
 # `RssAnon` from /proc itself, so nothing else compiles this.
