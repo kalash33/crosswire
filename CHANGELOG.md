@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-11-03
+
+The first public release.
+
 ### Added
 
 - **Web UI overhaul** (U1): a redesigned, dark-by-default interface with a
@@ -239,6 +243,7 @@ no UI yet. The minimum supported Rust version is 1.88.
 - **docs**: the project format (`docs/format.md`), ADR-0001 to ADR-0003, the
   CA install guide and the h1 diagnostics catalogue.
 
-[Unreleased]: https://github.com/kalash33/crosswire/compare/v0.1.0-rc.2...HEAD
+[Unreleased]: https://github.com/kalash33/crosswire/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/kalash33/crosswire/releases/tag/v0.1.0
 [0.1.0-alpha.2]: https://github.com/kalash33/crosswire/tree/05bc968
 [0.1.0-alpha.1]: https://github.com/kalash33/crosswire/tree/f44ec2a
