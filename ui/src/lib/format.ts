@@ -52,3 +52,15 @@ export function timeCell(iso: string | number, now: Date = new Date()): string {
 export function isoNow(): string {
   return new Date().toISOString();
 }
+
+/**
+ * The first `max` characters of `text`, cut at a word boundary when one is
+ * near and marked with an ellipsis; `text` itself when it already fits.
+ */
+export function clipText(text: string, max = 80): string {
+  if (text.length <= max) return text;
+  let cut = text.slice(0, max);
+  const space = cut.lastIndexOf(' ');
+  if (space >= max * 0.6) cut = cut.slice(0, space);
+  return `${cut.trimEnd()}…`;
+}

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { historyKey, type SendRecord } from '../stores/repeater.svelte';
-  import { humanBytes, timeShort } from '../format';
+  import { clipText, humanBytes, timeShort } from '../format';
   import Badge from '../ui/Badge.svelte';
   import Button from '../ui/Button.svelte';
   import Icon from '../ui/Icon.svelte';
@@ -154,7 +154,7 @@
             </span>
             <span class="meta">
               {#if r.error}
-                <span class="reason">{r.error}</span>
+                <span class="reason" data-testid="send-history-reason" title={r.error}>{clipText(r.error)}</span>
               {:else}
                 <span data-testid="send-history-size">{r.size !== undefined ? humanBytes(r.size) : '–'}</span>
                 <span data-testid="send-history-ttfb">{r.ttfb_ms !== undefined ? `${r.ttfb_ms} ms` : '–'}</span>
@@ -314,11 +314,15 @@
     box-shadow: inset 0 0 0 1px currentColor;
     border-radius: var(--r-1);
   }
+  /* A failure reason wraps (clipped to ~80 characters, full text in its
+     title) instead of being cut mid-word on one line. */
+  .entry.failed {
+    max-width: 16rem;
+  }
   .reason {
     min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    white-space: normal;
+    overflow-wrap: anywhere;
     color: var(--danger-fg);
   }
   .cut {

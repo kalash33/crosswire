@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { humanBytes, timeCell, timeShort } from './format';
+import { clipText, humanBytes, timeCell, timeShort } from './format';
 
 describe('humanBytes', () => {
   it('formats bytes, KB and MB with one decimal below 10 and none above', () => {
@@ -63,5 +63,21 @@ describe('timeCell', () => {
 
   it('returns an empty string for an unparseable value', () => {
     expect(timeCell('nope', now)).toBe('');
+  });
+});
+
+describe('clipText', () => {
+  it('keeps short text and cuts long text at a word with an ellipsis', () => {
+    expect(clipText('upstream connect failed')).toBe('upstream connect failed');
+    const long = `upstream connect failed: ${'connection refused by the remote host '.repeat(4)}`;
+    const out = clipText(long);
+    expect(out.endsWith('…')).toBe(true);
+    expect(out.length).toBeLessThanOrEqual(81);
+    expect(long.startsWith(out.slice(0, -1))).toBe(true);
+    expect(long[out.length - 1]).toBe(' ');
+  });
+
+  it('cuts a long unbroken token at the limit', () => {
+    expect(clipText('x'.repeat(100), 10)).toBe(`${'x'.repeat(10)}…`);
   });
 });

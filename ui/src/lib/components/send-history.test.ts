@@ -61,6 +61,17 @@ describe('SendHistory', () => {
     expect(h.onrestore).toHaveBeenCalledWith(1);
   });
 
+  it('a long failure reason is clipped at a word, with the full text in its title', () => {
+    const error = `upstream connect failed: ${'connection refused by 203.0.113.9:443 after retry '.repeat(3)}`;
+    const t = render(SendHistory, { history: [rec({ error })], ...handlers() });
+    const reason = t.querySelector('[data-testid="send-history-reason"]')!;
+    expect(reason.getAttribute('title')).toBe(error);
+    const shown = reason.textContent!;
+    expect(shown.endsWith('…')).toBe(true);
+    expect(shown.length).toBeLessThanOrEqual(81);
+    expect(error[shown.length - 1]).toBe(' ');
+  });
+
   it('compare is enabled only when allowed; clear and collapse work and collapse is remembered', () => {
     const h = handlers();
     const t = render(SendHistory, { history: [rec()], canCompare: false, ...h });
