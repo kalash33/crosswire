@@ -39,7 +39,7 @@ jobs:
       # UI toolchain: ubuntu only, so cargo build and `just test` stay Node-free
       # on every OS. Node 24 matches the version that built the committed
       # bundle; ui-dist-check fails if assets/ui drifts from ui/ sources.
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         if: matrix.os == 'ubuntu-latest'
         with:
           node-version: 24
