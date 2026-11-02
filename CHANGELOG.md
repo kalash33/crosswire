@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-rc.2](https://github.com/kalash33/crosswire/releases/tag/v0.1.0-rc.2) - 2026-11-02
+
+### Added
+
+- *(ui)* project identity, favicon and installable manifest
+- *(api)* project name and path on /health
+- *(server)* serve --open and the app subcommand
+- *(api)* report the proxy bind address on /health
+
+### Documentation
+
+- truth pass over API, CA, crate READMEs, gates; ADR-0006
+- allowlist lifts only loopback and link-local; changelog order
+
+### Fixed
+
+- *(server)* stop launched browsers after the store closes
+- *(api)* report the project path only to loopback peers
+- *(client)* canonicalise transition forms, close destination-gate gaps
+
+### Internal
+
+- *(ui)* rebuild embedded bundle
+- *(ui)* rebuild embedded bundle
+- *(server)* run the manifest content-type test
+- *(server)* bind the API to port 0 in the TLS fetch smoke test
+- *(ui)* rebuild embedded bundle
+- *(ui)* rebuild embedded bundle
+- *(ui)* rebuild embedded bundle
+
 ### Added
 
 - **Web UI overhaul** (U1): a redesigned, dark-by-default interface with a
