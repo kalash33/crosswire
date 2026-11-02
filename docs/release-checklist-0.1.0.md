@@ -34,7 +34,7 @@ These cannot be done from a pull request.
 | Action | Status | Why it blocks |
 |---|---|---|
 | Add the `RELEASE_PLZ_TOKEN` repository secret (fine-grained PAT, contents and pull-requests write; see [GOVERNANCE.md](../GOVERNANCE.md), Releases) | pending | Every `release-plz` run on `main` fails at its first step, for example [run #41338947551](https://github.com/kalash33/crosswire/actions/runs/41338947551): "RELEASE_PLZ_TOKEN secret is not set". Without it no release PR opens and the `v0.1.0` tag cannot be cut the one-command way |
-| Name the backup owner in [`MAINTAINERS.md`](../MAINTAINERS.md); set as GitHub successor and second crates.io owner (see [GOVERNANCE.md](../GOVERNANCE.md), Ownership and escrow) | pending | Spec §15: "a specific person agreed before the first public tag". `MAINTAINERS.md` still reads "To be named before v0.1.0". **Blocks the tag.** |
+| Name the backup owner in [`MAINTAINERS.md`](../MAINTAINERS.md); set as GitHub successor and second crates.io owner (see [GOVERNANCE.md](../GOVERNANCE.md), Ownership and escrow) | deferred | Spec §15: "a specific person agreed before the first public tag". Deferred by the maintainer on 2026-11-02: `v0.1.0` is cut without one (recorded in `MAINTAINERS.md`); required before the first crates.io publish. |
 | Reserve the GitHub org, crates.io names (`crosswire-core`, `crosswire-h1`, `crosswire-ca` and the rest), domain and run the trademark search (§16) | pending | DoD line 9 |
 
 ## Sub-plans still in flight
@@ -74,7 +74,7 @@ creators at +6 weeks. A follow-up at +4 weeks (crates.io 0.1 of `core`, `h1`,
 
 Do these in order; stop at the first failure.
 
-1. Both pending maintainer actions that block the tag are done: `RELEASE_PLZ_TOKEN` is set and the backup owner is named in `MAINTAINERS.md`.
+1. `RELEASE_PLZ_TOKEN` is set (the backup owner was deferred on 2026-11-02, see `MAINTAINERS.md`).
 2. Merge R4 (`feat/r4-docs-launch`) after U2 has merged. Confirm the `ci` run on the merge commit is green.
 3. release-plz opens the release pull request. It ignores pre-release tags, so it may propose a stale version: edit the version to `0.1.0` in the pull request ([GOVERNANCE.md](../GOVERNANCE.md), Releases). Per [GOVERNANCE.md](../GOVERNANCE.md), fold the curated `## [Unreleased]` entries of `CHANGELOG.md` into the generated `## [0.1.0]` block so none are stranded beneath it.
 4. Merge the release pull request. The merge bumps the version and creates the `v0.1.0` tag.
