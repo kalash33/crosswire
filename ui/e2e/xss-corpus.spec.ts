@@ -5,6 +5,7 @@ import { exId, mockBench } from './fixtures/repeater-mock';
 import { apply, CODECS, type Direction } from '../src/lib/decode/codecs';
 import { fromTextareaText } from '../src/lib/decode/textarea';
 import { bytesToLatin1 } from '../src/lib/editor/encoding';
+import { clipText } from '../src/lib/format';
 
 // Text-rendering half of the XSS gate: captured bytes are attacker-controlled,
 // so seed the corpus into every rendered field and prove nothing executes.
@@ -727,8 +728,12 @@ test('U2: repeater tab names, send history, notices, errors and the diff view re
   const rows = page.getByTestId('send-history-row');
   await expect(rows).toHaveCount(history.length);
   const strip = page.getByTestId('send-history');
+  // A reason shows its first ~80 characters (clipText) as text and keeps the
+  // whole payload, verbatim, in its title.
   for (const p of XSS_CORPUS.slice(0, (history.length - 2) / 2)) {
-    await expect(strip.locator('.reason', { hasText: p.value }).first(), p.name).toHaveText(p.value);
+    const reason = strip.locator('.reason').filter({ hasText: clipText(p.value) }).first();
+    await expect(reason, p.name).toHaveText(clipText(p.value));
+    await expect(reason, p.name).toHaveAttribute('title', p.value);
   }
 
   // Compare the two real responses: hostile head and body lines on both sides.
