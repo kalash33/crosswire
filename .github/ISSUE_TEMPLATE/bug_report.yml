@@ -1,0 +1,70 @@
+name: Bug report
+description: Something in Crosswire does not behave as documented
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. For a security vulnerability, do not use this form: see [SECURITY.md](https://github.com/kalash33/crosswire/blob/main/SECURITY.md).
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `crosswire --version`.
+      placeholder: crosswire-server 0.1.0
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: OS and architecture
+      placeholder: macOS 15 arm64, Ubuntu 24.04 x86_64
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: Install method
+      options:
+        - GitHub release installer script
+        - GitHub release archive
+        - Built from source
+        - Other (describe below)
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The exact commands or clicks. A raw HTTP message or corpus case is ideal for parser or fidelity bugs.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behaviour
+    validations:
+      required: true
+  - type: dropdown
+    id: reproduces
+    attributes:
+      label: Does it reproduce in a fresh project, and with `--allow` removed?
+      options:
+        - Yes, in a fresh project and without `--allow`
+        - Only in an existing project
+        - Only with `--allow`
+        - I have not tried
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Redact before pasting. Remove tokens, cookies, `Authorization` headers, session identifiers, target hostnames you cannot disclose and any CA material. Never paste the CA private key.
+      render: text

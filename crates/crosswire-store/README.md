@@ -57,7 +57,7 @@ writer process with SIGKILL under load.
 | --- | --- |
 | `Project` | the project directory: `create`, `open`, `open_or_create`, the lock, the writer connection, `reader()` |
 | `Store` | `open(Project, StoreConfig)`, `sink()`, `subscribe()`, `list`, `get`, `get_body`, `markers`, `counts`, `audit`, `is_healthy`, `open_report`, `close` |
-| `StoreConfig` | batch, queue, journal, checkpoint, event and audit limits (below) |
+| `StoreConfig` | batch, queue, journal, checkpoint, event and audit limits, and `analyze_threshold` (below) |
 | `OpenReport` | what open did: sweep result, journal files drained, the unclean-restart gap marker, events sent before anyone could subscribe |
 | `EventStream` | `recv`, `blocking_recv`, `try_recv`; strictly increasing `seq`, with a synthesised `Event::Lagged` when a subscriber falls behind |
 | `ExchangeFilter`, `Page`, `ExchangeRow`, `Counts`, `NamespaceCounts` | the read API's inputs and outputs; `PAGE_LIMIT_MAX` is 1000 |
@@ -65,7 +65,8 @@ writer process with SIGKILL under load.
 | `BodyStore`, `BodySide`, `BodyLocator` | store and fetch one body, inline or in a pack |
 | `PackWriter`, `BlobRef` | the append-only pack file writer and a pointer to one record |
 | `sweep`, `SweepReport` | the startup validation of packs |
-| `StoreError` | `Io`, `Sqlite`, `Locked`, `NewerFormat`, `AlreadyExists`, `NotAProject`, `Corrupt`, `QueueFull`, `Closed`, `Json`, `Writer`; `#[non_exhaustive]` |
+| `generate` (feature `synthetic`) | seeded synthetic exchanges for the perf harnesses and `examples/seed_project.rs` |
+| `StoreError` | `Io`, `Sqlite`, `Locked`, `NewerFormat`, `PreReleaseProject`, `AlreadyExists`, `NotAProject`, `Corrupt`, `QueueFull`, `Closed`, `Json`, `BadPattern`, `Writer`; `#[non_exhaustive]` |
 
 ## Limits and defaults
 
@@ -79,6 +80,7 @@ writer process with SIGKILL under load.
 | WAL checkpoint | every 30 s or at 64 MiB of WAL, then the WAL is fsynced | `checkpoint_interval`, `checkpoint_bytes` |
 | Event buffer per subscriber | 10,000 events, then `Lagged` | `StoreConfig::event_capacity` |
 | Audit log rotation | 64 MiB, one `audit.jsonl.1` generation | `StoreConfig::audit_rotate_bytes` |
+| Statistics refresh | a clean close runs a full `ANALYZE` after 1,000 exchanges stored in the session (or when the project has no statistics yet), else `PRAGMA optimize`; a killed process runs neither | `StoreConfig::analyze_threshold` |
 | Inline body | at most 16 KiB (`<=`) | `INLINE_MAX` (`bodies.rs`) |
 | Pack rotation | 256 MiB | `PACK_LIMIT` (`packs.rs`) |
 | Pack compression | zstd level 3 | `LEVEL` |

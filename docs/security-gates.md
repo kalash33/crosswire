@@ -2,21 +2,24 @@
 
 Every security gate in the v0.1.0 definition of done (spec §13, "Security gates
 in CI") is listed here with the executable test that proves it, as
-`crate/tests/file.rs::test_name`. These run under `just test` (the normal
-`cargo test --workspace`); there is no separate CI job.
+`crate/tests/file.rs::test_name`. The Rust tests run under `just test` (the
+normal `cargo test --workspace`). The UI gates (3 and 4) are Playwright specs
+under `ui/e2e/`; CI runs them on the ubuntu `check` job with
+`npm --prefix ui run e2e` (there is no `just` recipe for them; run the same
+command locally after `npx playwright install chromium` in `ui/`). Every test
+named below was checked to exist. Rows marked **PARTIAL** cover the clause only
+in part.
 
-Gates that can only be proven with the UI (Plan 5) or export tooling (Plan 6)
-are marked and carry no Rust `just test` coverage yet. Rows marked **PARTIAL**
-are proven in substance by prior-plan tests but are cited at file level (not
-enumerated to the named test per clause) or cover the clause only in part; the
-citation is being tightened and the status is conservative until then.
+The two performance targets that 0.1.0 misses are not in this table; see
+"Performance gates" at the end and
+[ADR-0006](adr/0006-performance-gates-0-1-0.md).
 
 | # | §13 gate | Proven by | Status |
 |---|----------|-----------|--------|
 | 1 | route-auth: every route except the five unauthenticated ones is `401` without a credential | `crosswire-api/tests/gates.rs::route_auth_every_route_except_the_five_is_401` | proven |
 | 2 | `read`-token-cannot-mutate: every send/admin route refuses a read token with `403` | `crosswire-api/tests/auth.rs::read_token_cannot_mutate` | proven |
-| 3 | XSS corpus: loaded into history/repeater/intercept, nothing executes | `ui/e2e/xss-corpus.spec.ts` (history text-render surfaces + the detector self-test; `typed_tag_and_notes_payloads_render_as_text` types every corpus payload into the exchange tags and notes editor, tag payloads over the 64-char UI limit are typed as their first 64 chars; `decoder_outputs_are_text_for_every_payload` runs every payload through each decoder-pane codec in both directions and renders a JWT-shaped corpus string in the JWT view), `ui/e2e/xss-repeater-intercept.spec.ts` (repeater and intercept surfaces) | **PARTIAL** — UI e2e specs exist and drive the corpus into the rendered fields, but they run under Playwright (`just ui-e2e`), not the Rust `just test`, and the preview surface is covered separately by gate 4 |
-| 4 | preview zero-egress: the preview corpus makes no outbound request | `ui/e2e/preview-zero-egress.spec.ts` (12 hostile vectors loaded into the real sandboxed iframe with the deny-all CSP and `Referrer-Policy`, zero requests reach an external host or the `localhost` API origin; the spec also pins its CSP to the server's `PREVIEW_CSP`); server side: `crosswire-api/tests/preview.rs` (HMAC token, 127.0.0.1-origin-only route, deny-all CSP, no `Set-Cookie`) and the token unit tests; iframe `sandbox=""` in `ExchangeDetail.svelte` asserted by `ui/e2e/preview.spec.ts` | proven |
+| 3 | XSS corpus: loaded into history/repeater/intercept, nothing executes | `ui/e2e/xss-corpus.spec.ts`: the detector self-test (`catches a dialog, an off-origin request and a navigation`, so the harness can fail), `corpus in list and detail renders as inert text`, `hex_tab_and_diagnostics_groups_render_hostile_data_as_text`, `typed_tag_and_notes_payloads_render_as_text` (tag payloads over the 64-char UI limit are typed as their first 64 chars), `decoder_outputs_are_text_for_every_payload` (every codec, both directions, plus a JWT-shaped string); the U1 additions (headers tab, detail title, context menu and toasts; repeater tab title and the seeded Decoder route; Start panel, status bar and Settings against hostile health values); the U2 additions (Pretty JSON, form and query views; a hostile search query; repeater tab names, send history, notices, errors and the diff view; a hostile project name and path in the chip, its title and the window title). `ui/e2e/xss-repeater-intercept.spec.ts`: `repeater: corpus in a loaded draft, send result and response bytes is inert`, `intercept: corpus in held host/method/path and held bytes is inert`. The preview surface is gate 4 | proven (Playwright, in the CI `check` job on ubuntu) |
+| 4 | preview zero-egress: the preview corpus makes no outbound request | `ui/e2e/preview-zero-egress.spec.ts` (12 hostile vectors loaded into the real sandboxed iframe with the deny-all CSP and `Referrer-Policy`, zero requests reach an external host or the `localhost` API origin; the spec also pins its CSP to the server's `PREVIEW_CSP`); server side: `crosswire-api/tests/preview.rs` (HMAC token, 127.0.0.1-origin-only route, deny-all CSP, no `Set-Cookie`) and the token unit tests; iframe `sandbox=""` in `ExchangeDetail.svelte` asserted by `ui/e2e/preview.spec.ts`; the token mint is audited as `preview.mint` and covered by `crosswire-api/tests/preview_token.rs` | proven |
 | 5 | idle-egress: an idle sidecar (API open, event stream connected) makes zero upstream connections and zero DNS lookups | `crosswire-api/tests/gates.rs::idle_egress_zero_connections` (in-process); `crosswire-server/tests/gates.rs::real_serve_makes_no_outbound_connection_while_idle` (real binary, Linux `/proc` socket probe) | proven |
 | 6 | CA-key-leakage: the CA private key appears in no API body, no project-dir file and not in the OpenAPI document | `crosswire-server/tests/gates.rs::ca_key_never_leaves` | proven |
 | 7 | loopback-spelling relay refusal: after resolution and after unwrapping IPv6 transition forms (IPv4-mapped, SIIT, IPv4-compatible, NAT64 incl. local-use `64:ff9b:1::/48`, 6to4, Teredo), never-allowlistable refusal of unspecified (`0.0.0.0/8`, `::`), multicast (`224.0.0.0/4`, `ff00::/8`), broadcast, cloud metadata and credential addresses (`169.254.169.254`, `100.100.100.200`, ECS `169.254.170.2`, EKS Pod Identity `169.254.170.23`/`fd00:ec2::23`, Azure `168.63.129.16`, `fd00:ec2::254`, `fd20:ce::254`) and names (`metadata.google.internal`, `metadata`, refused before DNS), and own listener ports (proxy and API, both gates) on loopback, link-local or any address the host owns; allowlistable refusal of loopback and link-local; every resolved address checked, empty resolution refused | `crosswire-client/tests/gate.rs::spellings_that_resolve_to_refused_ranges_are_refused`, `::gate_refuses_after_resolution`, `::own_ports_are_refused_on_loopback_even_when_allowlisted`, `::refuses_new_ranges_in_every_spelling`, `::allowlist_cannot_exempt_metadata_multicast_or_own_ports`, `::allowlisted_name_resolving_to_metadata_is_refused`, `::metadata_host_names_are_refused_before_resolution`, `::empty_resolution_is_unresolved`, `::every_resolved_address_is_checked`, `::private_and_cgnat_and_ula_are_allowed`, `::own_port_on_local_interface_is_refused`, `::more_credential_endpoints_are_metadata`, `::allowlisted_name_resolving_to_ecs_credentials_is_refused`, `::own_port_on_link_local_is_refused_even_when_allowlisted`; `crosswire-client/tests/gate_transition.rs::canonical_unwraps_transition_forms`; `crosswire-client/tests/transport_tls.rs::metadata_host_name_is_refused_without_a_lookup`; `crosswire-server/tests/gates.rs::allowlisted_api_port_is_refused_by_proxy_and_repeater` | proven |
@@ -102,9 +105,11 @@ The exact action strings the code emits, each produced once by
 `repeater.send.out_of_scope`, `allow.add`, `cert.override.config`,
 `browser.profile_reset`, `listener.bind`, `listener.stop`, `ca.generate`.
 
-`PUT /api/v1/settings/enforce_scope_strictly` also writes an audit row (action
-`enforce_scope_strictly`, result `enabled` or `disabled`). It is not in the list
-above, so `audit_completeness` does not assert it.
+Three more actions are audited but are not in the list above, so
+`audit_completeness` does not assert them: `enforce_scope_strictly` (written by
+`PUT /api/v1/settings/enforce_scope_strictly`, result `enabled` or `disabled`),
+`copy.curl` and `copy.raw` (copy-as-curl and copy-raw), and `preview.mint` (a
+preview token).
 
 ## Notes
 
@@ -127,3 +132,26 @@ above, so `audit_completeness` does not assert it.
 - `/api/v1/events` is excluded from the plain route-auth walk because it
   authenticates inside its handler (it may defer to a first-frame bearer); its
   refusals are covered by the cookie-isolation, host-421 and rate-limit gates.
+
+## Performance gates (spec §13)
+
+Two of the §13 performance targets are **not met at 0.1.0**. Both harnesses run
+**REPORT-ONLY**: they print a `SUMMARY` line and assert only gross-regression
+floors, never the §13 target. The decision, the root causes and the 0.1.1
+commitments are in [ADR-0006](adr/0006-performance-gates-0-1-0.md); the harness
+wiring is in [bench/README.md](../bench/README.md). Numbers are from the
+reference maintainer machine (MacBook Air M2, 8 GiB, macOS), release builds,
+headless Chromium.
+
+| §13 target | Harness | Measured | Status |
+|---|---|---|---|
+| Ingest >= 2,000 exchanges/s at the 60/30/9/1 body mix | `crosswire-store/tests/perf_ingest.rs` (`just perf`) | about 700/s (about 65 MB/s of bodies) | **REPORT-ONLY, target not met.** Asserts only the body mix and a 300/s floor |
+| UI: no frame > 32 ms over a 10 s scroll | `ui/e2e/perf-scroll.spec.ts` (`just ui-perf`, `scripts/ui-perf.sh`, seeded by `crosswire-store/examples/seed_project.rs`) | 100k rows with real paging: max 200 ms, p99 150 ms, 76 of 356 frames over 32 ms. An earlier maintainer run at 1M rows: max 117 ms | **REPORT-ONLY, target not met.** Asserts only max frame < 2 s |
+| UI: filter applied in < 300 ms | same | 190 ms at 100k; 163 ms at 1M | met, but the spec asserts only filter < 5 s |
+| Peak anonymous RSS < 500 MB at 1M rows | `crosswire-store/benches/history.rs` via `scripts/perf-gate.sh` | 21 MB | met, asserted at 1M by `just perf` |
+| First capture visible in the UI in < 2 minutes | `ui/e2e/first-capture-ui.spec.ts` (`just first-capture-ui`, CI ubuntu) | 5 to 14 s in maintainer runs | met, asserted (limit 120 s) |
+
+The frame misses share one cause: the History table is not virtualised, so
+every loaded row stays in the DOM (about 3.8k rows at 100k). The ingest miss is
+body-volume bound on the single writer thread. Both are fixed or re-specified
+in 0.1.1, not by lowering the targets quietly.

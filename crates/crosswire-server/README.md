@@ -19,6 +19,9 @@ and `crosswire token` mints the scoped tokens scripts authenticate with.
   WebSocket, repeater, intercept and scope), mints the one-time bootstrap token,
   records into the store, audits its configuration, and stops cleanly on Ctrl-C
   or SIGTERM.
+- `GET /api/v1/health` on the API reports the proxy's bound `proxy_addr` and
+  the `project` (name and path, loopback peers only); the UI's Start panel
+  reads them (see [docs/ca-install.md](../../docs/ca-install.md)).
 - `crosswire token create|list|revoke|rotate` manages a project's API tokens.
 - `crosswire browser` launches a Chromium-based browser configured to use the
   proxy, with a dedicated profile under the project; `crosswire browser

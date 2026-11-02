@@ -4,7 +4,7 @@ Thanks for your interest. Crosswire is a pure community open-source project; the
 
 ## Before v0.2: expectations
 
-The project is pre-alpha and maintained part-time. Until v0.2 there is no response-time promise except for security reports (see [SECURITY.md](SECURITY.md)). Issues and pull requests are labelled best-effort.
+The project is young and maintained part-time. Until v0.2 there is no response-time promise except for security reports (see [SECURITY.md](SECURITY.md)). Issues and pull requests are labelled best-effort.
 
 ## Response times
 
@@ -37,6 +37,10 @@ Rust stable; the MSRV is 1.88, declared in `Cargo.toml` (`rust-version`) and che
 - Wire-layer changes (`crosswire-h1`) need golden corpus coverage for the shape they touch.
 - **AI-assisted contributions are welcome** under one rule: the author must be able to explain every line. The reviewer may ask; "the model wrote it" is not an answer. Tests are still required.
 - Commits follow the existing style: `feat(h1): …`, `fix(core): …`, `test(h1): …`, `docs: …`.
+
+## Issues and labels
+
+Use the issue forms in `.github/ISSUE_TEMPLATE` (bug report, feature request); vulnerabilities go through [SECURITY.md](SECURITY.md), not an issue. Pull requests get a checklist from `.github/PULL_REQUEST_TEMPLATE.md`. Labels: `bug`, `enhancement`, `security`, `good first issue`, `help wanted`, `rfc` (a design proposal with a 14-day timebox, see [GOVERNANCE.md](GOVERNANCE.md)) and `release` (release pull requests and checklist items).
 
 ## Decisions
 

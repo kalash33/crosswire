@@ -24,6 +24,40 @@ store.
 > you share, and remove the CA when you finish. Crosswire does not install or
 > remove it for you.
 
+## The shortest path: `crosswire app` or `crosswire browser`
+
+You can skip this page for Chromium-based browsers.
+
+- `crosswire app --project DIR` runs `serve`, opens the UI in an app window and
+  launches a Chromium-based browser already wired to the proxy: its own profile
+  under the project (`browser-profile`), the proxy set, and the CA trusted by
+  key pin (see below). The UI window opens to the same Start panel described
+  here.
+- With `crosswire serve` already running, `crosswire browser --project DIR
+  --proxy HOST:PORT` launches just that wired browser. `crosswire browser
+  reset-profile --project DIR` deletes its profile.
+
+If no Chromium-based browser is found, `app` warns and tells you to point a
+browser at the proxy and open `http://crosswire/`, which is the manual route
+below.
+
+## The Start panel
+
+While a project has no recorded traffic, the History view of the UI shows a
+Start panel with three steps. Its wording and this page agree:
+
+1. **Proxy.** The panel shows the proxy's address as the server reports it
+   (the `proxy_addr` field of `GET /api/v1/health`; a wildcard bind such as
+   `0.0.0.0` is shown as its loopback). If the server does not report one, it
+   falls back to the default `127.0.0.1:8080`. Set that address as the HTTP and
+   HTTPS proxy in your browser or tool.
+2. **Trust the CA.** Import the CA from the proxy's own page, `http://PROXY/`
+   (the panel has a copy button and an "Open CA page" button): `ca.der` for the
+   system or Chromium store, `ca.pem` for Firefox and command-line tools.
+3. **Launch a wired browser.** A copyable `crosswire browser --project DIR
+   --proxy ADDR` command (the panel shows `PROJECT_DIR` where it does not know
+   your project directory).
+
 ## Get the CA
 
 Any one of these gives you the certificate (and the key pin, below).
@@ -40,6 +74,10 @@ Any one of these gives you the certificate (and the key pin, below).
   ```
   curl -x http://127.0.0.1:8080 -o crosswire-ca.der http://crosswire/ca.der
   ```
+
+  The API also serves `/api/v1/ca.der` and `/api/v1/ca.pem` without a
+  credential (the CA certificate is public; the key never leaves the CA
+  directory), under the API's own `Host` rule.
 
   The page is plain HTTP and is served to anything that can reach the
   listener, proxy authentication or not. Through the proxy, open

@@ -1,7 +1,7 @@
 # The Crosswire API
 
 `crosswire serve` runs a REST and WebSocket API beside the proxy. It is what the
-web UI (not built yet) and your scripts drive: list and read recorded
+embedded web UI (served from the API port) and your scripts drive: list and read recorded
 exchanges, send requests through the repeater, hold and edit requests with
 intercept, manage scope, mint tokens, and follow a live event stream. This guide
 shows how to call it with `curl`. The machine-readable description of every
@@ -9,7 +9,9 @@ route is [docs/api/openapi.json](api/openapi.json); the design of the
 credentials is [ADR-0004](adr/0004-api-credentials.md), and the security
 properties that are tested are listed in [security-gates.md](security-gates.md).
 
-The API is **not frozen** before v0.1.0.
+The API is versioned as `/api/v1` and the committed OpenAPI document is
+guarded by a snapshot test; it is not frozen, and may change in a 0.x release
+(a change to the wire format bumps `schema_version`).
 
 ## Envelope and versions
 
@@ -169,9 +171,9 @@ curl -s -H "Authorization: Bearer $SECRET" 'http://localhost:8081/api/v1/exchang
 
 | Token scope | Grants |
 |---|---|
-| `read` | List and read exchanges, markers, counts, scope, intercept status, repeater drafts, the token list, and the event stream |
+| `read` | List and read exchanges, bodies, copy-as-curl and raw renderings, preview tokens, markers, counts, scope (with `enforce_strict`), intercept status and held-request bytes, repeater drafts, the token list, and the event stream |
 | `send` | `read`, plus send repeater requests and save or delete drafts, forward or drop held requests, and edit exchange tags and notes |
-| `admin` | `send`, plus change scope, strict enforcement, intercept on/off and rules, and create or revoke tokens |
+| `admin` | `send`, plus change scope (including `scope/import`), strict enforcement (`enforce_strict`), intercept on/off and rules, and create or revoke tokens |
 
 A call a token's scopes do not cover is `403 insufficient_scope`:
 
@@ -215,9 +217,12 @@ All of these need `read`.
 |---|---|
 | `GET /api/v1/exchanges` | A page of rows, newest first |
 | `GET /api/v1/exchanges/{id}` | One exchange with its bodies |
-| `GET /api/v1/exchanges/{id}/body/{side}` | One body as raw bytes; `side` is `req` or `resp` |
+| `GET /api/v1/exchanges/{id}/body/{side}` | One body as raw bytes; `side` is `req` or `resp`. The `x-crosswire-length` header carries the length and `x-crosswire-truncated-at` the cut-off when the capture was truncated |
 | `GET /api/v1/markers` | Gap and failure markers, newest first |
 | `GET /api/v1/counts` | Totals, including a split by namespace |
+| `GET /api/v1/exchanges/{id}/curl` | The request as a curl command (text). `?shell=sh` (default) or `pwsh`; `?redacted=true` strips secrets. Audited; any other `shell` is `400` |
+| `GET /api/v1/exchanges/{id}/raw` | The request as raw wire bytes (`application/octet-stream`); `?redacted=true` strips secrets. Audited |
+| `GET /api/v1/exchanges/{id}/preview-token` | Mints a 60-second capability token for the sandboxed preview (below). Audited as `preview.mint`. `404` when the exchange has no response body |
 
 `GET /api/v1/exchanges` takes `limit` (1 to 1000, default 100), `after` (the
 `next_cursor` of the previous page), and the filters `method`, `host` (exact),
@@ -235,7 +240,21 @@ A row carries `id`, `created_at`, `method`, `host`, `path`, `status`,
 diagnostics, diffs and timing.
 
 `PATCH /api/v1/exchanges/{id}` (needs `send`) replaces an exchange's `tags`
-and/or `notes`.
+and/or `notes`; a field you omit is left alone.
+
+### The preview origin
+
+The UI shows a captured HTML or image body in a sandboxed iframe from a second
+origin. `GET /api/v1/exchanges/{id}/preview-token` returns `{"token":...,
+"path":"/preview/<id>?token=...","expires_in":60}`. The token is an HMAC bound
+to the exchange id and the exact body bytes, signed with a per-run secret.
+`GET /preview/{id}?token=...` is **not** an `/api/v1` route and is not in the
+OpenAPI document. The gate serves it only when the `Host` is `127.0.0.1` or
+`[::1]`, never `localhost` (any other `Host` gets a bare `404`), so a previewed
+page cannot reach the UI's cookie or storage. The response carries the deny-all
+CSP `sandbox; default-src 'none'; img-src data: blob:`, `Referrer-Policy:
+no-referrer`, `X-Content-Type-Options: nosniff`, and never a `Set-Cookie` or
+`Access-Control-*` header. A forged, expired or body-mismatched token is `403`.
 
 ## The event stream
 
@@ -293,8 +312,9 @@ The proxy records each exchange's scope verdict (`in`, `out`, `empty` or
 `host-mismatch`, filterable as `scope_state`), and the repeater and intercept use
 the same scope. The accepted list forms are in the
 [`crosswire-scope` README](../crates/crosswire-scope/README.md).
-`GET /api/v1/scope` returns the scope document plus `enforce_strict` (a boolean:
-whether strict enforcement, below, is on).
+`GET /api/v1/scope` (needs `read`) returns the scope document plus `enforce_strict` (a boolean:
+whether strict enforcement, below, is on). `POST /api/v1/scope/import`, `PUT /api/v1/scope`
+and `PUT /api/v1/settings/enforce_scope_strictly` all need `admin`.
 `PUT /api/v1/settings/enforce_scope_strictly` with `{"enabled":true}` makes the
 repeater refuse out-of-scope sends outright instead of sending them with an
 audit row; the setting is also persisted. Changing scope or strictness needs
@@ -324,9 +344,11 @@ curl -s -H "Authorization: Bearer $SECRET" -X POST http://localhost:8081/api/v1/
 | `source` | An exchange id to link, stored as a `source:<id>` tag |
 | `allow_out_of_scope` | Send despite a non-empty scope that excludes it (audited); refused when strict enforcement is on |
 
-The response has the new `exchange_id`, the `scope_state`, the `changes` made
-in assisted mode, `skipped` notes, `cert_override`, `ttfb_ms`, `total_ms` and
-the `redirects` followed. Each entry of `changes` is
+The response (`SendOutcomeDto`) has the new `exchange_id`, the `scope_state`
+(wire name), the `changes` made in assisted mode, `skipped` notes (edits
+deliberately not made), `cert_override` (whether an invalid chain was
+accepted), `ttfb_ms`, `total_ms` and `redirects`, the exchange ids of the hops
+followed. Each entry of `changes` (`ChangeDto`) is
 `{"op":...,"reason":...,"start":N,"end":N}` with the frozen wire codes (the same
 codes the project file uses):
 
@@ -371,6 +393,7 @@ curl -s -H "Authorization: Bearer $ADMIN_SECRET" http://localhost:8081/api/v1/in
 | Route | Needs | What it does |
 |---|---|---|
 | `GET /api/v1/intercept` | `read` | Enabled flag, rules and the held requests |
+| `GET /api/v1/intercept/held/{id}/{part}` | `read` | A held request's original `head` or `body` bytes (`application/octet-stream`, with an `x-crosswire-length` header); any other `part` is `400`, and a body that was not buffered is `404` |
 | `PUT /api/v1/intercept/enabled` | `admin` | `{"enabled":true}` |
 | `PUT /api/v1/intercept/rules` | `admin` | Replace the rules (`skip_extensions`, `skip_out_of_scope`, `overflow`: `forward-newest` or `forward-oldest`, `on_timeout`: `forward` or `respond-504`) |
 | `POST /api/v1/intercept/held/{id}/forward` | `send` | Forward unchanged, or with `{"head":"<base64>","body":"<base64>"}` to edit |

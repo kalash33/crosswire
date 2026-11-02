@@ -1,0 +1,30 @@
+name: Feature request
+description: Propose a change or an addition
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What are you trying to do, and what gets in the way?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: input
+    id: equivalent
+    attributes:
+      label: Burp or Caido equivalent
+      description: The feature, menu or extension that does this today, if any.
+  - type: markdown
+    attributes:
+      value: |
+        Changes to the public API of `crosswire-core` or `crosswire-h1` are design-locked and need an RFC issue first (see [GOVERNANCE.md](https://github.com/kalash33/crosswire/blob/main/GOVERNANCE.md)).

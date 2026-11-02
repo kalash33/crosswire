@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/kalash33/crosswire/security/advisories/new
+    about: Report vulnerabilities privately through GitHub Security Advisories. Do not open a public issue (see SECURITY.md).
+  - name: Question or discussion
+    url: https://github.com/kalash33/crosswire/issues/new?labels=question&title=Question%3A+
+    about: Ask a usage question. It is filed as an issue with the question label.
