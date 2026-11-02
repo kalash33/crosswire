@@ -798,3 +798,98 @@ test('U2: a hostile project name and path stay text in the chip, its title and t
     await assertInert(page, violations, startUrl);
   }
 });
+
+// ---- V1: the corpus over a virtualised list ----------------------------------
+// Rows are created and destroyed as the window moves, so hostile rows are
+// rendered many times over a scroll. Every 40th of 2,000 rows carries a payload
+// in method, host, path and tags; scroll top -> bottom -> top a viewport at a time.
+
+test('V1: corpus rows scrolled through the virtualised list stay one-line text', async ({ page, baseURL }) => {
+  test.setTimeout(180_000);
+  const origin = new URL(baseURL!).origin;
+  const payloadAt = (i: number) => (i % 40 === 0 ? XSS_CORPUS[(i / 40) % XSS_CORPUS.length].value : null);
+  const rows = Array.from({ length: 2_000 }, (_, i) => {
+    const p = payloadAt(i);
+    return {
+      id: `01V1XSS${String(i).padStart(6, '0')}`,
+      created_at: 1_700_000_000_000 - i * 1_000,
+      method: p ?? 'GET',
+      host: p ?? `h${i}.example`,
+      path: p === null ? `/p/${i}` : `/${p}`,
+      status: 200,
+      resp_len: 10,
+      state: 'committed',
+      tags: p === null ? [] : [p, ...XSS_CORPUS.map((x) => x.value).filter((v) => v !== p).slice(0, 4)],
+    };
+  });
+  await page.route('**/api/v1/counts', (r) => r.fulfill({ status: 200, json: COUNTS }));
+  await page.route(/\/api\/v1\/exchanges(\?.*)?$/, (r) =>
+    r.fulfill({ status: 200, json: { items: rows, next_cursor: null } }),
+  );
+  const errors: string[] = [];
+  page.on('pageerror', (e) => errors.push(e.message));
+  const violations = watch(page, origin);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto('/');
+  const startUrl = page.url();
+  await expect(page.getByTestId('history-count')).toContainText('2000 loaded');
+  const list = page.getByTestId('history-list');
+
+  // One pass: check what the window renders right now.
+  const inspect = () =>
+    list.evaluate((el) => {
+      const bad: string[] = [];
+      const allowed = new Set(['TR', 'TD', 'INPUT', 'SPAN']);
+      for (const n of el.querySelectorAll('tbody *')) if (!allowed.has(n.tagName)) bad.push(`element ${n.tagName}`);
+      const rs = [...el.querySelectorAll<HTMLElement>('tr[data-testid="history-row"]')];
+      const h0 = rs[0]?.getBoundingClientRect().height ?? 0;
+      const seen: { id: string; host: string; path: string; tags: string[] }[] = [];
+      for (const r of rs) {
+        const h = r.getBoundingClientRect().height;
+        if (Math.abs(h - h0) > 0.5) bad.push(`row ${r.dataset.id} is ${h}px, not ${h0}px`);
+        seen.push({
+          id: r.dataset.id ?? '',
+          host: r.querySelector('td.host')?.textContent ?? '',
+          path: r.querySelector('td.path')?.textContent ?? '',
+          tags: [...r.querySelectorAll('td.tags .chip .text')].map((t) => t.textContent ?? ''),
+        });
+      }
+      for (const v of ['--vt-before', '--vt-after']) {
+        const val = el.style.getPropertyValue(v);
+        if (!/^\d+(\.\d+)?px$/.test(val)) bad.push(`${v}=${val}`);
+      }
+      return { bad, seen };
+    });
+
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  let payloadRowsSeen = 0;
+  const check = async () => {
+    const { bad, seen } = await inspect();
+    expect(bad).toEqual([]);
+    for (const s of seen) {
+      const want = byId.get(s.id)!;
+      // Text nodes keep the payload verbatim, newlines included.
+      expect(s.host, s.id).toBe(want.host);
+      expect(s.path, s.id).toBe(want.path);
+      expect(s.tags, s.id).toEqual(want.tags);
+      if (want.tags.length > 0) payloadRowsSeen++;
+    }
+  };
+
+  const step = await list.evaluate((el) => el.clientHeight);
+  const max = await list.evaluate((el) => el.scrollHeight - el.clientHeight);
+  const positions: number[] = [];
+  for (let y = 0; y < max; y += step) positions.push(y);
+  positions.push(max);
+  for (const y of [...positions, ...[...positions].reverse()]) {
+    await list.evaluate(async (el, top) => {
+      el.scrollTop = top;
+      await new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())));
+    }, y);
+    await check();
+  }
+  // Every one of the 50 payload rows went through the window (twice).
+  expect(payloadRowsSeen).toBeGreaterThanOrEqual(100);
+  expect(errors).toEqual([]);
+  await assertInert(page, violations, startUrl);
+});

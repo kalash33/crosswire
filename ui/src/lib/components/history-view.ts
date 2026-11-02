@@ -17,6 +17,54 @@ export function nextIndex(current: number, delta: number, len: number): number {
   return Math.min(len - 1, Math.max(0, current + delta));
 }
 
+/** Rows PageUp/PageDown move: one short of a viewport (keeps context), at least one. */
+export function pageStep(visible: number): number {
+  return Math.max(1, Math.floor(visible) - 1);
+}
+
+/**
+ * The row index a list key moves focus to from `current` in a list of `len`
+ * rows with `visible` rows on screen, or null when the key is not a list
+ * navigation key. `j`/`k` and the arrows move one row, PageDown/PageUp a
+ * screenful, Home/End to the first/last loaded row. Clamped, no wrap; -1 for
+ * an empty list.
+ */
+export function keyTarget(key: string, current: number, len: number, visible: number): number | null {
+  switch (key) {
+    case 'j':
+    case 'ArrowDown':
+      return nextIndex(current, 1, len);
+    case 'k':
+    case 'ArrowUp':
+      return nextIndex(current, -1, len);
+    case 'PageDown':
+      return nextIndex(current, pageStep(visible), len);
+    case 'PageUp':
+      return nextIndex(current, -pageStep(visible), len);
+    case 'Home':
+      return len > 0 ? 0 : -1;
+    case 'End':
+      return len - 1;
+    default:
+      return null;
+  }
+}
+
+/**
+ * The Load more button's label. "End" wins over "Limit reached": a project
+ * whose last page lands exactly on the row cap has nothing left to load.
+ */
+export function loadMoreLabel(s: { loading: boolean; hasMore: boolean; capped: boolean }): string {
+  if (s.loading) return 'Loading…';
+  if (!s.hasMore) return 'End';
+  return s.capped ? 'Limit reached' : 'Load more';
+}
+
+/** `aria-rowcount` for the table: -1 (unknown) while pages remain, else rows + the header row. */
+export function ariaRowCount(rows: number, hasMore: boolean, capped: boolean): number {
+  return hasMore && !capped ? -1 : rows + 1;
+}
+
 /** Columns the picker can toggle. Host and Path are always shown. */
 export const TOGGLEABLE_COLUMNS = [
   { key: 'time', label: 'Time' },

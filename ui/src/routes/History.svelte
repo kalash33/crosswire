@@ -16,12 +16,23 @@
   import {
     HISTORY_SPLIT_DEFAULT,
     TOGGLEABLE_COLUMNS,
+    ariaRowCount,
     isTypingTarget,
+    keyTarget,
     loadColumns,
-    nextIndex,
+    loadMoreLabel,
     saveColumns,
     type ColumnKey,
   } from '../lib/components/history-view';
+  import {
+    anchorAt,
+    restoreAnchor,
+    revealTop,
+    shouldAutoLoad,
+    windowFor,
+    type Win,
+  } from '../lib/components/virtual-window';
+  import { buildIndex } from '../lib/stores/row-index';
   import Badge from '../lib/ui/Badge.svelte';
   import Button from '../lib/ui/Button.svelte';
   import Chip from '../lib/ui/Chip.svelte';
@@ -118,12 +129,40 @@
     return (av < bv ? -1 : 1) * sortDir;
   }
 
-  const sortedRows = $derived([...history.rows].sort(cmp));
+  // The default order (Time, newest first) is the store's own order (server
+  // `ORDER BY ulid DESC` plus newest-first live prepends), so it is used as is:
+  // no copy, no sort pass over tens of thousands of rows per update.
+  const defaultSort = $derived(sortKey === 'created_at' && sortDir === -1);
+  const sortedRows = $derived(defaultSort ? history.rows : [...history.rows].sort(cmp));
 
   // ---- Client-side search over the loaded rows (combined with the server filter) ----
   let query = $state('');
   const searching = $derived(query.trim() !== '');
+  // Every loaded row matching the search; the render window is a slice of it.
   const visibleRows = $derived(clientFilter(sortedRows, query));
+
+  // id -> index in `visibleRows`. Unsorted and unsearched, that is the store's
+  // own index; otherwise a map built once per `visibleRows` (lazily, on use).
+  let indexFor: readonly Row[] | null = null;
+  let indexMap: Map<string, number> = buildIndex([]);
+  function vIndex(id: string | null): number {
+    if (id === null) return -1;
+    const rows = visibleRows;
+    if (rows === history.rows) return history.indexOf(id);
+    if (indexFor !== rows) {
+      indexMap = buildIndex(rows);
+      indexFor = rows;
+    }
+    return indexMap.get(id) ?? -1;
+  }
+
+  // Digits of the largest `#` cell: sizes the # column (a class, not a style).
+  const idxDigits = $derived(Math.min(5, String(visibleRows.length).length));
+
+  // Footer note once the row cap stops paging (spec §3.1.7).
+  const capNote = $derived(
+    `${history.rows.length.toLocaleString('en-US')} rows loaded. Narrow the filter to see older exchanges.`,
+  );
 
   // ---- Column picker (Host and Path are always shown) ------------------------
   let cols = $state<ColumnKey[]>(loadColumns());
@@ -159,11 +198,13 @@
     else selected.add(id);
   }
 
-  // A hidden row cannot be seen or unchecked, so a search drops its selection.
+  // A hidden row cannot be seen or unchecked, so a search (or the row cap
+  // trimming it) drops its selection. A row merely outside the render window
+  // stays selected.
   $effect(() => {
-    const visible = new Set(visibleRows.map((r) => r.id));
+    void visibleRows;
     untrack(() => {
-      for (const id of [...selected]) if (!visible.has(id)) selected.delete(id);
+      for (const id of [...selected]) if (vIndex(id) < 0) selected.delete(id);
     });
   });
 
@@ -194,67 +235,362 @@
     focusedId = id;
   }
 
-  // Row keyboard model (§7.6/§11.1), roving tabindex: j/k and ArrowDown/Up move
-  // the focused row, Enter opens it, Space toggles its checkbox. These handlers
-  // only act when the event target is the row itself or its checkbox, so a key
-  // typed in any text field (search, filters, tag inputs) never reaches them.
-  // Space is prevented on the row so the page does not scroll.
   let rootEl = $state<HTMLElement>();
   let listEl = $state<HTMLElement>();
 
-  const rowEls = (): HTMLElement[] =>
-    listEl ? Array.from(listEl.querySelectorAll<HTMLElement>('tr[data-testid="history-row"]')) : [];
+  // ---- The render window (spec §3.1.4) ---------------------------------------
+  // Only `visibleRows.slice(win.start, win.end)` is in the DOM, between two
+  // spacer rows whose heights are the `--vt-before`/`--vt-after` custom
+  // properties on the list (CSSOM writes; CSP-clean, no style attribute).
+  // Geometry is measured, never read on the scroll path: `rowH` from the first
+  // rendered row, `headH`/`footH` from the sticky header/footer, `viewportH`
+  // from the list; until the first measure `rowH` is the CSS token.
+  const ROW_H_TOKEN = 26;
+  let rowH = $state(ROW_H_TOKEN);
+  let headH = $state(0);
+  let footH = $state(0);
+  let viewportH = $state(0);
+  let measured = false;
+  let win = $state.raw<Win>({ start: 0, end: 0, before: 0, after: 0 });
+  const windowRows = $derived(visibleRows.slice(win.start, win.end));
 
-  const rovingId = $derived(
-    visibleRows.some((r) => r.id === focusedId)
-      ? focusedId
-      : visibleRows.some((r) => r.id === selectedId)
-        ? selectedId
-        : (visibleRows[0]?.id ?? null),
-  );
+  const nextFrame = (fn: () => void): void => {
+    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => fn());
+    else setTimeout(fn, 16);
+  };
 
-  function focusRow(el: HTMLElement | undefined): void {
-    if (!el) return;
-    el.focus();
-    el.scrollIntoView?.({ block: 'nearest' });
+  function windowAt(scrollTop: number): Win {
+    return windowFor(scrollTop, viewportH, rowH, headH, visibleRows.length);
   }
 
-  function moveFocus(fromId: string, delta: number): void {
-    const i = nextIndex(
-      visibleRows.findIndex((r) => r.id === fromId),
-      delta,
-      visibleRows.length,
-    );
-    if (i >= 0) focusRow(rowEls()[i]);
+  // Last pad heights written (and to which list), so an unchanged window
+  // costs no style write.
+  let padEl: HTMLElement | null = null;
+  let padBefore = -1;
+  let padAfter = -1;
+  function applyWindow(w: Win): void {
+    const cur = win;
+    if (w.start !== cur.start || w.end !== cur.end || w.before !== cur.before || w.after !== cur.after) win = w;
+    if (!listEl) return;
+    if (padEl !== listEl) {
+      padEl = listEl;
+      padBefore = padAfter = -1;
+    }
+    if (w.before !== padBefore) {
+      listEl.style.setProperty('--vt-before', `${w.before}px`);
+      padBefore = w.before;
+    }
+    if (w.after !== padAfter) {
+      listEl.style.setProperty('--vt-after', `${w.after}px`);
+      padAfter = w.after;
+    }
+  }
+
+  function measure(): void {
+    const el = listEl;
+    if (!el) return;
+    viewportH = el.clientHeight;
+    headH = el.querySelector('thead')?.getBoundingClientRect().height ?? 0;
+    footH = el.querySelector('.foot')?.getBoundingClientRect().height ?? 0;
+    // A hidden or not-yet-laid-out list measures 0: keep the token and try
+    // again on the next ResizeObserver callback or rendered frame.
+    const h = el.querySelector('tr[data-testid="history-row"]')?.getBoundingClientRect().height ?? 0;
+    if (h > 0) {
+      rowH = h;
+      measured = true;
+    }
+  }
+
+  /** Rows that fit between the sticky header and footer (PageUp/PageDown). */
+  const pageRows = (): number => Math.max(1, Math.floor((viewportH - headH - footH) / rowH));
+
+  /** The rendered element of row `id`, if it is in the window. */
+  function rowEl(id: string | null): HTMLElement | null {
+    if (!listEl || id === null) return null;
+    for (const el of listEl.querySelectorAll<HTMLElement>('tr[data-testid="history-row"]')) {
+      if (el.dataset.id === id) return el;
+    }
+    return null;
+  }
+
+  // ---- Focus (spec §3.1.8) ---------------------------------------------------
+  // Focus is logical (by id) and the scroll follows it. When the focused row
+  // is about to leave the window (wheel, scrollbar, a live prepend), focus is
+  // parked on the list itself (never <body>) and `evacuated` remembers to put
+  // it back when the row is rendered again.
+  let evacuated = false;
+  // True while the list is focused programmatically, so its focus handler
+  // does not treat that as the user tabbing in.
+  let parking = false;
+
+  function park(): void {
+    if (!listEl) return;
+    parking = true;
+    listEl.focus({ preventScroll: true });
+    parking = false;
+    evacuated = true;
+  }
+
+  /** Park focus if the focused row (or its checkbox) is outside window `w`. */
+  function evacuateIfLeaving(w: Win): void {
+    const el = listEl;
+    const active = document.activeElement;
+    if (!el || !(active instanceof HTMLElement) || active === el || !el.contains(active)) return;
+    const row = active.closest<HTMLElement>('tr[data-testid="history-row"]');
+    if (!row) return;
+    const i = vIndex(row.dataset.id ?? null);
+    if (i >= w.start && i < w.end) return;
+    park();
+  }
+
+  const rovingId = $derived(
+    vIndex(focusedId) >= 0 ? focusedId : vIndex(selectedId) >= 0 ? selectedId : (visibleRows[0]?.id ?? null),
+  );
+  const rovingIndex = $derived(vIndex(rovingId));
+  // The list is the tab stop only while the roving row is outside the window
+  // (set on the element: the scroll region has no interactive role of its own).
+  const listTabIndex = $derived(rovingIndex >= 0 && (rovingIndex < win.start || rovingIndex >= win.end) ? 0 : -1);
+  $effect(() => {
+    if (listEl) listEl.tabIndex = listTabIndex;
+  });
+
+  /**
+   * Move focus to row `i` of `visibleRows`: scroll it fully into view (window
+   * computed synchronously from the new scrollTop), then focus it without a
+   * second, native scroll. Focus is immediate when the row is already rendered.
+   */
+  function moveTo(i: number): void {
+    const el = listEl;
+    if (!el || i < 0 || i >= visibleRows.length) return;
+    const id = visibleRows[i].id;
+    focusedId = id;
+    evacuated = false;
+    const top = revealTop(i, el.scrollTop, viewportH || el.clientHeight, rowH, headH, footH);
+    if (top !== null) {
+      el.scrollTop = top;
+      applyWindow(windowAt(el.scrollTop));
+    }
+    const now = rowEl(id);
+    if (now) {
+      now.focus({ preventScroll: true });
+      return;
+    }
+    void tick().then(() => {
+      if (focusedId === id) rowEl(id)?.focus({ preventScroll: true });
+    });
   }
 
   // Esc in the search box or the detail pane lands here: the roving row, else the list.
   function focusList(): void {
-    const els = rowEls();
-    const i = visibleRows.findIndex((r) => r.id === rovingId);
-    if (els.length > 0) focusRow(els[Math.max(i, 0)]);
+    if (rovingId !== null) moveTo(rovingIndex);
     else listEl?.focus();
   }
 
-  function onRowKey(e: KeyboardEvent, id: string): void {
-    if (e.ctrlKey || e.altKey || e.metaKey) return;
-    const onRow = e.target === e.currentTarget;
-    const onBox = e.target instanceof HTMLInputElement && e.target.type === 'checkbox';
-    if (!onRow && !onBox) return;
+  // Row keyboard model (§7.6/§11.1), one delegated handler on the list:
+  // j/k and the arrows move one row, PageDown/PageUp a screenful, Home/End to
+  // the first/last loaded row; Enter opens, Space toggles the checkbox. Only
+  // a row, its checkbox or the list itself (focus parked) is a valid target,
+  // so a key typed in any field or button never moves rows.
+  function onListKey(e: KeyboardEvent): void {
+    const el = listEl;
+    if (!el || e.ctrlKey || e.altKey || e.metaKey) return;
+    const t = e.target;
+    let id: string | null;
+    let onRow = false;
+    if (t === el) {
+      id = vIndex(focusedId) >= 0 ? focusedId : rovingId;
+    } else {
+      if (!(t instanceof HTMLElement)) return;
+      const row = t.closest<HTMLElement>('tr[data-testid="history-row"]');
+      if (!row || !el.contains(row)) return;
+      onRow = t === row;
+      const onBox = t instanceof HTMLInputElement && t.type === 'checkbox';
+      if (!onRow && !onBox) return;
+      id = row.dataset.id ?? null;
+    }
+    if (id === null) return;
     if (e.key === 'Enter') {
       e.preventDefault();
       openRow(id);
-    } else if ((e.key === ' ' || e.key === 'Spacebar') && onRow) {
+      if (t === el) moveTo(vIndex(id));
+      return;
+    }
+    if (e.key === ' ' || e.key === 'Spacebar') {
+      if (!onRow) return;
       e.preventDefault();
       toggleRow(id);
-    } else if (e.key === 'j' || e.key === 'ArrowDown') {
-      e.preventDefault();
-      moveFocus(id, 1);
-    } else if (e.key === 'k' || e.key === 'ArrowUp') {
-      e.preventDefault();
-      moveFocus(id, -1);
+      return;
+    }
+    const to = keyTarget(e.key, vIndex(id), visibleRows.length, pageRows());
+    if (to === null) return;
+    e.preventDefault();
+    moveTo(to);
+  }
+
+  function onListFocusIn(e: FocusEvent): void {
+    const row = e.target instanceof HTMLElement ? e.target.closest<HTMLElement>('tr[data-testid="history-row"]') : null;
+    if (row?.dataset.id) {
+      focusedId = row.dataset.id;
+      evacuated = false;
     }
   }
+
+  // Focus leaving the list for good ends the parked state.
+  function onListFocusOut(e: FocusEvent): void {
+    const to = e.relatedTarget;
+    if (!(to instanceof Node) || !listEl?.contains(to)) evacuated = false;
+  }
+
+  // Tabbing onto the list (its tab stop while the roving row is scrolled
+  // away) reveals and focuses the roving row. A click on the list's chrome is
+  // not a keyboard focus and leaves the scroll position alone.
+  function onListFocus(e: FocusEvent): void {
+    const el = listEl;
+    if (!el || parking || e.target !== el || evacuated || rovingId === null) return;
+    let keyboard = true;
+    try {
+      keyboard = el.matches(':focus-visible');
+    } catch {
+      // Selector unsupported: treat as keyboard focus.
+    }
+    if (keyboard) moveTo(rovingIndex);
+  }
+
+  // ---- Scroll (spec §3.1.5, §3.1.6) -----------------------------------------
+  // One passive listener and at most one frame callback per frame: read
+  // scrollTop (the only layout read), park focus if its row is leaving, move
+  // the window when it changed, and fetch the next page near the loaded end.
+  let framePending = false;
+  function onScroll(): void {
+    if (framePending) return;
+    framePending = true;
+    nextFrame(onFrame);
+  }
+
+  function onFrame(): void {
+    framePending = false;
+    const el = listEl;
+    if (!el) return;
+    const w = windowAt(el.scrollTop);
+    evacuateIfLeaving(w);
+    applyWindow(w);
+    const s = { hasMore: history.hasMore, loading: history.loading, searching, capped: history.capped };
+    if (shouldAutoLoad(w, visibleRows.length, s)) void history.loadMore();
+  }
+
+  $effect(() => {
+    const el = listEl;
+    if (!el) return;
+    measured = false;
+    let pending = false;
+    const ro =
+      typeof ResizeObserver === 'function'
+        ? new ResizeObserver(() => {
+            if (pending) return;
+            pending = true;
+            nextFrame(() => {
+              pending = false;
+              measure();
+            });
+          })
+        : null;
+    ro?.observe(el);
+    el.addEventListener('scroll', onScroll, { passive: true });
+    el.addEventListener('keydown', onListKey);
+    el.addEventListener('focus', onListFocus);
+    el.addEventListener('focusin', onListFocusIn);
+    el.addEventListener('focusout', onListFocusOut);
+    el.addEventListener('contextmenu', onListContextMenu);
+    return () => {
+      ro?.disconnect();
+      el.removeEventListener('scroll', onScroll);
+      el.removeEventListener('keydown', onListKey);
+      el.removeEventListener('focus', onListFocus);
+      el.removeEventListener('focusin', onListFocusIn);
+      el.removeEventListener('focusout', onListFocusOut);
+      el.removeEventListener('contextmenu', onListContextMenu);
+    };
+  });
+
+  // First rows on screen: measure the real row height once (and again on the
+  // next frame while it still reads 0).
+  $effect(() => {
+    if (windowRows.length === 0 || measured) return;
+    nextFrame(measure);
+  });
+
+  // ---- Window maintenance on data and geometry changes (spec §3.1.9, §3.1.10) ----
+  // Runs before the DOM update whenever the rows, the geometry or the view
+  // (filter generation, search, sort) change:
+  //  - a replace, a search or a sort starts again at the top;
+  //  - otherwise (live prepend, committed update, page append, tag patch) the
+  //    first fully visible row keeps its viewport offset, found by id; at the
+  //    top (scrollTop < rowH/2) the list follows the head and new rows show.
+  let seenRows: readonly Row[] | null = null;
+  let seenGen = -1;
+  let seenView = '';
+  let pendingTop: number | null = null;
+
+  /** The anchor (first fully visible row of `rows`) at `scrollTop`, O(1). */
+  function anchorIn(rows: readonly Row[], scrollTop: number): { id: string; offset: number } | null {
+    if (!(rowH > 0)) return null;
+    const i0 = Math.max(0, Math.floor((scrollTop - headH) / rowH));
+    const ids = rows.slice(i0, i0 + 2).map((r) => r.id);
+    return anchorAt(scrollTop - i0 * rowH, rowH, headH, ids);
+  }
+
+  $effect.pre(() => {
+    const rows = visibleRows;
+    const gen = history.generation;
+    const view = `${query}\u0000${sortKey}\u0000${sortDir}`;
+    const el = listEl;
+    void rowH;
+    void headH;
+    void viewportH;
+    untrack(() => {
+      const prev = seenRows;
+      const reset = gen !== seenGen || view !== seenView;
+      seenRows = rows;
+      seenGen = gen;
+      seenView = view;
+      const st = el ? el.scrollTop : 0;
+      let top = st;
+      if (reset) {
+        top = 0;
+      } else if (prev !== null && prev !== rows && st >= rowH / 2) {
+        const a = anchorIn(prev, st);
+        const t = a ? restoreAnchor(a, vIndex, rowH, headH) : null;
+        if (t !== null) top = Math.max(0, t);
+      }
+      const w = windowAt(top);
+      evacuateIfLeaving(w);
+      applyWindow(w);
+      if (el && top !== st) {
+        el.scrollTop = top;
+        // The pads already have their new heights; re-apply once the rows are
+        // in the DOM in case the browser clamped against the old height.
+        pendingTop = top;
+        void tick().then(() => {
+          if (listEl && pendingTop !== null && Math.abs(listEl.scrollTop - pendingTop) > 1) listEl.scrollTop = pendingTop;
+          pendingTop = null;
+        });
+      }
+    });
+  });
+
+  // A parked focus returns to its row as soon as the row is rendered again.
+  $effect(() => {
+    void windowRows;
+    untrack(() => {
+      if (!evacuated || !listEl || document.activeElement !== listEl) return;
+      const i = vIndex(focusedId);
+      if (i < win.start || i >= win.end) return;
+      const el = rowEl(focusedId);
+      if (!el) return;
+      el.focus({ preventScroll: true });
+      evacuated = false;
+    });
+  });
 
   // `/` focuses the search box unless the user is typing in a field or working
   // in a menu/dialog. (The Shell's keymap does not bind `/`, so it falls through.)
@@ -284,7 +620,7 @@
     focusList();
   }
 
-  const rowById = (id: string | null): Row | null => (id ? (history.rows.find((r) => r.id === id) ?? null) : null);
+  const rowById = (id: string | null): Row | null => (id ? history.byId(id) : null);
   const selectedRow = $derived(rowById(selectedId));
   // One action target for the toolbar AND the Ctrl+R chord: the focused row,
   // then the opened row. The toolbar names it when it is not the open row.
@@ -379,12 +715,16 @@
   let menuAnchor = $state<{ x: number; y: number } | null>(null);
   let menuRowEl: HTMLElement | null = null;
 
-  function onRowContextMenu(e: MouseEvent, id: string): void {
+  // Delegated on the list: a right-click or the context-menu key on a row.
+  function onListContextMenu(e: MouseEvent): void {
+    const row = e.target instanceof Element ? e.target.closest<HTMLElement>('tr[data-testid="history-row"]') : null;
+    const id = row?.dataset.id;
+    if (!row || !id) return;
     e.preventDefault();
-    menuRowEl = e.currentTarget as HTMLElement;
+    menuRowEl = row;
     // The context-menu key reports (0,0): place the menu at the row instead.
     if (e.clientX === 0 && e.clientY === 0) {
-      const r = menuRowEl.getBoundingClientRect();
+      const r = row.getBoundingClientRect();
       menuAnchor = { x: r.left + 24, y: r.bottom };
     } else {
       menuAnchor = { x: e.clientX, y: e.clientY };
@@ -392,9 +732,12 @@
     menuId = id;
   }
 
+  // Back to the row the menu was opened on, if the window still renders it;
+  // otherwise focus parks on the list until the row scrolls back in.
   function closeMenu(): void {
     menuId = null;
-    menuRowEl?.focus();
+    if (menuRowEl?.isConnected) menuRowEl.focus({ preventScroll: true });
+    else park();
     menuRowEl = null;
   }
 
@@ -609,7 +952,16 @@
     <Splitter direction="row" storageKey="history-detail" initial={HISTORY_SPLIT_DEFAULT} min={[320, 360]} label="Resize history and detail">
       {#snippet a()}
         <div class="list" data-testid="history-list" tabindex="-1" bind:this={listEl}>
-          <table>
+          <table
+            class={`d${idxDigits}`}
+            class:no-time={!shown('time')}
+            class:no-method={!shown('method')}
+            class:no-status={!shown('status')}
+            class:no-len={!shown('len')}
+            class:no-state={!shown('state')}
+            class:no-tags={!shown('tags')}
+            aria-rowcount={ariaRowCount(visibleRows.length, history.hasMore, history.capped)}
+          >
             <colgroup>
               <col class="c-sel" />
               <col class="c-idx" />
@@ -623,7 +975,7 @@
               {#if shown('tags')}<col class="c-tags" />{/if}
             </colgroup>
             <thead>
-              <tr>
+              <tr aria-rowindex="1">
                 <th class="sel">
                   <input
                     type="checkbox"
@@ -645,22 +997,23 @@
               </tr>
             </thead>
             <tbody>
-              {#each visibleRows as row, i (row.id)}
-                <!-- Keyboard-operable row (§7.6): focusable, Enter/Space opens it,
-                     focusin marks it as the action target, the context-menu key
-                     or a right-click opens the row menu. -->
+              <!-- Spacer rows stand in for the rows above and below the window;
+                   their heights are the list's --vt-before/--vt-after. -->
+              <tr class="pad" aria-hidden="true" data-testid="history-pad-top"><td class="pad-top" colspan={colCount}></td></tr>
+              {#each windowRows as row, j (row.id)}
+                <!-- Keyboard-operable row (§7.6): focusable (roving tabindex),
+                     keys, focus and the context menu are delegated to the list. -->
                 <tr
+                  class="row"
                   class:uncommitted={row.uncommitted}
                   class:selected={selectedId === row.id}
                   class:checked={selected.has(row.id)}
                   data-testid="history-row"
                   data-id={row.id}
                   data-uncommitted={row.uncommitted}
+                  aria-rowindex={win.start + j + 2}
                   tabindex={row.id === rovingId ? 0 : -1}
                   aria-label={`exchange ${row.method ?? ''} ${row.host ?? ''}${row.path ?? ''}`}
-                  onkeydown={(e) => onRowKey(e, row.id)}
-                  onfocusin={() => (focusedId = row.id)}
-                  oncontextmenu={(e) => onRowContextMenu(e, row.id)}
                 >
                   <td class="sel">
                     <input
@@ -670,7 +1023,7 @@
                       onchange={() => toggleRow(row.id)}
                     />
                   </td>
-                  <td class="num idx">{i + 1}</td>
+                  <td class="num idx">{win.start + j + 1}</td>
                   {#if shown('time')}
                     {@const t = timeParts(row.created_at)}
                     <td class="open time" title={fullTime(row.created_at)} onclick={() => openRow(row.id)}>
@@ -729,6 +1082,7 @@
                   </td>
                 </tr>
               {/if}
+              <tr class="pad" aria-hidden="true" data-testid="history-pad-bottom"><td class="pad-bottom" colspan={colCount}></td></tr>
             </tbody>
           </table>
 
@@ -736,13 +1090,16 @@
             <span class="count" data-testid="history-count">{searching
                 ? `${visibleRows.length} of ${sortedRows.length} loaded match`
                 : `${sortedRows.length} loaded`} · {checkedIds.length} selected</span>
+            {#if history.capped && history.hasMore}
+              <span class="cap-note" data-testid="history-cap-note" title={capNote}>{capNote}</span>
+            {/if}
             <Button
               size="sm"
               data-testid="load-more"
-              disabled={!history.hasMore || history.loading}
+              disabled={!history.hasMore || history.loading || history.capped}
               onclick={() => void history.loadMore()}
             >
-              {history.loading ? 'Loading…' : history.hasMore ? 'Load more' : 'End'}
+              {loadMoreLabel({ loading: history.loading, hasMore: history.hasMore, capped: history.capped })}
             </Button>
           </div>
         </div>
@@ -863,6 +1220,8 @@
     overflow: hidden;
   }
   .list {
+    /* Declared row height; the authoritative value is measured (spec §3.1.2). */
+    --history-row-h: 26px;
     height: 100%;
     min-width: 0;
     overflow: auto;
@@ -876,7 +1235,7 @@
       display: none;
     }
     td.tags .chips {
-      max-width: 6rem;
+      max-width: calc(5rem - 8px);
     }
     /* One chip and a "+N" count; the full list stays in the cell's `title`. */
     .chips :global(.chip:nth-child(n + 2)) {
@@ -886,16 +1245,101 @@
       display: inline;
     }
   }
-  /* Auto layout: every column but Host and Path takes its natural width, and
-     Host and Path share what is left (ellipsized, full text in `title`), so
-     the table fits the default 45/55 split without a horizontal scroll. */
+  /* Fixed layout: the column widths come from the <col> elements, never from
+     whichever rows the window happens to render (auto layout would make every
+     column jump as an OPTIONS badge or a long date scrolls in, and measure the
+     whole table to do it). Host takes 35% of what the fixed columns leave and
+     Path the rest, both ellipsized with the full text in `title`, so the table
+     fits the default 45/55 split without a horizontal scroll. A hidden
+     column's width is zeroed so Host and Path share its room. */
   table {
+    /* Each fits its worst case (the cap's `50000`, a date and clock with the
+       uncommitted dot, OPTIONS, `committed`, a header with its sort arrow). */
+    --w-sel: 1.375rem;
+    --w-idx: calc(5ch + 8px);
+    --w-time: calc(15ch + 20px);
+    --w-method: 4rem;
+    --w-status: 3rem;
+    --w-len: 3.5rem;
+    --w-state: 4.75rem;
+    --w-tags: 7rem;
     width: 100%;
-    table-layout: auto;
+    table-layout: fixed;
     border-collapse: separate;
     border-spacing: 0;
     font-size: var(--fs-sm);
   }
+  /* The # column is as wide as the loaded total's digits (up to the 50,000 cap). */
+  table.d1,
+  table.d2 {
+    --w-idx: calc(2ch + 8px);
+  }
+  table.d3 {
+    --w-idx: calc(3ch + 8px);
+  }
+  table.d4 {
+    --w-idx: calc(4ch + 8px);
+  }
+  /* Narrow list (after the base rule so it wins): the time cell shows a date
+     or a clock, and the tag strip one chip plus "+N". */
+  @container (max-width: 720px) {
+    table {
+      --w-time: calc(8ch + 16px);
+      --w-tags: 5rem;
+    }
+  }
+  table.no-time {
+    --w-time: 0px;
+  }
+  table.no-method {
+    --w-method: 0px;
+  }
+  table.no-status {
+    --w-status: 0px;
+  }
+  table.no-len {
+    --w-len: 0px;
+  }
+  table.no-state {
+    --w-state: 0px;
+  }
+  table.no-tags {
+    --w-tags: 0px;
+  }
+  .c-sel {
+    width: var(--w-sel);
+  }
+  .c-idx {
+    width: var(--w-idx);
+  }
+  .c-time {
+    width: var(--w-time);
+  }
+  .c-method {
+    width: var(--w-method);
+  }
+  .c-status {
+    width: var(--w-status);
+  }
+  .c-len {
+    width: var(--w-len);
+  }
+  .c-state {
+    width: var(--w-state);
+  }
+  .c-tags {
+    width: var(--w-tags);
+  }
+  .c-host {
+    width: max(
+      2.375rem,
+      calc(
+        (100cqw - var(--w-sel) - var(--w-idx) - var(--w-time) - var(--w-method) - var(--w-status) - var(--w-len) -
+            var(--w-state) - var(--w-tags)) * 0.35
+      )
+    );
+  }
+  /* .c-path: no width, it takes the rest. */
   thead th {
     position: sticky;
     top: 0;
@@ -936,9 +1380,25 @@
   }
   tbody tr {
     cursor: default;
-    /* Keep a keyboard-focused row clear of the sticky header and footer. */
-    scroll-margin-top: 32px;
-    scroll-margin-bottom: 52px;
+  }
+  /* Every data row is one line of the same height (spec §3.1.3): cells never
+     wrap, and their tallest content (a 20px chip) fits the declared height. */
+  tbody tr.row {
+    height: var(--history-row-h);
+  }
+  tbody tr.row td {
+    padding-top: 0;
+    padding-bottom: 0;
+  }
+  tr.pad td {
+    padding: 0;
+    border: 0;
+  }
+  td.pad-top {
+    height: var(--vt-before, 0px);
+  }
+  td.pad-bottom {
+    height: var(--vt-after, 0px);
   }
   tbody tr:focus-visible {
     outline: 2px solid var(--accent);
@@ -960,23 +1420,6 @@
   td.host,
   td.path {
     font-family: var(--font-mono);
-  }
-  /* Natural-width columns: 1px plus nowrap shrinks them to their content. */
-  .c-sel,
-  .c-idx,
-  .c-time,
-  .c-method,
-  .c-status,
-  .c-len,
-  .c-state,
-  .c-tags {
-    width: 1px;
-  }
-  .c-host {
-    width: 35%;
-  }
-  .c-path {
-    width: 65%;
   }
   /* Slimmer badges in the table rows. */
   td :global(.badge) {
@@ -1016,6 +1459,7 @@
   }
   .chips {
     display: flex;
+    flex-wrap: nowrap;
     gap: var(--s-1);
     min-width: 0;
     max-width: 6rem;
@@ -1054,6 +1498,16 @@
   .count {
     font-size: var(--fs-sm);
     color: var(--fg-muted);
+    white-space: nowrap;
+  }
+  .cap-note {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: var(--fs-sm);
+    color: var(--warn-fg);
   }
   .error {
     color: var(--danger);
