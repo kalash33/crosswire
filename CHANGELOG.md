@@ -95,6 +95,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `cert_override` is no longer on the wire.
 
+### Fixed
+
+- **Web UI**: History's Load more button stayed disabled since the UI
+  redesign, so the list stopped at 100 rows; paging works again.
+
 ### Security
 
 - **Destination gate** (crosswire-client, used by the proxy relay, the
