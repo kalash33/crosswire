@@ -22,6 +22,7 @@ function row(id: string, over: Partial<ExchangeRowDto> = {}): ExchangeRowDto {
 }
 
 const noSub = () => () => {};
+const sync = (fn: () => void) => fn();
 
 describe('history store', () => {
   it('applyFilter builds the right query params and reloads from the first page', async () => {
@@ -88,7 +89,7 @@ describe('history store', () => {
       return () => {};
     };
     const get = vi.fn().mockResolvedValue(page([row('A', { state: 'committed' })]));
-    const h = createHistory({ get, subscribe });
+    const h = createHistory({ get, subscribe, schedule: sync });
 
     await h.applyFilter({});
     expect(h.rows.find((r) => r.id === 'A')?.uncommitted).toBe(false);
@@ -226,7 +227,7 @@ describe('history store', () => {
         emit({ type: 'received', id: 'N2' } as Event);
       }
     });
-    const h = createHistory({ get, subscribe, patch, maxRows: 2 });
+    const h = createHistory({ get, subscribe, patch, maxRows: 2, schedule: sync });
     await h.applyFilter({});
     const res = await h.bulkTag(['A', 'B'], 't');
     expect(h.rows.some((r) => r.id === 'B')).toBe(false);
@@ -305,6 +306,123 @@ describe('history store', () => {
   });
 });
 
+
+describe('history store: window support', () => {
+  function sub() {
+    let emit: (e: Event) => void = () => {};
+    return { subscribe: (oe: (e: Event) => void) => ((emit = oe), () => {}), emit: (e: Event) => emit(e) };
+  }
+  const recv = (id: string) => ({ type: 'received', id, seq: 1 }) as Event;
+
+  it('two concurrent loadMore calls issue one GET', async () => {
+    let resolve: (p: PageDto<ExchangeRowDto>) => void = () => {};
+    const get = vi
+      .fn()
+      .mockResolvedValueOnce(page([row('A')], 'c1'))
+      .mockImplementationOnce(() => new Promise((r) => (resolve = r)));
+    const h = createHistory({ get, subscribe: noSub });
+    await h.applyFilter({});
+    const a = h.loadMore();
+    const b = h.loadMore();
+    resolve(page([row('B')], null));
+    await Promise.all([a, b]);
+    expect(get).toHaveBeenCalledTimes(2);
+    expect(h.rows.map((r) => r.id)).toEqual(['A', 'B']);
+  });
+
+  it('appends a page that repeats a loaded id once', async () => {
+    const get = vi
+      .fn()
+      .mockResolvedValueOnce(page([row('A'), row('B')], 'c1'))
+      .mockResolvedValueOnce(page([row('B'), row('C'), row('C')], null));
+    const h = createHistory({ get, subscribe: noSub });
+    await h.applyFilter({});
+    await h.loadMore();
+    expect(h.rows.map((r) => r.id)).toEqual(['A', 'B', 'C']);
+  });
+
+  it('stops paging at maxRows and reports capped', async () => {
+    const get = vi
+      .fn()
+      .mockResolvedValueOnce(page([row('A'), row('B')], 'c1'))
+      .mockResolvedValueOnce(page([row('C'), row('D')], 'c2'))
+      .mockResolvedValue(page([row('E')], null));
+    const h = createHistory({ get, subscribe: noSub, maxRows: 4, pageSize: 2 });
+    await h.applyFilter({});
+    expect(h.capped).toBe(false);
+    await h.loadMore();
+    expect(h.rows).toHaveLength(4);
+    expect(h.capped).toBe(true);
+    await h.loadMore();
+    expect(get).toHaveBeenCalledTimes(2);
+    expect(h.rows).toHaveLength(4);
+  });
+
+  it('a prepend at the cap trims the tail and stays capped', async () => {
+    const s = sub();
+    const get = vi.fn().mockResolvedValue(page([row('A'), row('B'), row('C'), row('D')], 'c1'));
+    const h = createHistory({ get, subscribe: s.subscribe, maxRows: 4, schedule: sync });
+    await h.applyFilter({});
+    expect(h.capped).toBe(true);
+    s.emit(recv('N'));
+    expect(h.rows.map((r) => r.id)).toEqual(['N', 'A', 'B', 'C']);
+    expect(h.capped).toBe(true);
+  });
+
+  it('generation bumps on applyFilter and reload, not on loadMore or events', async () => {
+    const s = sub();
+    const get = vi
+      .fn()
+      .mockResolvedValueOnce(page([row('A')], 'c1'))
+      .mockResolvedValue(page([row('B')], null));
+    const h = createHistory({ get, subscribe: s.subscribe, schedule: sync });
+    const g0 = h.generation;
+    await h.applyFilter({});
+    const g1 = h.generation;
+    expect(g1).toBeGreaterThan(g0);
+    await h.loadMore();
+    s.emit(recv('N'));
+    s.emit({ type: 'committed', ids: ['N'], seq: 2 } as Event);
+    expect(h.generation).toBe(g1);
+    await h.reload();
+    expect(h.generation).toBeGreaterThan(g1);
+  });
+
+  it('coalesces a burst of received events into one rows change per flush', async () => {
+    const s = sub();
+    const queue: (() => void)[] = [];
+    const get = vi.fn().mockResolvedValue(page([row('A')]));
+    const h = createHistory({ get, subscribe: s.subscribe, schedule: (fn) => queue.push(fn) });
+    await h.applyFilter({});
+    const before = h.rows;
+    for (const id of ['1', '2', '3', '4', '5']) s.emit(recv(id));
+    expect(h.rows).toBe(before);
+    expect(queue).toHaveLength(1);
+    queue.shift()!();
+    expect(h.rows).not.toBe(before);
+    expect(h.rows.map((r) => r.id)).toEqual(['5', '4', '3', '2', '1', 'A']);
+    expect(queue).toHaveLength(0);
+  });
+
+  it('indexOf and byId follow prepends and appends', async () => {
+    const s = sub();
+    const get = vi
+      .fn()
+      .mockResolvedValueOnce(page([row('A'), row('B')], 'c1'))
+      .mockResolvedValueOnce(page([row('C')], null));
+    const h = createHistory({ get, subscribe: s.subscribe, schedule: sync });
+    await h.applyFilter({});
+    expect(h.indexOf('B')).toBe(1);
+    s.emit(recv('N'));
+    expect(h.indexOf('N')).toBe(0);
+    expect(h.indexOf('B')).toBe(2);
+    await h.loadMore();
+    expect(h.indexOf('C')).toBe(3);
+    expect(h.byId('C')?.id).toBe('C');
+    expect(h.indexOf('ZZ')).toBe(-1);
+    expect(h.byId('ZZ')).toBeNull();
+  });
+});
 
 describe('clientFilter', () => {
   const rows = [

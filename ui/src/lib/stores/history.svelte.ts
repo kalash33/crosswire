@@ -16,6 +16,7 @@ import { patchExchange } from '../api/exchanges';
 import type { PatchBody } from '../api/types';
 import { addTag } from '../tags';
 import { tagSavePending, tagSavesSettled } from './tag-saves';
+import { buildIndex, newIndex } from './row-index';
 import { events, type Event } from './events.svelte';
 
 /** One history row, exactly the fields alpha.2 provides (no mime/tls/ms). */
@@ -85,8 +86,10 @@ export interface HistoryOptions {
   subscribe?: (onEvent: (e: Event) => void, onLagged: () => void) => () => void;
   /** Page size / live-row cap tuning. */
   pageSize?: number;
-  /** Upper bound on retained rows under a live-event flood. */
+  /** Upper bound on retained rows, applied to paging and live prepends. */
   maxRows?: number;
+  /** Injectable frame scheduler for live-event coalescing (default rAF). */
+  schedule?: (fn: () => void) => void;
   /** Injectable `PATCH /exchanges/{id}` (defaults to the API helper). */
   patch?: (id: string, body: PatchBody) => Promise<void>;
   /** Injectable `GET /exchanges/{id}` for a row whose tags are not trusted. */
@@ -128,14 +131,37 @@ export function createHistory(opts: HistoryOptions = {}) {
   const get = opts.get ?? apiGet;
   const subscribe = opts.subscribe ?? ((oe, ol) => events.subscribe(oe, ol));
   const pageSize = opts.pageSize ?? 100;
-  const maxRows = opts.maxRows ?? 5_000;
+  const maxRows = opts.maxRows ?? 50_000;
+  const schedule =
+    opts.schedule ??
+    ((fn: () => void) => {
+      if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => fn());
+      else setTimeout(fn, 16);
+    });
   const patch = opts.patch ?? patchExchange;
   const getExchange =
     opts.getExchange ?? ((id: string) => get<{ tags?: string[] }>(`${EXCHANGES}/${encodeURIComponent(id)}`));
   const savePending = opts.savePending ?? tagSavePending;
   const saveSettled = opts.saveSettled ?? tagSavesSettled;
 
-  let rows = $state<Row[]>([]);
+  // `$state.raw`: every update replaces the array (and any changed row object),
+  // so deep proxies over tens of thousands of rows would only cost.
+  let rows = $state.raw<Row[]>([]);
+  // Bumped on every replace (applyFilter/reload), never on append or prepend.
+  let generation = $state(0);
+  // id -> index, cached by array identity and rebuilt lazily when `rows` changes.
+  let indexRows: readonly Row[] | null = null;
+  let indexMap = newIndex();
+  function ids(): Map<string, number> {
+    const cur = rows;
+    if (indexRows !== cur) {
+      indexMap = buildIndex(cur);
+      indexRows = cur;
+    }
+    return indexMap;
+  }
+  let seq = 0;
+  let disposed = false;
   let activeFilter = $state<ExchangeFilter>({});
   let loading = $state(false);
   let error = $state<string | null>(null);
@@ -165,18 +191,35 @@ export function createHistory(opts: HistoryOptions = {}) {
   }
 
   async function fetchPage(after: string | undefined, append: boolean): Promise<void> {
+    const mine = ++seq;
     loading = true;
     error = null;
     try {
       const page = await get<PageDto<ExchangeRowDto>>(EXCHANGES, params(after));
-      const mapped = page.items.map(toRow);
-      rows = append ? [...rows, ...mapped] : mapped;
+      // A newer fetch (a replace) superseded this one: drop its result.
+      if (mine !== seq) return;
+      if (append) {
+        // Dedupe against loaded rows (and within the page); a page that
+        // crosses the cap is appended whole.
+        const have = ids();
+        const fresh: Row[] = [];
+        for (const dto of page.items) {
+          if (have.has(dto.id)) continue;
+          have.set(dto.id, -1);
+          fresh.push(toRow(dto));
+        }
+        indexRows = null;
+        if (fresh.length > 0) rows = [...rows, ...fresh];
+      } else {
+        rows = page.items.map(toRow);
+        generation++;
+      }
       nextCursor = page.next_cursor;
       loaded = true;
     } catch (e) {
-      error = e instanceof Error ? e.message : 'failed to load history';
+      if (mine === seq) error = e instanceof Error ? e.message : 'failed to load history';
     } finally {
-      loading = false;
+      if (mine === seq) loading = false;
     }
   }
 
@@ -196,32 +239,67 @@ export function createHistory(opts: HistoryOptions = {}) {
 
   /** Append the next keyset page, using the stored `next_cursor` as `after`. */
   async function loadMore(): Promise<void> {
-    if (!loaded || nextCursor === null) return;
+    if (loading || !loaded || nextCursor === null || rows.length >= maxRows) return;
     await fetchPage(nextCursor, true);
   }
 
-  function onEvent(ev: Event): void {
-    if (ev.type === 'received') {
-      const idx = rows.findIndex((r) => r.id === ev.id);
-      if (idx >= 0) {
-        const next = rows.slice();
-        next[idx] = { ...next[idx], uncommitted: true };
-        rows = next;
-      } else {
-        // A new exchange arrived: prepend a placeholder, bounded.
-        rows = [placeholderRow(ev.id), ...rows].slice(0, maxRows);
-      }
-    } else if (ev.type === 'committed') {
-      const ids = ev.ids;
-      let changed = false;
-      const next = rows.map((r) => {
-        if (ids.includes(r.id) && (r.uncommitted || r.state !== 'committed')) {
+  // Live events are queued and applied once per frame, so a flood costs one
+  // `rows` update per frame instead of one per event.
+  let queue: Event[] = [];
+  let scheduled = false;
+
+  function flush(): void {
+    scheduled = false;
+    const batch = queue;
+    queue = [];
+    if (disposed || batch.length === 0) return;
+    const base = rows.slice();
+    const at = buildIndex(base);
+    // New rows in arrival order; the newest ends up first.
+    const fresh: Row[] = [];
+    const freshAt = newIndex();
+    let changed = false;
+    for (const ev of batch) {
+      if (ev.type === 'received') {
+        const f = freshAt.get(ev.id);
+        const b = at.get(ev.id);
+        if (f !== undefined) {
+          if (!fresh[f].uncommitted) fresh[f] = { ...fresh[f], uncommitted: true };
+        } else if (b !== undefined) {
+          if (!base[b].uncommitted) {
+            base[b] = { ...base[b], uncommitted: true };
+            changed = true;
+          }
+        } else {
+          freshAt.set(ev.id, fresh.length);
+          fresh.push(placeholderRow(ev.id));
           changed = true;
-          return { ...r, uncommitted: false, state: 'committed' };
         }
-        return r;
-      });
-      if (changed) rows = next;
+      } else if (ev.type === 'committed') {
+        for (const id of ev.ids) {
+          const f = freshAt.get(id);
+          if (f !== undefined) {
+            fresh[f] = { ...fresh[f], uncommitted: false, state: 'committed' };
+            continue;
+          }
+          const b = at.get(id);
+          if (b !== undefined && (base[b].uncommitted || base[b].state !== 'committed')) {
+            base[b] = { ...base[b], uncommitted: false, state: 'committed' };
+            changed = true;
+          }
+        }
+      }
+    }
+    if (!changed) return;
+    fresh.reverse();
+    rows = fresh.length > 0 ? [...fresh, ...base].slice(0, maxRows) : base;
+  }
+
+  function onEvent(ev: Event): void {
+    queue.push(ev);
+    if (!scheduled) {
+      scheduled = true;
+      schedule(flush);
     }
   }
 
@@ -244,6 +322,22 @@ export function createHistory(opts: HistoryOptions = {}) {
     },
     get hasMore(): boolean {
       return nextCursor !== null;
+    },
+    /** True once `maxRows` rows are loaded: paging stops. */
+    get capped(): boolean {
+      return rows.length >= maxRows;
+    },
+    /** Increments on every replace (applyFilter/reload), not on append. */
+    get generation(): number {
+      return generation;
+    },
+    /** Index of a loaded row in `rows`, or -1. */
+    indexOf(id: string): number {
+      return ids().get(id) ?? -1;
+    },
+    byId(id: string): Row | null {
+      const i = ids().get(id);
+      return i === undefined ? null : rows[i];
     },
     /** Patch one in-memory row (after a tags/notes save); a miss is a no-op. */
     patchRow(id: string, patch: { tags?: string[]; notes?: string }): void {
@@ -339,6 +433,7 @@ export function createHistory(opts: HistoryOptions = {}) {
     reload,
     loadMore,
     dispose(): void {
+      disposed = true;
       unsubscribe();
     },
   };
