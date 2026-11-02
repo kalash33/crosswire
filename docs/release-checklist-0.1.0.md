@@ -19,9 +19,9 @@ below target, accepted for 0.1.0 by an ADR), **Pending** (not yet done).
 | 3 | "kill -9 test green as specified in §13" | Done | `crates/crosswire-store/tests/durability.rs::kill_minus_nine` with the `killtest-child` binary; same CI run |
 | 4 | "anonymous RSS < 500 MB at 1M synthetic exchanges" | Done | Measured peak anonymous RSS 21 MB at N = 1 000 000 (bound 500 MB), after loading, running every named query and scrolling: [`bench/README.md`](../bench/README.md), run through `scripts/perf-gate.sh` (maintainer-run at 1M; asserted at 100k in CI) |
 | 5 | "install-to-first-capture < 2 min scripted on tier-1 with an empty scope" | Done | `crates/crosswire-server/tests/first_capture.rs::first_capture_under_two_minutes` (120 s limit, real binary, empty scope); `scripts/first-capture.sh` (`just first-capture`); through the UI: `scripts/first-capture-ui.sh` and `ui/e2e/first-capture-ui.spec.ts` |
-| 6 | "all §13 security gates green" | Done, with report-only performance rows | Gates 1 to 18 are tabulated with test names in [`security-gates.md`](security-gates.md); all are `proven` except gate 3 (XSS corpus), whose UI specs exist but run under Playwright rather than `just test`, and the performance gates below |
-| 6a | §13 performance: ingest "≥ 2k exchanges/s" at the 60/30/9/1 body mix | Report-only | Measured about 700/s, `crates/crosswire-store/tests/perf_ingest.rs` (report-only, 300/s gross floor asserted); decision in [ADR-0006](adr/0006-performance-gates-0-1-0.md) (to be written by R4 Task 1 at `docs/adr/0006-performance-gates-0-1-0.md`) |
-| 6b | §13 performance: UI "no frame > 32 ms" over a 10 s scroll and "filter applied < 300 ms" at 1M rows | Report-only | Measured max frame about 117 ms, filter 163 ms (filter is inside the target); `ui/e2e/perf-scroll.spec.ts` via `just ui-perf`; decision in [ADR-0006](adr/0006-performance-gates-0-1-0.md) |
+| 6 | "all §13 security gates green" | Done, with report-only performance rows | Gates 1 to 18 are tabulated with test names in [`security-gates.md`](security-gates.md); all are `proven` (UI gates 3 and 4 are Playwright specs run by the CI `check` job on ubuntu); performance gates are rows 6a to 6c |
+| 6a | §13 performance: ingest "≥ 2k exchanges/s" at the 60/30/9/1 body mix | Report-only | Measured about 700/s, `crates/crosswire-store/tests/perf_ingest.rs` (report-only, 300/s gross floor asserted); decision in [ADR-0006](adr/0006-performance-gates-0-1-0.md) |
+| 6b | §13 performance: UI "no frame > 32 ms" over a 10 s scroll and "filter applied < 300 ms" at 1M rows | Report-only | Measured 200 ms max frame, p99 150 ms at 100k rows with real paging (an earlier 1M run: 117 ms); filter 190 ms at 100k, 163 ms at 1M (filter is inside the target); `ui/e2e/perf-scroll.spec.ts` via `just ui-perf`; decision in [ADR-0006](adr/0006-performance-gates-0-1-0.md) |
 | 6c | §13 performance: history queries p95 < 50 ms warm and < 500 ms cold at 1M rows | Done | All seven named queries pass at 1M (warm p95 at most 9.7 ms, cold at most 10.4 ms): [`bench/README.md`](../bench/README.md) |
 | 7 | "one-command release pipeline (release-plz + cargo-dist) green" | Done, final tag pending | Built in [PR #10](https://github.com/kalash33/crosswire/pull/10) and fixed in [PR #17](https://github.com/kalash33/crosswire/pull/17); rehearsed with the pre-release [`v0.1.0-rc.2`](https://github.com/kalash33/crosswire/releases/tag/v0.1.0-rc.2) built by [Release run #41211813487](https://github.com/kalash33/crosswire/actions/runs/41211813487) (success): macOS arm64, Linux x86_64 and aarch64 archives, installer script, checksums. Attestation checked on 2026-11-02: `gh attestation verify crosswire-server-aarch64-apple-darwin.tar.xz --repo kalash33/crosswire` exited 0. The release-plz half cannot open a release PR until the token exists (see Maintainer actions) |
 | 8 | "`docs/format.md` and the `Message` schema published" | Done | [`format.md`](format.md); schema freeze in [PR #9](https://github.com/kalash33/crosswire/pull/9); every gated API response carries `Crosswire-Schema-Version: 2` ([`CHANGELOG.md`](../CHANGELOG.md)) |
@@ -41,15 +41,15 @@ These cannot be done from a pull request.
 
 | Sub-plan | Status | Branch |
 |---|---|---|
-| U2, super app (project identity, `--open`, `app` subcommand) | in progress; PR to come | `feat/u2-super-app` |
-| R4, docs and launch (this checklist, README, API docs, ADR-0006, templates) | in progress | `feat/r4-docs-launch` |
+| U2, super app (viewer, repeater bench, history navigation, app identity, shortcuts) | merged ([PR #21](https://github.com/kalash33/crosswire/pull/21)) | `feat/u2-super-app` |
+| R4, docs and launch (this checklist, README, API docs, ADR-0006, templates) | this pull request | `feat/r4-docs-launch` |
 
 ## Launch items (spec §15)
 
 | Item | Owner | Status |
 |---|---|---|
 | 90-second video built from the §2.3 corpus | maintainer | pending (not part of R4) |
-| "Coming from Burp" guide | R4 Task 0 | in progress on `feat/r4-docs-launch` |
+| "Coming from Burp" guide | R4 | done ([`coming-from-burp.md`](coming-from-burp.md)) |
 | Public release (`v0.1.0` and its announcement) | maintainer | pending; follows the procedure below |
 
 The success signal for the release is at least 3 weekly-active early-access
@@ -76,8 +76,10 @@ Do these in order; stop at the first failure.
 
 1. Both pending maintainer actions that block the tag are done: `RELEASE_PLZ_TOKEN` is set and the backup owner is named in `MAINTAINERS.md`.
 2. Merge R4 (`feat/r4-docs-launch`) after U2 has merged. Confirm the `ci` run on the merge commit is green.
-3. release-plz opens the release pull request (`0.1.0-rc.2` to `0.1.0`). Per [GOVERNANCE.md](../GOVERNANCE.md), fold the curated `## [Unreleased]` entries of `CHANGELOG.md` into the generated `## [0.1.0]` block so none are stranded beneath it.
+3. release-plz opens the release pull request. It ignores pre-release tags, so it may propose a stale version: edit the version to `0.1.0` in the pull request ([GOVERNANCE.md](../GOVERNANCE.md), Releases). Per [GOVERNANCE.md](../GOVERNANCE.md), fold the curated `## [Unreleased]` entries of `CHANGELOG.md` into the generated `## [0.1.0]` block so none are stranded beneath it.
 4. Merge the release pull request. The merge bumps the version and creates the `v0.1.0` tag.
 5. The tag triggers `release.yml` (cargo-dist). Wait for it to finish; if the UI drift gate fails, delete the release, fix `main` and tag again.
 6. Verify the release: install from the GitHub release on macOS and run `crosswire --version`; for every archive run `gh attestation verify <file> --repo kalash33/crosswire` (see [SECURITY.md](../SECURITY.md)).
 7. Announce, per the launch table above.
+
+**Manual fallback if `RELEASE_PLZ_TOKEN` is not set.** Set `[workspace.package] version` to `0.1.0`, run `cargo update -w` so `Cargo.lock` matches, fold `## [Unreleased]` into a `## [0.1.0] - <date>` block in `CHANGELOG.md`, merge that change through a normal pull request with green CI, then on the merge commit run `git tag -a v0.1.0 -m "crosswire 0.1.0" && git push origin v0.1.0` and continue at step 5.

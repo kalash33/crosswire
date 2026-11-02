@@ -197,7 +197,7 @@ written permission to test.
 
 ## Project status and roadmap
 
-**Status: v0.1.0.** The wire format and project format are frozen for the 0.1
+**Status: 0.1.0, the first public release.** The wire format and project format are frozen for the 0.1
 series, the release pipeline is in place (attested binaries for three targets),
 and the section 13 security gates each map to a named test
 ([docs/security-gates.md](docs/security-gates.md)). Two performance targets (ingest
