@@ -1,10 +1,12 @@
 //! The `crosswire` binary.
 
 mod api_cmd;
+mod app_cmd;
 mod browser;
 mod ca_cmd;
 mod cli;
 mod error;
+mod open;
 mod paths;
 mod serve;
 mod token_cmd;
@@ -50,5 +52,6 @@ fn dispatch(command: Command) -> Result<(), CliError> {
         Command::Ca(cmd) => ca_cmd::run(cmd),
         Command::Token(cmd) => token_cmd::run(cmd),
         Command::Browser(args) => browser::run(args),
+        Command::App(args) => app_cmd::run(args),
     }
 }

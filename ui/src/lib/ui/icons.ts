@@ -33,7 +33,10 @@ export type IconName =
   | 'external'
   | 'check'
   | 'warning'
-  | 'info';
+  | 'info'
+  | 'wrap'
+  | 'pilcrow'
+  | 'chevron-up';
 
 const CHEVRON_DOWN = ['M4 6l4 4 4-4'];
 
@@ -76,4 +79,9 @@ export const ICONS: Readonly<Record<IconName, readonly string[]>> = {
   check: ['M3 8.5l3 3 7-7'],
   warning: ['M8 2 14.5 13.5h-13z', 'M8 6.5v3', 'M8 11.5h.01'],
   info: [circle(8, 8, 5.75), 'M8 7.25v3.75', 'M8 5h.01'],
+  // Soft wrap: a line that turns back on itself.
+  wrap: ['M2.5 4h11', 'M2.5 8h9a2 2 0 0 1 0 4H8.5', 'M10 10.5 8.5 12l1.5 1.5', 'M2.5 12h3'],
+  // Control characters: the pilcrow.
+  pilcrow: ['M9.5 2.75v10.5', 'M12 2.75v10.5', 'M13.5 2.75H7.25a3 3 0 0 0 0 6H9.5'],
+  'chevron-up': ['M4 10l4-4 4 4'],
 };

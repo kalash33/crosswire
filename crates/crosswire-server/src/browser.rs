@@ -20,7 +20,7 @@ use crate::error::CliError;
 const ACTOR: &str = "cli";
 
 /// The browser profile directory, under the project.
-const PROFILE_DIR: &str = "browser-profile";
+pub(crate) const PROFILE_DIR: &str = "browser-profile";
 
 /// Runs a `crosswire browser` command.
 ///
@@ -42,14 +42,8 @@ fn launch(args: BrowserLaunchArgs) -> Result<(), CliError> {
     let proxy = resolve_proxy(&args, &project)?;
 
     // Pick the browser first, so the manual fallback can still print the proxy.
-    let browser = match &args.browser_path {
-        Some(path) if path.exists() => path.clone(),
-        // An explicit path that does not exist falls back like "none found".
-        Some(_) => return fallback(&proxy),
-        None => match detect_browser() {
-            Some(path) => path,
-            None => return fallback(&proxy),
-        },
+    let Some(browser) = find_browser(args.browser_path.as_deref()) else {
+        return fallback(&proxy);
     };
 
     let profile = project.join(PROFILE_DIR);
@@ -60,13 +54,7 @@ fn launch(args: BrowserLaunchArgs) -> Result<(), CliError> {
     let ca_dir = resolve_ca_dir(args.ca_dir.clone())?;
     let spki = load_or_generate(&ca_dir)?.ca.spki_sha256_base64();
 
-    let mut cmd = Command::new(&browser);
-    cmd.arg(format!("--proxy-server={proxy}"))
-        .arg("--proxy-bypass-list=<-loopback>")
-        .arg(format!("--user-data-dir={}", profile.display()))
-        .arg(format!("--ignore-certificate-errors-spki-list={spki}"))
-        .arg("--no-first-run")
-        .arg("--no-default-browser-check");
+    let mut cmd = wired_command(&browser, &proxy, &profile, &spki);
     if args.headless {
         cmd.arg("--headless=new");
     }
@@ -90,6 +78,30 @@ fn launch(args: BrowserLaunchArgs) -> Result<(), CliError> {
             e,
         )),
     }
+}
+
+/// The browser to launch: `explicit` when it exists, nothing when it does
+/// not (an explicit path that is missing falls back like "none found"), else
+/// the first detected Chromium-based browser.
+pub(crate) fn find_browser(explicit: Option<&Path>) -> Option<PathBuf> {
+    match explicit {
+        Some(path) if path.exists() => Some(path.to_path_buf()),
+        Some(_) => None,
+        None => detect_browser(),
+    }
+}
+
+/// A Chromium command wired to `proxy`: its own `profile`, the CA pinned by
+/// `spki` (no system trust store is touched), loopback not bypassed.
+pub(crate) fn wired_command(browser: &Path, proxy: &str, profile: &Path, spki: &str) -> Command {
+    let mut cmd = Command::new(browser);
+    cmd.arg(format!("--proxy-server={proxy}"))
+        .arg("--proxy-bypass-list=<-loopback>")
+        .arg(format!("--user-data-dir={}", profile.display()))
+        .arg(format!("--ignore-certificate-errors-spki-list={spki}"))
+        .arg("--no-first-run")
+        .arg("--no-default-browser-check");
+    cmd
 }
 
 /// Resolves the proxy address: `--proxy`, else the project's recorded
@@ -176,7 +188,7 @@ fn fallback(proxy: &str) -> Result<(), CliError> {
 }
 
 /// Creates the profile directory with owner-only (0700) permissions.
-fn create_profile_dir(path: &Path) -> Result<(), CliError> {
+pub(crate) fn create_profile_dir(path: &Path) -> Result<(), CliError> {
     std::fs::create_dir_all(path)
         .map_err(|e| CliError::runtime(&format!("creating {}", path.display()), e))?;
     #[cfg(unix)]

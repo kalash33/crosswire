@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { mockApp, mockEvents, row } from './fixtures/app-mock';
+import { PROJECT, mockApp, mockEvents, row } from './fixtures/app-mock';
 
 // U1 D3 shell chrome: rail, top bar, shortcuts sheet, theme, live-socket dot.
 
@@ -135,4 +135,37 @@ test('global chords do not fire while the shortcuts sheet is open', async ({ pag
   await expect(page).toHaveURL(/\/$/);
   expect(puts).toBe(0);
   await expect(page.getByTestId('status-intercept')).toContainText('Intercept OFF');
+});
+
+test('the top bar names the project and the window title follows the view', async ({ page }) => {
+  await mockEvents(page);
+  await page.goto('/');
+  const chip = page.getByTestId('topbar-project');
+  await expect(chip).toHaveText(PROJECT.name);
+  await expect(chip).toHaveAttribute('title', PROJECT.path);
+  await expect(page).toHaveTitle(`${PROJECT.name} · History · Crosswire`);
+  await page.getByTestId('nav-repeater').click();
+  await expect(page).toHaveTitle(`${PROJECT.name} · Repeater · Crosswire`);
+  await page.getByTestId('nav-settings').click();
+  await expect(page).toHaveTitle(`${PROJECT.name} · Settings · Crosswire`);
+});
+
+test('without a project the chip is absent and the title leads with Crosswire', async ({ page }) => {
+  await mockApp(page, { health: { status: 'ok', schema_version: 3, format_version: 7 } });
+  await mockEvents(page);
+  await page.goto('/scope');
+  await expect(page.getByTestId('scope-view')).toBeVisible();
+  await expect(page.getByTestId('topbar-project')).toHaveCount(0);
+  await expect(page).toHaveTitle('Crosswire · Scope');
+});
+
+test('the bundle serves the manifest and the icons it links', async ({ page, request }) => {
+  await page.goto('/');
+  const manifest = await request.get('/manifest.webmanifest');
+  expect(manifest.status()).toBe(200);
+  const m = (await manifest.json()) as { name: string; icons: { src: string }[] };
+  expect(m.name).toBe('Crosswire');
+  for (const icon of m.icons) expect((await request.get(icon.src)).status(), icon.src).toBe(200);
+  await expect(page.locator('link[rel="manifest"]')).toHaveAttribute('href', '/manifest.webmanifest');
+  await expect(page.locator('link[rel="icon"]')).toHaveAttribute('href', '/icons/icon.svg');
 });

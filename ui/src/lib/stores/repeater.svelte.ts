@@ -6,6 +6,8 @@
 //  - POST /repeater/send takes `raw` as STANDARD BASE64 of the request bytes.
 //  - A tab draft's `json` is opaque to the server (<= 1 MiB). We store `raw`
 //    there as a Latin-1 string (encoding.ts, 1:1 byte<->char), never a JS array.
+//    The draft also carries the tab's rename (`title`) and its send history
+//    (`history`, newest first); see SendRecord and fitDraft() for the bounds.
 import { apiGetBytes, apiGet } from '../api/client';
 import { ApiError } from '../api/errors';
 import { toasts } from '../ui/toasts.svelte';
@@ -19,6 +21,9 @@ import {
 } from '../api/repeater';
 import type { SendBody } from '../api/types';
 import { bytesToLatin1, latin1ToBytes } from '../editor/encoding';
+import { sha256Hex } from '../sha256';
+import { isoNow, timeShort } from '../format';
+import { DIFF_MAX_BYTES } from '../diff/lines';
 
 export type Follow = 'off' | 'in-scope' | 'always';
 export type Mode = 'assisted' | 'raw';
@@ -33,6 +38,58 @@ export interface TabConn {
   follow: Follow;
 }
 
+/**
+ * One send of a tab, as kept in its draft. Every string here except `at` came
+ * from the user or the wire: render as text only.
+ */
+export interface SendRecord {
+  /** ISO time the send started. */
+  at: string;
+  /** Response status, filled in once the response has been read. */
+  status?: number;
+  ttfb_ms?: number;
+  total_ms?: number;
+  /** Response body size in bytes, filled in once read. */
+  size?: number;
+  /** The recorded exchange; absent for a failed send. */
+  exchange_id?: string;
+  scope_state?: string;
+  /** Standard base64 of the sent bytes; absent when `truncated`. */
+  request?: string;
+  /** Lowercase hex SHA-256 of the sent bytes (always present). */
+  request_sha256: string;
+  request_len: number;
+  /** Method and request target from the request line (bounded), for labels. */
+  target?: string;
+  /** The bytes were not kept (over HISTORY_REQUEST_MAX, or dropped to fit the draft). */
+  truncated?: boolean;
+  conn: TabConn;
+  mode: Mode;
+  /** Why the send failed. */
+  error?: string;
+}
+
+/**
+ * A record's identity (the history list key). Sends of one tab never overlap,
+ * so this is unique; fromJson drops stored duplicates.
+ */
+export function historyKey(r: SendRecord): string {
+  return `${r.at}|${r.request_sha256}|${r.exchange_id ?? ''}`;
+}
+
+/** Records kept per tab. */
+export const HISTORY_MAX = 50;
+/** Largest request whose bytes a record keeps. */
+export const HISTORY_REQUEST_MAX = 256 * 1024;
+/**
+ * The draft size we aim for, measured as UTF-8 JSON. The server refuses
+ * drafts over 1 MiB; the margin covers small escaping differences.
+ */
+export const DRAFT_BUDGET = 960 * 1024;
+
+/** The request a new, unseeded tab starts with. */
+export const NEW_TAB_TEMPLATE = 'GET / HTTP/1.1\r\nHost: \r\n\r\n';
+
 /** The UI model of one repeater tab. `outcome`/`error`/`sending` are not persisted. */
 export interface RepeaterTab {
   id: string;
@@ -46,8 +103,18 @@ export interface RepeaterTab {
   /** Last draft-autosave failure; independent of `error`. */
   saveError?: string;
   sending?: boolean;
-  /** Explicit user rename (in-memory only, never persisted). Wins over the derived title. */
+  /** Explicit user rename, persisted in the draft. Wins over the derived title. */
   title?: string;
+  /** Sends of this tab, newest first (persisted). */
+  history?: SendRecord[];
+  /** The editor holds bytes that have not been sent since the last change. */
+  dirty?: boolean;
+  /** Bumped when the store replaces `raw` (restore): the editor re-seeds. */
+  rev?: number;
+  /** A fresh template tab: the editor puts the caret on the Host header once. */
+  focusHost?: boolean;
+  /** A one-line note about what the panes show (after a restore). */
+  notice?: string;
 }
 
 export interface TabSeed {
@@ -66,6 +133,8 @@ export interface RepeaterApi {
   getExchange(id: string): Promise<unknown>;
   /** `GET /exchanges/{id}/body/req` as exact bytes. */
   getBody(id: string): Promise<Uint8Array>;
+  /** `GET /exchanges/{id}/body/resp` as exact bytes. */
+  getRespBody(id: string): Promise<Uint8Array>;
 }
 
 const defaultApi: RepeaterApi = {
@@ -76,6 +145,8 @@ const defaultApi: RepeaterApi = {
   getExchange: (id) => apiGet<unknown>(`/api/v1/exchanges/${encodeURIComponent(id)}`),
   getBody: async (id) =>
     (await apiGetBytes(`/api/v1/exchanges/${encodeURIComponent(id)}/body/req`)).bytes,
+  getRespBody: async (id) =>
+    (await apiGetBytes(`/api/v1/exchanges/${encodeURIComponent(id)}/body/resp`)).bytes,
 };
 
 // ---- ULID (Crockford base32: 48-bit ms time + 80 random bits) ----
@@ -111,21 +182,72 @@ const METHOD_RE = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
  */
 export function deriveTitle(raw: Uint8Array, n: number): string {
   const head = bytesToLatin1(raw.subarray(0, TITLE_SCAN_BYTES));
-  const lines = head.split(/\r?\n/);
-  const method = (lines[0] ?? '').trim().split(/\s+/)[0] ?? '';
+  const method = (head.split(/\r?\n/, 1)[0] ?? '').trim().split(/\s+/)[0] ?? '';
   if (!method || !METHOD_RE.test(method)) return `Tab ${n}`;
-  let host = '';
+  const host = hostHeader(raw) ?? '';
+  const title = host ? `${method} ${host}` : method;
+  return title.length > TITLE_MAX ? `${title.slice(0, TITLE_MAX - 1)}…` : title;
+}
+
+/**
+ * The trimmed value of the first Host header in the request head (read as
+ * Latin-1, first TITLE_SCAN_BYTES only); null when the head has none.
+ */
+export function hostHeader(raw: Uint8Array): string | null {
+  const lines = bytesToLatin1(raw.subarray(0, TITLE_SCAN_BYTES)).split(/\r?\n/);
   for (let i = 1; i < lines.length; i++) {
     const line = lines[i];
     if (line === '' || line === '\r') break; // end of head
     const colon = line.indexOf(':');
-    if (colon > 0 && line.slice(0, colon).trim().toLowerCase() === 'host') {
-      host = line.slice(colon + 1).trim();
-      break;
-    }
+    if (colon > 0 && line.slice(0, colon).trim().toLowerCase() === 'host') return line.slice(colon + 1).trim();
   }
-  const title = host ? `${method} ${host}` : method;
-  return title.length > TITLE_MAX ? `${title.slice(0, TITLE_MAX - 1)}…` : title;
+  return null;
+}
+
+const HOST_RE = /^(?:\[([^\]\s]+)\]|([^:\s[\]]+))(?::(\d{1,5}))?$/;
+
+/**
+ * The connect target named by the Host header: `host[:port]` or a bracketed
+ * IPv6 address (returned without brackets). Null for a missing, blank or
+ * malformed value, or a port outside 1..65535.
+ */
+export function targetFromHost(raw: Uint8Array): { host: string; port?: number } | null {
+  const v = hostHeader(raw);
+  const m = v ? HOST_RE.exec(v) : null;
+  if (!m) return null;
+  const host = m[1] ?? m[2];
+  if (m[3] === undefined) return { host };
+  const port = Number(m[3]);
+  return port >= 1 && port <= 65535 ? { host, port } : null;
+}
+
+/** `METHOD target` from the request line, bounded; undefined when there is none. */
+function requestTarget(raw: Uint8Array): string | undefined {
+  const line = bytesToLatin1(raw.subarray(0, 512)).split(/\r?\n/, 1)[0] ?? '';
+  const [method, target] = line.trim().split(/\s+/);
+  if (!method || !METHOD_RE.test(method)) return undefined;
+  const t = target ? `${method} ${target}` : method;
+  return t.length > TITLE_MAX ? `${t.slice(0, TITLE_MAX - 1)}…` : t;
+}
+
+/**
+ * The offset just after the Host header's value in the request head, where a
+ * fresh tab puts the caret; null when the head has no Host header.
+ */
+export function hostCaret(raw: Uint8Array): number | null {
+  const head = bytesToLatin1(raw.subarray(0, TITLE_SCAN_BYTES));
+  let pos = head.indexOf('\n') + 1;
+  if (pos <= 0) return null;
+  while (pos < head.length) {
+    let end = head.indexOf('\n', pos);
+    if (end < 0) end = head.length;
+    const line = head.slice(pos, end).replace(/\r$/, '');
+    if (line === '') return null; // end of head
+    const colon = line.indexOf(':');
+    if (colon > 0 && line.slice(0, colon).trim().toLowerCase() === 'host') return pos + line.length;
+    pos = end + 1;
+  }
+  return null;
 }
 
 // ---- response pane ----
@@ -146,15 +268,21 @@ const FOLLOWS: readonly Follow[] = ['off', 'in-scope', 'always'];
 
 /** Serialize a tab to the draft `json`. `raw` is a Latin-1 string (byte-exact). */
 export function toJson(tab: RepeaterTab): unknown {
-  return { conn: { ...tab.conn }, mode: tab.mode, raw: bytesToLatin1(tab.raw) };
+  const json: Record<string, unknown> = { conn: { ...tab.conn }, mode: tab.mode, raw: bytesToLatin1(tab.raw) };
+  if (tab.title) json.title = tab.title;
+  json.history = (tab.history ?? []).map((r) => ({ ...r, conn: { ...r.conn } }));
+  return json;
 }
 
-/** Parse a draft `json` back into a tab; null if it is not a draft we wrote. */
-export function fromJson(id: string, json: unknown): RepeaterTab | null {
-  if (typeof json !== 'object' || json === null) return null;
-  const j = json as { conn?: Partial<TabConn>; mode?: unknown; raw?: unknown };
-  if (typeof j.raw !== 'string') return null;
-  const c = j.conn ?? {};
+const TITLE_LEN = 120;
+
+function cleanTitle(v: unknown): string | undefined {
+  if (typeof v !== 'string') return undefined;
+  const t = v.trim();
+  return t === '' ? undefined : t.slice(0, TITLE_LEN);
+}
+
+function connFrom(c: Partial<TabConn>): TabConn {
   const conn: TabConn = {
     host: typeof c.host === 'string' ? c.host : '',
     port: typeof c.port === 'number' ? c.port : 80,
@@ -164,7 +292,119 @@ export function fromJson(id: string, json: unknown): RepeaterTab | null {
   };
   if (typeof c.sni === 'string') conn.sni = c.sni;
   if (typeof c.verify === 'string') conn.verify = c.verify;
-  return { id, conn, mode: j.mode === 'assisted' ? 'assisted' : 'raw', raw: latin1ToBytes(j.raw) };
+  return conn;
+}
+
+const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
+const isStr = (v: unknown): v is string => typeof v === 'string';
+
+/** One stored history record, field by field; null if it is not one we wrote. */
+function recordFrom(v: unknown): SendRecord | null {
+  if (typeof v !== 'object' || v === null) return null;
+  const j = v as Record<string, unknown>;
+  if (!isStr(j.at) || !isStr(j.request_sha256) || !isNum(j.request_len)) return null;
+  const rec: SendRecord = {
+    at: j.at,
+    request_sha256: j.request_sha256,
+    request_len: j.request_len,
+    conn: connFrom(typeof j.conn === 'object' && j.conn !== null ? (j.conn as Partial<TabConn>) : {}),
+    mode: j.mode === 'assisted' ? 'assisted' : 'raw',
+  };
+  if (isNum(j.status)) rec.status = j.status;
+  if (isNum(j.ttfb_ms)) rec.ttfb_ms = j.ttfb_ms;
+  if (isNum(j.total_ms)) rec.total_ms = j.total_ms;
+  if (isNum(j.size)) rec.size = j.size;
+  if (isStr(j.exchange_id)) rec.exchange_id = j.exchange_id;
+  if (isStr(j.scope_state)) rec.scope_state = j.scope_state;
+  if (isStr(j.target)) rec.target = j.target.slice(0, TITLE_MAX);
+  if (isStr(j.error)) rec.error = j.error;
+  if (isStr(j.request) && j.truncated !== true) rec.request = j.request;
+  else rec.truncated = true;
+  return rec;
+}
+
+/** Parse a draft `json` back into a tab; null if it is not a draft we wrote. */
+export function fromJson(id: string, json: unknown): RepeaterTab | null {
+  if (typeof json !== 'object' || json === null) return null;
+  const j = json as { conn?: Partial<TabConn>; mode?: unknown; raw?: unknown; title?: unknown; history?: unknown };
+  if (typeof j.raw !== 'string') return null;
+  const history: SendRecord[] = [];
+  const seen: Record<string, true> = Object.create(null);
+  if (Array.isArray(j.history)) {
+    for (const v of j.history) {
+      if (history.length >= HISTORY_MAX) break;
+      const rec = recordFrom(v);
+      if (!rec || seen[historyKey(rec)]) continue;
+      seen[historyKey(rec)] = true;
+      history.push(rec);
+    }
+  }
+  const tab: RepeaterTab = {
+    id,
+    conn: connFrom(j.conn ?? {}),
+    mode: j.mode === 'assisted' ? 'assisted' : 'raw',
+    raw: latin1ToBytes(j.raw),
+    history,
+  };
+  const title = cleanTitle(j.title);
+  if (title) tab.title = title;
+  return tab;
+}
+
+const utf8Len = (s: string) => new TextEncoder().encode(s).length;
+
+/**
+ * Keep the draft JSON within DRAFT_BUDGET: drop request bytes from the oldest
+ * records first (marking them truncated, the digest stays), then, if the draft
+ * is still too big, the oldest records themselves. Mutates `tab.history`.
+ */
+export function fitDraft(tab: RepeaterTab): void {
+  const history = tab.history;
+  if (!history || history.length === 0) return;
+  const base = utf8Len(JSON.stringify(toJson({ ...tab, history: [] })));
+  const sizes = history.map((r) => utf8Len(JSON.stringify(r)) + 1);
+  let total = base + sizes.reduce((a, b) => a + b, 0);
+  for (let i = history.length - 1; i >= 0 && total > DRAFT_BUDGET; i--) {
+    const r = history[i];
+    if (r.request === undefined) continue;
+    delete r.request;
+    r.truncated = true;
+    const size = utf8Len(JSON.stringify(r)) + 1;
+    total += size - sizes[i];
+    sizes[i] = size;
+  }
+  while (history.length > 0 && total > DRAFT_BUDGET) {
+    history.pop();
+    total -= sizes.pop() ?? 0;
+  }
+}
+
+interface HeadLike {
+  response?: { head?: { type?: string; bytes?: string; map?: [string, string][] } } | null;
+}
+
+/** An exchange's response head as Latin-1 text ('' when there is none). */
+function responseHeadText(ex: unknown): string {
+  const h = (ex as HeadLike | null)?.response?.head;
+  if (!h) return '';
+  try {
+    if (h.type === 'http1-raw' && typeof h.bytes === 'string') return atob(h.bytes);
+    if (h.type === 'normalized') {
+      const lines = (h.map ?? []).map(([name, v]) => `${name}: ${atob(v)}`);
+      return lines.length > 0 ? `${lines.join('\r\n')}\r\n\r\n` : '';
+    }
+  } catch {
+    return '';
+  }
+  return '';
+}
+
+/**
+ * A response's Raw text for comparing: the head (raw bytes, or `name: value`
+ * lines for a normalized head) followed by the body, all read as Latin-1.
+ */
+export function responseRawText(ex: unknown, body: Uint8Array): string {
+  return responseHeadText(ex) + bytesToLatin1(body);
 }
 
 function b64(bytes: Uint8Array): string {
@@ -213,6 +453,7 @@ export function createRepeater(opts: RepeaterOptions = {}) {
       const tab = find(id);
       if (!tab) return;
       try {
+        fitDraft(tab);
         await api.putTab(id, toJson(tab));
         tab.saveError = undefined;
       } catch (e) {
@@ -237,7 +478,12 @@ export function createRepeater(opts: RepeaterOptions = {}) {
     await Promise.all(ids.map((id) => save(id)));
   }
 
-  function newTab(seed: TabSeed = {}): string {
+  /**
+   * Open a tab: seeded (send to repeater) or, without `raw`, the GET / template
+   * with the caret put on its Host header (unless `focus` is false, as for the
+   * tab the view opens by itself on mount).
+   */
+  function newTab(seed: TabSeed = {}, opts: { focus?: boolean } = {}): string {
     const tab: RepeaterTab = {
       id: newTabId(),
       conn: {
@@ -249,8 +495,10 @@ export function createRepeater(opts: RepeaterOptions = {}) {
         ...seed.conn,
       },
       mode: seed.mode ?? 'assisted',
-      raw: seed.raw ?? new Uint8Array(),
+      raw: seed.raw ?? latin1ToBytes(NEW_TAB_TEMPLATE),
+      history: [],
     };
+    if (!seed.raw && opts.focus !== false) tab.focusHost = true;
     tabs.push(tab);
     activeTabId = tab.id;
     schedule(tab.id);
@@ -279,11 +527,27 @@ export function createRepeater(opts: RepeaterOptions = {}) {
     }
   }
 
+  function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
+    if (a === b) return true;
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+    return true;
+  }
+
   function setRaw(id: string, raw: Uint8Array): void {
     const t = find(id);
     if (!t) return;
+    // The editor reports its document once at mount: that is not an edit.
+    if (sameBytes(t.raw, raw)) return;
     t.raw = raw;
+    t.dirty = true;
     schedule(id);
+  }
+
+  /** Called once by the editor after it has put the caret on a fresh tab's Host header. */
+  function hostFocused(id: string): void {
+    const t = find(id);
+    if (t) t.focusHost = false;
   }
 
   /** The tab-strip title: an explicit rename, else derived from the draft. */
@@ -293,12 +557,12 @@ export function createRepeater(opts: RepeaterOptions = {}) {
     return deriveTitle(tab.raw, (i < 0 ? tabs.length : i) + 1);
   }
 
-  /** Rename a tab locally (not persisted). A blank name reverts to the derived title. */
+  /** Rename a tab (saved in its draft). A blank name reverts to the derived title. */
   function renameTab(id: string, title: string): void {
     const t = find(id);
     if (!t) return;
-    const v = title.trim();
-    t.title = v === '' ? undefined : v.slice(0, 120);
+    t.title = cleanTitle(title);
+    schedule(id);
   }
 
   function setConn(id: string, patch: Partial<TabConn>): void {
@@ -318,6 +582,20 @@ export function createRepeater(opts: RepeaterOptions = {}) {
   async function send(id: string, o: { allowOutOfScope?: boolean } = {}): Promise<void> {
     const t = find(id);
     if (!t || t.sending) return;
+    // No target yet (a fresh template tab): take it from the Host header, and
+    // show it in the Target card. A target the user set is never replaced; a
+    // blank or malformed Host leaves it empty for the server to refuse.
+    if (t.conn.host.trim() === '') {
+      const tgt = targetFromHost(t.raw);
+      if (tgt) {
+        const patch: Partial<TabConn> = { host: tgt.host };
+        if (tgt.port !== undefined) {
+          patch.port = tgt.port;
+          patch.tls = tgt.port === 443 ? true : tgt.port === 80 ? false : t.conn.tls;
+        }
+        setConn(id, patch);
+      }
+    }
     const body: SendBody = {
       host: t.conn.host,
       port: t.conn.port,
@@ -330,14 +608,34 @@ export function createRepeater(opts: RepeaterOptions = {}) {
     };
     if (t.conn.sni) body.sni = t.conn.sni;
     if (t.conn.verify) body.verify = t.conn.verify;
+    const sent = t.raw;
+    const base: SendRecord = {
+      at: isoNow(),
+      request_sha256: sha256Hex(sent),
+      request_len: sent.length,
+      conn: { ...t.conn },
+      target: requestTarget(sent),
+      mode: t.mode,
+    };
+    if (sent.length <= HISTORY_REQUEST_MAX) base.request = body.raw;
+    else base.truncated = true;
     t.sending = true;
     t.error = undefined;
+    let rec: SendRecord;
     try {
       const outcome = await api.sendRequest(body);
+      rec = {
+        ...base,
+        exchange_id: outcome.exchange_id,
+        scope_state: outcome.scope_state,
+        ttfb_ms: outcome.ttfb_ms,
+        total_ms: outcome.total_ms,
+      };
       const cur = find(id);
       if (cur) cur.outcome = outcome;
     } catch (e) {
       // 403 out-of-scope / 422 unparseable / 502 upstream: show it, keep the draft.
+      rec = { ...base, error: messageOf(e) };
       const cur = find(id);
       if (cur) cur.error = messageOf(e);
       toasts.push({ kind: 'error', text: `Send failed: ${messageOf(e)}` });
@@ -345,6 +643,142 @@ export function createRepeater(opts: RepeaterOptions = {}) {
       const cur = find(id);
       if (cur) cur.sending = false;
     }
+    const cur = find(id);
+    if (!cur) return;
+    const history = [rec, ...(cur.history ?? [])].slice(0, HISTORY_MAX);
+    cur.history = history;
+    cur.notice = undefined;
+    // Edits made while the send was in flight stay unsent.
+    if (cur.raw === sent) cur.dirty = false;
+    fitDraft(cur);
+    schedule(id);
+  }
+
+  /** Fill a record's status and size once its response has been read (the response pane calls this). */
+  function noteResponse(id: string, exchangeId: string, r: { status?: number | null; size?: number | null }): void {
+    const rec = find(id)?.history?.find((x) => x.exchange_id === exchangeId);
+    if (!rec) return;
+    let changed = false;
+    if (typeof r.status === 'number' && rec.status !== r.status) {
+      rec.status = r.status;
+      changed = true;
+    }
+    if (typeof r.size === 'number' && rec.size !== r.size) {
+      rec.size = r.size;
+      changed = true;
+    }
+    if (changed) schedule(id);
+  }
+
+  /**
+   * Put a recorded send back: its request bytes, target and mode go into the
+   * editor (marked dirty; nothing is sent) and its response is shown again,
+   * fetched by exchange id. A record without its bytes restores the response
+   * only and says so. A failed send shows its error.
+   */
+  function restore(id: string, index: number): void {
+    const t = find(id);
+    const rec = t?.history?.[index];
+    if (!t || !rec) return;
+    const stamp = timeShort(rec.at) || 'an unknown time';
+    if (rec.request !== undefined && !rec.truncated) {
+      let bytes: Uint8Array;
+      try {
+        bytes = unb64(rec.request);
+      } catch {
+        t.notice = `The request of the send at ${stamp} could not be read.`;
+        return;
+      }
+      t.raw = bytes;
+      t.conn = { ...rec.conn };
+      t.mode = rec.mode;
+      t.dirty = true;
+      t.rev = (t.rev ?? 0) + 1;
+      t.notice = `Restored the request sent at ${stamp}. Not sent yet.`;
+      schedule(id);
+    } else {
+      t.notice = `The request sent at ${stamp} was too large to keep (${rec.request_len} bytes, SHA-256 ${rec.request_sha256.slice(0, 12)}…). Showing its response only; the editor is unchanged.`;
+    }
+    if (rec.exchange_id) {
+      t.outcome = {
+        exchange_id: rec.exchange_id,
+        scope_state: rec.scope_state ?? '',
+        changes: [],
+        skipped: [],
+        cert_override: false,
+        ttfb_ms: rec.ttfb_ms ?? 0,
+        total_ms: rec.total_ms ?? 0,
+        redirects: [],
+      };
+      t.error = undefined;
+    } else {
+      t.outcome = undefined;
+      t.error = rec.error ?? 'send failed';
+    }
+  }
+
+  function clearHistory(id: string): void {
+    const t = find(id);
+    if (!t) return;
+    t.history = [];
+    t.notice = undefined;
+    schedule(id);
+  }
+
+  /**
+   * The two responses "Compare with previous" diffs: the one shown now (or
+   * the newest with a response) and the next older send that has a response.
+   */
+  function comparePair(tab: RepeaterTab): { newer: SendRecord; older: SendRecord } | null {
+    const h = tab.history ?? [];
+    const shown = tab.outcome ? h.findIndex((r) => r.exchange_id === tab.outcome?.exchange_id) : -1;
+    const start = shown >= 0 ? shown : h.findIndex((r) => r.exchange_id);
+    if (start < 0) return null;
+    const prev = h.findIndex((r, i) => i > start && r.exchange_id);
+    return prev < 0 ? null : { newer: h[start], older: h[prev] };
+  }
+
+  /** A response's head and body by exchange id. A missing body (404) is empty. */
+  async function responseParts(exchangeId: string): Promise<{ ex: unknown; body: Uint8Array }> {
+    const [ex, body] = await Promise.all([
+      api.getExchange(exchangeId),
+      api.getRespBody(exchangeId).catch((e: unknown) => {
+        if (e instanceof ApiError && e.status === 404) return new Uint8Array();
+        throw e;
+      }),
+    ]);
+    return { ex, body };
+  }
+
+  /**
+   * Load both sides of comparePair as Raw text; null when there is nothing to
+   * compare. A side over DIFF_MAX_BYTES is not decoded: `tooLarge` is set and
+   * both texts are empty.
+   */
+  async function compareWithPrevious(id: string): Promise<{
+    newer: SendRecord;
+    older: SendRecord;
+    newerText: string;
+    olderText: string;
+    tooLarge: boolean;
+  } | null> {
+    const t = find(id);
+    const pair = t ? comparePair(t) : null;
+    if (!pair) return null;
+    const [n, o] = await Promise.all([
+      responseParts(pair.newer.exchange_id!),
+      responseParts(pair.older.exchange_id!),
+    ]);
+    const size = (p: { ex: unknown; body: Uint8Array }) => responseRawText(p.ex, new Uint8Array()).length + p.body.length;
+    if (size(n) > DIFF_MAX_BYTES || size(o) > DIFF_MAX_BYTES) {
+      return { ...pair, newerText: '', olderText: '', tooLarge: true };
+    }
+    return {
+      ...pair,
+      newerText: responseRawText(n.ex, n.body),
+      olderText: responseRawText(o.ex, o.body),
+      tooLarge: false,
+    };
   }
 
   async function loadTabs(): Promise<void> {
@@ -435,6 +869,12 @@ export function createRepeater(opts: RepeaterOptions = {}) {
     titleFor,
     renameTab,
     send,
+    restore,
+    clearHistory,
+    noteResponse,
+    hostFocused,
+    comparePair,
+    compareWithPrevious,
     loadTabs,
     flushDrafts,
     sendFromExchange,

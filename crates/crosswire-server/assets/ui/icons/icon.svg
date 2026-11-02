@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- Crosswire mark: two wires crossing, one passing over the other (a
+       surface-coloured halo cuts the lower wire). Full-bleed so it also works
+       as a maskable icon; the strokes stay inside the 80% safe zone. Colours
+       are the dark theme tokens of ui/src/lib/theme.css: --bg #16181d,
+       --accent #4fb3bf. -->
+  <rect width="512" height="512" fill="#16181d"/>
+  <g fill="none" stroke-linecap="round">
+    <path d="M150 362 L362 150" stroke="#4fb3bf" stroke-width="44"/>
+    <path d="M206 206 L306 306" stroke="#16181d" stroke-width="92"/>
+    <path d="M150 150 L362 362" stroke="#4fb3bf" stroke-width="44"/>
+  </g>
+</svg>

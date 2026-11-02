@@ -2,13 +2,15 @@
   // /settings (U1 D6): appearance, shortcut reference, connection details and
   // build info. Server-reported values are text only; the only links are
   // literal constants.
-  import { onMount } from 'svelte';
+  import { onDestroy, onMount } from 'svelte';
   import { appearance } from '../lib/stores/appearance.svelte';
   import { connection } from '../lib/stores/connection.svelte';
-  import { keymap, formatChord } from '../lib/keymap';
+  import { keymap, formatChord, recordChord, type Action } from '../lib/keymap';
   import { caPageUrl } from '../lib/components/start';
   import Segmented from '../lib/ui/Segmented.svelte';
   import Kbd from '../lib/ui/Kbd.svelte';
+  import Button from '../lib/ui/Button.svelte';
+  import Badge from '../lib/ui/Badge.svelte';
   import CopyValue from '../lib/components/CopyValue.svelte';
   import type { Theme } from '../lib/theme';
 
@@ -16,7 +18,41 @@
     { value: 'dark' as Theme, label: 'Dark', icon: 'moon' as const, testid: 'theme-dark' },
     { value: 'light' as Theme, label: 'Light', icon: 'sun' as const, testid: 'theme-light' },
   ];
-  const bindings = keymap.bindings();
+  // The keymap is plain TS; a version counter makes the table re-read it.
+  let version = $state(0);
+  const bindings = $derived.by(() => {
+    void version;
+    return keymap.bindings();
+  });
+  const anyOverridden = $derived(bindings.some((b) => keymap.isOverridden(b.action)));
+  const unsubscribe = keymap.subscribe(() => version++);
+  onDestroy(unsubscribe);
+
+  let recording = $state<Action | null>(null);
+  let refusal = $state<{ action: Action; reason: string } | null>(null);
+
+  function startRecording(action: Action): void {
+    recording = action;
+    refusal = null;
+  }
+
+  function onRecordKey(e: KeyboardEvent, action: Action): void {
+    const r = recordChord(e, action);
+    if (r.kind === 'ignore') return;
+    // Own the keystroke so it neither types nor triggers a browser command.
+    e.preventDefault();
+    e.stopPropagation();
+    if (r.kind === 'cancel') {
+      recording = null;
+      refusal = null;
+    } else if (r.kind === 'refused') {
+      refusal = { action, reason: r.reason };
+    } else {
+      keymap.remap(action, r.chord);
+      recording = null;
+      refusal = null;
+    }
+  }
 
   onMount(() => {
     void connection.load();
@@ -47,12 +83,61 @@
         <tbody>
           {#each bindings as b (b.action)}
             <tr>
-              <td>{b.label}</td>
-              <td class="chord"><Kbd keys={formatChord(b.chord)} /></td>
+              <td>
+                {b.label}
+                {#if keymap.isOverridden(b.action)}
+                  <Badge value="custom" />
+                {/if}
+                {#if recording === b.action}
+                  <div class="hint" role="status">Press the new shortcut… Esc cancels</div>
+                {/if}
+                {#if refusal && refusal.action === b.action}
+                  <div class="hint refusal" role="alert" data-testid="shortcut-error-{b.action}">{refusal.reason}</div>
+                {/if}
+              </td>
+              <td class="chord">
+                <Kbd keys={formatChord(b.chord)} />
+                <span class="actions">
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    data-testid="shortcut-change-{b.action}"
+                    aria-label="Change shortcut for {b.label}"
+                    onclick={() => startRecording(b.action)}
+                    onkeydown={(e: KeyboardEvent) => {
+                      if (recording === b.action) onRecordKey(e, b.action);
+                    }}
+                    onblur={() => {
+                      if (recording === b.action) {
+                        recording = null;
+                        refusal = null;
+                      }
+                    }}
+                  >
+                    {recording === b.action ? 'Recording…' : 'Change'}
+                  </Button>
+                  {#if keymap.isOverridden(b.action)}
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      data-testid="shortcut-reset-{b.action}"
+                      aria-label="Reset shortcut for {b.label}"
+                      onclick={() => keymap.reset(b.action)}
+                    >
+                      Reset
+                    </Button>
+                  {/if}
+                </span>
+              </td>
             </tr>
           {/each}
         </tbody>
       </table>
+      {#if anyOverridden}
+        <p class="reset-all">
+          <Button size="sm" data-testid="shortcuts-reset-all" onclick={() => keymap.reset()}>Reset all</Button>
+        </p>
+      {/if}
     </section>
   </div>
 
@@ -193,7 +278,21 @@
     border-bottom: none;
   }
   .chord {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: var(--s-2);
     text-align: right;
+  }
+  .actions {
+    display: inline-flex;
+    gap: var(--s-1);
+  }
+  .refusal {
+    color: var(--danger);
+  }
+  .reset-all {
+    margin: var(--s-3) 0 0;
   }
   .links {
     display: flex;

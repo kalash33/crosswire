@@ -17,6 +17,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bulk tag and add-to-scope, a foldable filter bar and a split exchange detail
   with Headers, Raw and Hex tabs; Repeater, Intercept and Scope move onto the
   same component set; a `?` sheet lists every shortcut.
+- **Web UI super-app pass** (U2):
+  - *Message viewer* (History detail and Repeater response): Pretty, Raw,
+    Headers and Hex tabs; Pretty formats JSON (by content type or by parse)
+    and shows form and query parameters as tables; Raw colours HTTP heads,
+    JSON and markup through CSS classes only, with line wrap, visible control
+    characters and find-in-message. Large bodies are bounded (Pretty refuses
+    over 2 MiB, Raw shows the first 1 MiB with "Show all").
+  - *Repeater bench*: a new tab opens on a `GET /` template with the caret on
+    the Host header, and a target typed only there is used on send; each tab
+    keeps its last 50 sends (status, size, timings) in its draft, a send can be
+    restored into the editor without being sent, "Compare with previous" diffs
+    two responses line by line (capped at 2 MiB a side), and tabs can be
+    renamed. A failed send shows one error toast.
+  - *History navigation*: a search box over the loaded rows (`/` focuses it,
+    Esc clears it), `j`/`k`/arrows, Enter and Space on rows with a single tab
+    stop, a column picker that remembers its choice, `MMM D` times for older
+    rows and a 45/55 first-run split.
+  - *Remappable shortcuts*: Settings records a new chord per action, refuses
+    browser-reserved chords, bare keys and conflicts, persists the overrides
+    in the browser and resets one or all; the hints shown in Settings and the
+    shortcuts sheet follow the keymap. Ctrl+F inside a message viewer is the
+    viewer's own find and never reaches a remappable action.
+  - *Identity*: the top bar shows the project name (path on hover) and the
+    window title reads `project · view · Crosswire`; a favicon, an
+    apple-touch icon and a web app manifest (`display: standalone`, drawn
+    in-repo) let Chrome and Edge install Crosswire as its own window.
 - **Web UI beta-1**: tags and a notes editor on each exchange, and a decoder
   pane for the selected message.
 - **Preview zero-egress layer**: the previewed content cannot make a network
@@ -28,6 +54,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **crosswire-api**: `GET /api/v1/health` reports the proxy's bound address as
   an optional `proxy_addr`, so clients show the right address when
   `serve --proxy-bind` used a non-default one.
+- **crosswire-server**: `serve --open[=browser|app]` opens the one-time
+  bootstrap URL once the API listens, in the default browser or in a
+  Chromium-based browser's app mode (its own window and profile), so the
+  60-second token is never copied by hand; off by default, a failure only
+  warns. `crosswire app --project DIR` runs `serve --open=app` and launches the
+  wired browser too, and stops both browsers when it stops.
+- **crosswire-api**: `GET /api/v1/health` carries an optional
+  `project: {name, path}` (the project directory's name and absolute path),
+  which `serve` sets, so clients can show which project they are attached to.
+  It is reported to loopback peers only.
 - **Release pipeline and governance** (R2): one workspace version; release-plz
   opens the release PR and cuts the `v<version>` tag; cargo-dist builds the
   `crosswire` binary for `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`
@@ -58,6 +94,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 
 - `cert_override` is no longer on the wire.
+
+### Fixed
+
+- **Web UI**: History's Load more button stayed disabled since the UI
+  redesign, so the list stopped at 100 rows; paging works again.
 
 ### Security
 

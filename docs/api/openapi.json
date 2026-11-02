@@ -1093,12 +1093,23 @@
             "description": "The project database format (`user_version`) this build reads and writes.",
             "minimum": 0
           },
+          "project": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ProjectInfo",
+                "description": "The project the server is attached to (directory name and absolute\npath). Absent when the embedder names none, and omitted for a\nnon-loopback peer: the path can carry the local user and engagement\nnames, and a non-loopback `--api-bind` would otherwise hand them to\nanyone on the network without a credential."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "proxy_addr": {
             "type": [
               "string",
               "null"
             ],
-            "description": "The proxy listener's bound address as `host:port` (`[v6]:port` for\nIPv6). Absent when no proxy is running alongside the API."
+            "description": "The proxy listener's bound address as `host:port` (`[v6]:port` for\nIPv6). Absent when no proxy is running alongside the API. Reported to\nevery peer, unlike `project`: it is a socket address the peer could\nprobe for anyway, not a filesystem path."
           },
           "schema_version": {
             "type": "integer",
@@ -1145,6 +1156,24 @@
               "type": "string"
             },
             "description": "Replacement tags."
+          }
+        }
+      },
+      "ProjectInfo": {
+        "type": "object",
+        "description": "The project a server is attached to, as `/health` reports it. Both fields\nare display text for the operator (the UI renders them as text only).",
+        "required": [
+          "name",
+          "path"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "The project directory's name (its last path component)."
+          },
+          "path": {
+            "type": "string",
+            "description": "The project directory's absolute path."
           }
         }
       },

@@ -32,6 +32,30 @@ pub enum Command {
     Token(TokenCommand),
     /// Launch a browser pre-configured to use the proxy.
     Browser(BrowserArgs),
+    /// Run `serve` and open the whole workstation: the UI in its own app
+    /// window and a browser wired to the proxy (`serve --open=app` plus
+    /// `crosswire browser`). Ctrl-C stops everything.
+    App(AppArgs),
+}
+
+/// Arguments of `crosswire app`: every `serve` flag; `--open` is implied
+/// (always `app`).
+#[derive(Debug, Args)]
+pub struct AppArgs {
+    /// The `serve` flags.
+    #[command(flatten)]
+    pub serve: ServeArgs,
+}
+
+/// Where `serve --open` opens the bootstrap URL.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum OpenMode {
+    /// The operating system's default browser (`open`, `xdg-open`, `start`).
+    Browser,
+    /// A Chromium-based browser in app mode (`--app=URL`): a standalone
+    /// window with its own profile. Falls back to `browser` when none is
+    /// installed.
+    App,
 }
 
 /// Arguments of `crosswire serve`.
@@ -90,6 +114,30 @@ pub struct ServeArgs {
     /// with an out-of-scope audit row).
     #[arg(long)]
     pub enforce_scope_strictly: bool,
+
+    /// Open the bootstrap URL once the API is listening: `browser` (the
+    /// default when the flag has no value) uses the system's default
+    /// browser; `app` opens a standalone Chromium app window. A failure only
+    /// warns; serving continues.
+    #[arg(
+        long,
+        value_enum,
+        value_name = "MODE",
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "browser"
+    )]
+    pub open: Option<OpenMode>,
+
+    /// Path to a Chromium-based browser for `--open=app` and `crosswire app`
+    /// (skips auto-detection).
+    #[arg(long, value_name = "PATH")]
+    pub browser_path: Option<PathBuf>,
+
+    /// Also launch a browser wired to the proxy once it is listening (set by
+    /// `crosswire app`; not a flag).
+    #[arg(skip)]
+    pub wired_browser: bool,
 }
 
 /// `crosswire token` subcommands.
@@ -318,6 +366,48 @@ mod tests {
         assert!(parse_user_pass("u").is_err());
         assert!(parse_user_pass(":p").is_err());
         assert!(parse_user_pass("u:").is_err());
+    }
+
+    #[test]
+    fn open_flag_forms() {
+        let parse = |extra: &[&str]| {
+            let mut argv = vec!["crosswire", "serve", "--project", "p"];
+            argv.extend_from_slice(extra);
+            match Cli::try_parse_from(argv).map(|c| c.command) {
+                Ok(Command::Serve(a)) => Ok(a.open),
+                Ok(other) => panic!("not serve: {other:?}"),
+                Err(e) => Err(e.kind()),
+            }
+        };
+        assert_eq!(parse(&[]), Ok(None), "off by default");
+        assert_eq!(parse(&["--open"]), Ok(Some(OpenMode::Browser)));
+        assert_eq!(parse(&["--open=browser"]), Ok(Some(OpenMode::Browser)));
+        assert_eq!(parse(&["--open=app"]), Ok(Some(OpenMode::App)));
+        assert!(parse(&["--open=tab"]).is_err());
+        // `--open app` is not a value: `app` would be a stray positional.
+        assert!(parse(&["--open", "app"]).is_err());
+    }
+
+    #[test]
+    fn app_takes_the_serve_flags() {
+        let cli = Cli::try_parse_from([
+            "crosswire",
+            "app",
+            "--project",
+            "p",
+            "--proxy-bind",
+            "127.0.0.1:0",
+            "--browser-path",
+            "/b",
+        ])
+        .unwrap();
+        let Command::App(a) = cli.command else {
+            panic!("not app")
+        };
+        assert_eq!(a.serve.project, PathBuf::from("p"));
+        assert_eq!(a.serve.browser_path, Some(PathBuf::from("/b")));
+        assert_eq!(a.serve.open, None);
+        assert!(!a.serve.wired_browser);
     }
 
     #[test]

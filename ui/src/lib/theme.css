@@ -81,6 +81,31 @@
   --hex-ascii: #8fb3c4;
   --nonprintable-bg: #8080a040;
 
+  /* Syntax colouring in the message viewer (editor/highlight.css). Quiet
+     hues around the teal accent: keys and header names teal, strings sage,
+     numbers amber, literals violet; punctuation recedes. */
+  --syn-key: #7cc6d0;
+  --syn-string: #a9cc8c;
+  --syn-number: #e2b46e;
+  --syn-keyword: #c39be3;
+  --syn-punct: #8a919e;
+  --syn-comment: #7f8796;
+  --syn-tag: #78aeea;
+  --syn-attr: #c39be3;
+  --syn-attr-value: #a9cc8c;
+  --syn-header-name: #7cc6d0;
+  --syn-header-value: #dde1e8;
+  --syn-status: #e2b46e;
+  /* Find-in-message marks. */
+  --find-match: #e0a04038;
+  --find-current: #e0a04080;
+
+  /* Response compare (repeater): added / removed line backgrounds and signs. */
+  --diff-add-bg: #5fb87824;
+  --diff-del-bg: #e5645c24;
+  --diff-add-fg: #7fcf95;
+  --diff-del-fg: #f08a83;
+
   /* Captured HTML preview always renders on white, as a browser would */
   --preview-bg: #ffffff;
 
@@ -186,6 +211,26 @@
   --hex-offset: #646b78;
   --hex-ascii: #3d6f86;
   --nonprintable-bg: #6060a033;
+
+  --syn-key: #0f6a75;
+  --syn-string: #3c7424;
+  --syn-number: #925600;
+  --syn-keyword: #7444ad;
+  --syn-punct: #646b78;
+  --syn-comment: #687080;
+  --syn-tag: #2a64ae;
+  --syn-attr: #7444ad;
+  --syn-attr-value: #3c7424;
+  --syn-header-name: #0f6a75;
+  --syn-header-value: #1b1f27;
+  --syn-status: #925600;
+  --find-match: #e0a04040;
+  --find-current: #e0a04099;
+
+  --diff-add-bg: #277a421f;
+  --diff-del-bg: #c43c331c;
+  --diff-add-fg: #1e6b38;
+  --diff-del-fg: #a8322a;
 
   --shadow-pop: 0 8px 24px #1a1d2429, 0 0 0 1px #1a1d241a;
 }

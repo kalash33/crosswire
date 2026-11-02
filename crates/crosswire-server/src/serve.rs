@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 
 use crosswire_api::{
-    bootstrap_token, router_with_fallback, ApiConfig, AppState, DEFAULT_BOOTSTRAP_TTL,
+    bootstrap_token, router_with_fallback, ApiConfig, AppState, ProjectInfo, DEFAULT_BOOTSTRAP_TTL,
     DEFAULT_IDLE_TIMEOUT,
 };
 use crosswire_ca::{IssuerLimits, LeafIssuer};
@@ -23,9 +23,11 @@ use tokio::net::TcpListener;
 use tokio::sync::watch;
 
 use crate::api_cmd;
+use crate::app_cmd;
 use crate::ca_cmd::{load_or_generate, resolve_ca_dir};
 use crate::cli::ServeArgs;
 use crate::error::CliError;
+use crate::open::{self, Launched};
 
 /// The actor recorded in the audit log for configuration given on the
 /// command line.
@@ -84,10 +86,18 @@ async fn serve(cfg: ProxyConfig, args: &ServeArgs, ca_dir: &Path) -> Result<(), 
     if store.open_report().unclean_gap.is_some() {
         tracing::warn!("the previous run did not shut down cleanly; a gap marker was recorded");
     }
-    let served = serve_with_store(cfg, args, ca_dir, Arc::clone(&store)).await;
+    let mut launched = Launched::default();
+    let served = serve_with_store(cfg, args, ca_dir, Arc::clone(&store), &mut launched).await;
     // The store is always closed here, on every path out of `serve_with_store`
     // (success, early `?` error, or shutdown): see `close_store`.
     let closed = close_store(store);
+    // The browsers `serve` launched stop with it, but only AFTER the clean
+    // close: a browser that ignores SIGTERM holds the exit for up to the stop
+    // grace, and a supervisor's SIGKILL in that window must find the project
+    // already closed, not turn the clean close into a gap marker.
+    if let Err(e) = tokio::task::spawn_blocking(move || launched.stop()).await {
+        tracing::warn!(error = %e, "stopping the launched browsers failed");
+    }
     served.and(closed)
 }
 
@@ -125,6 +135,7 @@ async fn serve_with_store(
     args: &ServeArgs,
     ca_dir: &Path,
     store: Arc<Store>,
+    launched: &mut Launched,
 ) -> Result<(), CliError> {
     let audit = |action: &str, target: &str| {
         store
@@ -261,6 +272,7 @@ async fn serve_with_store(
         idle_timeout: DEFAULT_IDLE_TIMEOUT,
         bootstrap_ttl: DEFAULT_BOOTSTRAP_TTL,
         proxy_addr: Some(addr),
+        project: Some(project_info(&args.project)),
     };
     let state = AppState::new(
         Arc::clone(&store),
@@ -299,6 +311,26 @@ async fn serve_with_store(
             .map_err(|e| CliError::runtime("writing stdout", e))?;
     }
     tracing::info!(%addr, %api_addr, "proxy and api listening");
+
+    // The API listener is bound (connections queue until it is served just
+    // below), so the browsers can be started now. A failure only warns. The
+    // caller stops them once the store has closed (see `serve`).
+    if let Some(mode) = args.open {
+        launched.extend(open::open_ui(
+            mode,
+            &url,
+            args.browser_path.as_deref(),
+            &args.project,
+        ));
+    }
+    if args.wired_browser {
+        launched.extend(app_cmd::launch_wired(
+            args.browser_path.as_deref(),
+            &args.project,
+            addr,
+            &ca.spki_sha256_base64(),
+        ));
+    }
 
     let counters = proxy.counters();
     let (tx, rx) = watch::channel(false);
@@ -402,6 +434,24 @@ fn resolved(path: &Path) -> Result<PathBuf, CliError> {
     Ok(out)
 }
 
+/// The project's name (its directory's last component) and absolute path,
+/// for `/health`. The directory exists by now, so it is canonicalised; a
+/// failure falls back to the lexically absolute path.
+fn project_info(project: &Path) -> ProjectInfo {
+    let abs = project
+        .canonicalize()
+        .or_else(|_| std::path::absolute(project))
+        .unwrap_or_else(|_| project.to_path_buf());
+    let name = abs
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| abs.display().to_string());
+    ProjectInfo {
+        name,
+        path: abs.display().to_string(),
+    }
+}
+
 /// `host:port`, bracketing an IPv6 host.
 fn host_port(host: &str, port: u16) -> String {
     if host.contains(':') {
@@ -451,5 +501,24 @@ fn shutdown_signal() -> impl std::future::Future<Output = ()> {
             tracing::warn!(error = %e, "cannot listen for Ctrl-C");
             std::future::pending::<()>().await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn project_info_is_the_canonical_directory_and_its_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("acme web");
+        std::fs::create_dir(&dir).unwrap();
+        // A relative-looking spelling with `..` still names the directory.
+        let spelled = tmp.path().join("x").join("..").join("acme web");
+        std::fs::create_dir(tmp.path().join("x")).unwrap();
+        let info = project_info(&spelled);
+        assert_eq!(info.name, "acme web");
+        assert_eq!(info.path, dir.canonicalize().unwrap().display().to_string());
+        assert!(Path::new(&info.path).is_absolute());
     }
 }

@@ -28,6 +28,15 @@ When the server runs a proxy, `health` also carries `proxy_addr`, the proxy's
 actual bound `host:port` (`[v6]:port` for IPv6, and the real port when
 `--proxy-bind` asked for port 0); the key is absent otherwise.
 
+`crosswire serve` also sets `project`, the project it records into:
+`{"name":"acme","path":"/home/me/work/acme"}`, the directory's last component
+and its absolute path. The UI shows the name in its top bar and window title
+(as text only). The key is absent when the embedder names no project, as in
+test harnesses, and it is **omitted for a non-loopback peer**: `health` needs no
+credential, and the path can carry the local user and engagement names, so a
+non-loopback `--api-bind` must not hand it to the network. `proxy_addr` is
+reported to every peer; it is a socket address, not a filesystem path.
+
 `schema_version` is the shape of the Messages and Exchanges the API returns and
 accepts (enum wire codes, tagging, defaults); `format_version` is the project
 database's `PRAGMA user_version`. Today `schema_version` 2 pairs with

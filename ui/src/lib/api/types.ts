@@ -1,4 +1,4 @@
-// Hand-written mirror of the 11 named component schemas in
+// Hand-written mirror of the named component schemas in
 // docs/api/openapi.json (the only response/request shapes the document types).
 // Exchange rows, scope, and WebSocket events are NOT typed there; their
 // consuming modules define them from the server DTOs / spec.
@@ -13,6 +13,7 @@ export const MIRRORED_SCHEMAS = [
   'HealthResponse',
   'ImportBody',
   'PatchBody',
+  'ProjectInfo',
   'RulesDto',
   'SendBody',
   'SendOutcomeDto',
@@ -61,6 +62,16 @@ export interface HealthResponse {
   format_version: number;
   /** The proxy's bound address as `host:port` (`[v6]:port` for IPv6), when known. */
   proxy_addr?: string;
+  /** The project the server records into, when it names one. */
+  project?: ProjectInfo;
+}
+
+/** The project a server is attached to (display text only). */
+export interface ProjectInfo {
+  /** The project directory's name (its last path component). */
+  name: string;
+  /** The project directory's absolute path. */
+  path: string;
 }
 
 /** The `POST /scope/import` body. */

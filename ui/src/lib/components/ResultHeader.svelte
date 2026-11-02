@@ -35,9 +35,12 @@
     {#if size !== null}
       <span class="metric" data-testid="result-size"><span class="k">Size</span> {humanBytes(size)}</span>
     {/if}
-    <span class="metric" data-testid="result-scope-state"
-      ><span class="k">Scope</span> <Badge kind="scope" value={outcome.scope_state} /></span
-    >
+    <!-- A send restored from an older draft record may carry no scope state. -->
+    {#if outcome.scope_state}
+      <span class="metric" data-testid="result-scope-state"
+        ><span class="k">Scope</span> <Badge kind="scope" value={outcome.scope_state} /></span
+      >
+    {/if}
     {#if outcome.cert_override}
       <span class="badge cert" data-testid="result-cert-override" role="status"
         >Upstream cert overridden</span

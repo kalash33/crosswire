@@ -32,3 +32,35 @@ export function timeShort(iso: string | number): string {
   if (Number.isNaN(d.getTime())) return '';
   return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
+
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+/**
+ * History time cell: `HH:MM:SS` for a row from today (local calendar day of
+ * `now`), `MMM D HH:MM:SS` for any other day; '' if invalid.
+ */
+export function timeCell(iso: string | number, now: Date = new Date()): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const clock = timeShort(iso);
+  const today =
+    d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+  return today ? clock : `${MONTHS[d.getMonth()]} ${d.getDate()} ${clock}`;
+}
+
+/** The current time as an ISO 8601 string (UTC). */
+export function isoNow(): string {
+  return new Date().toISOString();
+}
+
+/**
+ * The first `max` characters of `text`, cut at a word boundary when one is
+ * near and marked with an ellipsis; `text` itself when it already fits.
+ */
+export function clipText(text: string, max = 80): string {
+  if (text.length <= max) return text;
+  let cut = text.slice(0, max);
+  const space = cut.lastIndexOf(' ');
+  if (space >= max * 0.6) cut = cut.slice(0, space);
+  return `${cut.trimEnd()}…`;
+}

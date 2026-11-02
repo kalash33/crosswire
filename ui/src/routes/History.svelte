@@ -1,7 +1,7 @@
 <script lang="ts">
-  import { onMount, tick } from 'svelte';
+  import { onMount, tick, untrack } from 'svelte';
   import { SvelteSet } from 'svelte/reactivity';
-  import { history, type ExchangeFilter, type Row } from '../lib/stores/history.svelte';
+  import { clientFilter, history, type ExchangeFilter, type Row } from '../lib/stores/history.svelte';
   import { events } from '../lib/stores/events.svelte';
   import ExchangeDetail from '../lib/components/ExchangeDetail.svelte';
   import SelectionToolbar from '../lib/components/SelectionToolbar.svelte';
@@ -12,12 +12,23 @@
   import { keymap } from '../lib/keymap';
   import { repeater } from '../lib/stores/repeater.svelte';
   import { router } from '../lib/router.svelte';
-  import { humanBytes, timeShort } from '../lib/format';
+  import { humanBytes, timeCell } from '../lib/format';
+  import {
+    HISTORY_SPLIT_DEFAULT,
+    TOGGLEABLE_COLUMNS,
+    isTypingTarget,
+    loadColumns,
+    nextIndex,
+    saveColumns,
+    type ColumnKey,
+  } from '../lib/components/history-view';
   import Badge from '../lib/ui/Badge.svelte';
   import Button from '../lib/ui/Button.svelte';
   import Chip from '../lib/ui/Chip.svelte';
   import EmptyState from '../lib/ui/EmptyState.svelte';
+  import IconButton from '../lib/ui/IconButton.svelte';
   import Input from '../lib/ui/Input.svelte';
+  import Menu, { type MenuItem } from '../lib/ui/Menu.svelte';
   import Select from '../lib/ui/Select.svelte';
   import Splitter from '../lib/ui/Splitter.svelte';
   import { toasts } from '../lib/ui/toasts.svelte';
@@ -109,6 +120,32 @@
 
   const sortedRows = $derived([...history.rows].sort(cmp));
 
+  // ---- Client-side search over the loaded rows (combined with the server filter) ----
+  let query = $state('');
+  const searching = $derived(query.trim() !== '');
+  const visibleRows = $derived(clientFilter(sortedRows, query));
+
+  // ---- Column picker (Host and Path are always shown) ------------------------
+  let cols = $state<ColumnKey[]>(loadColumns());
+  const shown = (k: ColumnKey): boolean => cols.includes(k);
+  // 1 checkbox + # + Host + Path, plus the toggleable columns in force.
+  const colCount = $derived(4 + cols.length);
+  let colMenuAnchor = $state<HTMLElement | null>(null);
+
+  function toggleColumn(key: ColumnKey): void {
+    cols = shown(key) ? cols.filter((k) => k !== key) : TOGGLEABLE_COLUMNS.map((c) => c.key).filter((k) => k === key || shown(k));
+    saveColumns(cols);
+  }
+
+  const columnItems = $derived<MenuItem[]>(
+    TOGGLEABLE_COLUMNS.map((c) => ({
+      label: c.label,
+      icon: shown(c.key) ? ('check' as const) : undefined,
+      testid: `column-${c.key}`,
+      onselect: () => toggleColumn(c.key),
+    })),
+  );
+
   function ariaSort(key: SortKey): 'ascending' | 'descending' | 'none' {
     if (sortKey !== key) return 'none';
     return sortDir === 1 ? 'ascending' : 'descending';
@@ -122,16 +159,24 @@
     else selected.add(id);
   }
 
+  // A hidden row cannot be seen or unchecked, so a search drops its selection.
+  $effect(() => {
+    const visible = new Set(visibleRows.map((r) => r.id));
+    untrack(() => {
+      for (const id of [...selected]) if (!visible.has(id)) selected.delete(id);
+    });
+  });
+
   function toggleAll(): void {
-    if (selected.size === sortedRows.length) selected.clear();
-    else {
-      selected.clear();
-      for (const r of sortedRows) selected.add(r.id);
+    if (checkedIds.length === visibleRows.length && visibleRows.length > 0) {
+      for (const r of visibleRows) selected.delete(r.id);
+    } else {
+      for (const r of visibleRows) selected.add(r.id);
     }
   }
 
   // Checked ids in table order (the order bulk PATCHes are sent in).
-  const checkedIds = $derived(sortedRows.filter((r) => selected.has(r.id)).map((r) => r.id));
+  const checkedIds = $derived(visibleRows.filter((r) => selected.has(r.id)).map((r) => r.id));
 
   // ---- Detail selection ------------------------------------------------------
   let selectedId = $state<string | null>(null);
@@ -149,21 +194,101 @@
     focusedId = id;
   }
 
-  // Enter/Space opens the focused row (keyboard-operable rows, §7.6/§11.1): the
-  // mouse-free loop selects an exchange without a click. Space is prevented so
-  // the page does not scroll.
+  // Row keyboard model (§7.6/§11.1), roving tabindex: j/k and ArrowDown/Up move
+  // the focused row, Enter opens it, Space toggles its checkbox. These handlers
+  // only act when the event target is the row itself or its checkbox, so a key
+  // typed in any text field (search, filters, tag inputs) never reaches them.
+  // Space is prevented on the row so the page does not scroll.
+  let rootEl = $state<HTMLElement>();
+  let listEl = $state<HTMLElement>();
+
+  const rowEls = (): HTMLElement[] =>
+    listEl ? Array.from(listEl.querySelectorAll<HTMLElement>('tr[data-testid="history-row"]')) : [];
+
+  const rovingId = $derived(
+    visibleRows.some((r) => r.id === focusedId)
+      ? focusedId
+      : visibleRows.some((r) => r.id === selectedId)
+        ? selectedId
+        : (visibleRows[0]?.id ?? null),
+  );
+
+  function focusRow(el: HTMLElement | undefined): void {
+    if (!el) return;
+    el.focus();
+    el.scrollIntoView?.({ block: 'nearest' });
+  }
+
+  function moveFocus(fromId: string, delta: number): void {
+    const i = nextIndex(
+      visibleRows.findIndex((r) => r.id === fromId),
+      delta,
+      visibleRows.length,
+    );
+    if (i >= 0) focusRow(rowEls()[i]);
+  }
+
+  // Esc in the search box or the detail pane lands here: the roving row, else the list.
+  function focusList(): void {
+    const els = rowEls();
+    const i = visibleRows.findIndex((r) => r.id === rovingId);
+    if (els.length > 0) focusRow(els[Math.max(i, 0)]);
+    else listEl?.focus();
+  }
+
   function onRowKey(e: KeyboardEvent, id: string): void {
-    if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') {
+    if (e.ctrlKey || e.altKey || e.metaKey) return;
+    const onRow = e.target === e.currentTarget;
+    const onBox = e.target instanceof HTMLInputElement && e.target.type === 'checkbox';
+    if (!onRow && !onBox) return;
+    if (e.key === 'Enter') {
       e.preventDefault();
       openRow(id);
+    } else if ((e.key === ' ' || e.key === 'Spacebar') && onRow) {
+      e.preventDefault();
+      toggleRow(id);
+    } else if (e.key === 'j' || e.key === 'ArrowDown') {
+      e.preventDefault();
+      moveFocus(id, 1);
+    } else if (e.key === 'k' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      moveFocus(id, -1);
     }
+  }
+
+  // `/` focuses the search box unless the user is typing in a field or working
+  // in a menu/dialog. (The Shell's keymap does not bind `/`, so it falls through.)
+  function onWindowKey(e: KeyboardEvent): void {
+    if (e.key !== '/' || e.ctrlKey || e.altKey || e.metaKey || e.defaultPrevented) return;
+    if (isTypingTarget(e.target)) return;
+    if (e.target instanceof Element && e.target.closest('[role="menu"], [role="dialog"]')) return;
+    const box = rootEl?.querySelector<HTMLInputElement>('[data-testid="history-search"]');
+    if (!box) return;
+    e.preventDefault();
+    box.focus();
+    box.select();
+  }
+
+  function onSearchKey(e: KeyboardEvent): void {
+    if (e.key !== 'Escape') return;
+    e.preventDefault();
+    query = '';
+    // The cleared query re-renders the full list first; then focus its row.
+    void tick().then(focusList);
+  }
+
+  function onDetailKey(e: KeyboardEvent): void {
+    // Escape inside a field (tag input, notes, CodeMirror) keeps the field's own meaning.
+    if (e.key !== 'Escape' || e.defaultPrevented || isTypingTarget(e.target)) return;
+    e.preventDefault();
+    focusList();
   }
 
   const rowById = (id: string | null): Row | null => (id ? (history.rows.find((r) => r.id === id) ?? null) : null);
   const selectedRow = $derived(rowById(selectedId));
   // One action target for the toolbar AND the Ctrl+R chord: the focused row,
   // then the opened row. The toolbar names it when it is not the open row.
-  const target = $derived(actionTarget(focusedId, selectedId, sortedRows));
+  const target = $derived(actionTarget(focusedId, selectedId, visibleRows));
   const targetRow = $derived(rowById(target.id));
 
   // ---- Row actions (selection toolbar + context menu) ------------------------
@@ -327,6 +452,13 @@
     return off;
   });
 
+  /** `timeCell` split into its date part (older rows only) and its clock. */
+  function timeParts(ms: number): { date: string; clock: string } {
+    const t = timeCell(ms);
+    const sp = t.lastIndexOf(' ');
+    return sp > 0 ? { date: t.slice(0, sp), clock: t.slice(sp) } : { date: '', clock: t };
+  }
+
   function fullTime(ms: number): string {
     try {
       return new Date(ms).toLocaleString();
@@ -344,7 +476,9 @@
   </th>
 {/snippet}
 
-<div class="history" data-testid="history-view">
+<svelte:window onkeydown={onWindowKey} />
+
+<div class="history" data-testid="history-view" bind:this={rootEl}>
   {#if !start}
   <div class="bar">
     <Button
@@ -361,6 +495,28 @@
     {#if activeFilters > 0 && !filtersOpen}
       <Button size="sm" variant="ghost" data-testid="filter-clear-quick" onclick={clearFilters}>Clear filters</Button>
     {/if}
+
+    <Input
+      size="sm"
+      class="search"
+      type="search"
+      data-testid="history-search"
+      placeholder="Search host, path, tags  /"
+      aria-label="Search loaded exchanges by host, path or tag"
+      autocomplete="off"
+      spellcheck={false}
+      bind:value={query}
+      onkeydown={onSearchKey}
+    />
+    <IconButton
+      size="sm"
+      icon="settings"
+      label="Columns"
+      data-testid="column-picker"
+      aria-haspopup="menu"
+      aria-expanded={colMenuAnchor !== null}
+      onclick={(e) => (colMenuAnchor = colMenuAnchor ? null : e.currentTarget)}
+    />
 
     {#if checkedIds.length > 0}
       <form class="bulk" data-testid="bulk-bar" aria-label="Bulk actions" onsubmit={bulkTag}>
@@ -450,21 +606,21 @@
     />
   {:else}
   <div class="layout">
-    <Splitter direction="row" storageKey="history-detail" initial={0.6} min={[320, 360]} label="Resize history and detail">
+    <Splitter direction="row" storageKey="history-detail" initial={HISTORY_SPLIT_DEFAULT} min={[320, 360]} label="Resize history and detail">
       {#snippet a()}
-        <div class="list" data-testid="history-list">
+        <div class="list" data-testid="history-list" tabindex="-1" bind:this={listEl}>
           <table>
             <colgroup>
               <col class="c-sel" />
               <col class="c-idx" />
-              <col class="c-time" />
-              <col class="c-method" />
+              {#if shown('time')}<col class="c-time" />{/if}
+              {#if shown('method')}<col class="c-method" />{/if}
               <col class="c-host" />
-              <col />
-              <col class="c-status" />
-              <col class="c-len" />
-              <col class="c-state" />
-              <col class="c-tags" />
+              <col class="c-path" />
+              {#if shown('status')}<col class="c-status" />{/if}
+              {#if shown('len')}<col class="c-len" />{/if}
+              {#if shown('state')}<col class="c-state" />{/if}
+              {#if shown('tags')}<col class="c-tags" />{/if}
             </colgroup>
             <thead>
               <tr>
@@ -473,23 +629,23 @@
                     type="checkbox"
                     aria-label="select all"
                     data-testid="select-all"
-                    checked={selected.size > 0 && selected.size === sortedRows.length}
+                    checked={visibleRows.length > 0 && checkedIds.length === visibleRows.length}
                     onchange={toggleAll}
                   />
                 </th>
                 <th class="num">#</th>
-                {@render sortHead('created_at', 'Time')}
-                {@render sortHead('method', 'Method')}
+                {#if shown('time')}{@render sortHead('created_at', 'Time')}{/if}
+                {#if shown('method')}{@render sortHead('method', 'Method')}{/if}
                 {@render sortHead('host', 'Host')}
                 {@render sortHead('path', 'Path')}
-                {@render sortHead('status', 'Status')}
-                {@render sortHead('resp_len', 'Length', 'num')}
-                {@render sortHead('state', 'State')}
-                <th>Tags</th>
+                {#if shown('status')}{@render sortHead('status', 'Status')}{/if}
+                {#if shown('len')}{@render sortHead('resp_len', 'Length', 'num')}{/if}
+                {#if shown('state')}{@render sortHead('state', 'State')}{/if}
+                {#if shown('tags')}<th>Tags</th>{/if}
               </tr>
             </thead>
             <tbody>
-              {#each sortedRows as row, i (row.id)}
+              {#each visibleRows as row, i (row.id)}
                 <!-- Keyboard-operable row (§7.6): focusable, Enter/Space opens it,
                      focusin marks it as the action target, the context-menu key
                      or a right-click opens the row menu. -->
@@ -500,7 +656,7 @@
                   data-testid="history-row"
                   data-id={row.id}
                   data-uncommitted={row.uncommitted}
-                  tabindex="0"
+                  tabindex={row.id === rovingId ? 0 : -1}
                   aria-label={`exchange ${row.method ?? ''} ${row.host ?? ''}${row.path ?? ''}`}
                   onkeydown={(e) => onRowKey(e, row.id)}
                   onfocusin={() => (focusedId = row.id)}
@@ -515,34 +671,61 @@
                     />
                   </td>
                   <td class="num idx">{i + 1}</td>
-                  <td class="open time" title={fullTime(row.created_at)} onclick={() => openRow(row.id)}>
-                    {#if row.uncommitted}<span class="dot" title="Uncommitted (not yet durable)" data-testid="uncommitted-marker"
-                        >●</span
-                      >{/if}{timeShort(row.created_at)}
-                  </td>
-                  <td class="open" onclick={() => openRow(row.id)}>
-                    {#if row.method}<Badge kind="method" value={row.method} />{/if}
-                  </td>
-                  <td class="open host" title={row.host ?? ''} onclick={() => openRow(row.id)}>{row.host ?? ''}</td>
-                  <td class="open path" title={row.path ?? ''} onclick={() => openRow(row.id)}>{row.path ?? ''}</td>
-                  <td class="open" onclick={() => openRow(row.id)}>
-                    {#if row.status !== null}<Badge kind="status" value={row.status} />{/if}
-                  </td>
-                  <td
-                    class="open num"
-                    title={row.resp_len === null ? '' : `${row.resp_len} bytes`}
-                    onclick={() => openRow(row.id)}>{row.resp_len === null ? '' : humanBytes(row.resp_len)}</td
+                  {#if shown('time')}
+                    {@const t = timeParts(row.created_at)}
+                    <td class="open time" title={fullTime(row.created_at)} onclick={() => openRow(row.id)}>
+                      {#if row.uncommitted}<span class="dot" title="Uncommitted (not yet durable)" data-testid="uncommitted-marker"
+                          >●</span
+                        >{/if}{#if t.date}<span class="date">{t.date}</span>{/if}<span class="clock">{t.clock}</span>
+                    </td>
+                  {/if}
+                  {#if shown('method')}
+                    <td class="open" onclick={() => openRow(row.id)}>
+                      {#if row.method}<Badge kind="method" value={row.method} />{/if}
+                    </td>
+                  {/if}
+                  <td class="open host" title={row.host ?? ''} onclick={() => openRow(row.id)}
+                    >{#if row.uncommitted && !shown('time')}<span
+                        class="dot"
+                        title="Uncommitted (not yet durable)"
+                        data-testid="uncommitted-marker">●</span
+                      >{/if}{row.host ?? ''}</td
                   >
-                  <td class="open" onclick={() => openRow(row.id)}><Badge kind="state" value={row.state} /></td>
-                  <td class="tags" title={row.tags.join(', ')}>
-                    <span class="chips">{#each row.tags as tag (tag)}<Chip>{tag}</Chip>{/each}</span>
-                  </td>
+                  <td class="open path" title={row.path ?? ''} onclick={() => openRow(row.id)}>{row.path ?? ''}</td>
+                  {#if shown('status')}
+                    <td class="open" onclick={() => openRow(row.id)}>
+                      {#if row.status !== null}<Badge kind="status" value={row.status} />{/if}
+                    </td>
+                  {/if}
+                  {#if shown('len')}
+                    <td
+                      class="open num"
+                      title={row.resp_len === null ? '' : `${row.resp_len} bytes`}
+                      onclick={() => openRow(row.id)}>{row.resp_len === null ? '' : humanBytes(row.resp_len)}</td
+                    >
+                  {/if}
+                  {#if shown('state')}
+                    <td class="open" onclick={() => openRow(row.id)}><Badge kind="state" value={row.state} /></td>
+                  {/if}
+                  {#if shown('tags')}
+                    <td class="tags" title={row.tags.join(', ')}>
+                      <span class="chips"
+                        >{#each row.tags as tag (tag)}<Chip>{tag}</Chip>{/each}{#if row.tags.length > 1}<span class="more"
+                            >+{row.tags.length - 1}</span
+                          >{/if}</span
+                      >
+                    </td>
+                  {/if}
                 </tr>
               {/each}
-              {#if sortedRows.length === 0 && !history.loading}
+              {#if visibleRows.length === 0 && !history.loading}
                 <tr>
-                  <td colspan="10" class="empty" data-testid="history-empty">
-                    {activeFilters > 0 ? 'No exchanges match these filters.' : 'No exchanges.'}
+                  <td colspan={colCount} class="empty" data-testid="history-empty">
+                    {searching
+                      ? 'No loaded exchange matches the search.'
+                      : activeFilters > 0
+                        ? 'No exchanges match these filters.'
+                        : 'No exchanges.'}
                   </td>
                 </tr>
               {/if}
@@ -550,7 +733,9 @@
           </table>
 
           <div class="foot">
-            <span class="count" data-testid="history-count">{sortedRows.length} loaded · {selected.size} selected</span>
+            <span class="count" data-testid="history-count">{searching
+                ? `${visibleRows.length} of ${sortedRows.length} loaded match`
+                : `${sortedRows.length} loaded`} · {checkedIds.length} selected</span>
             <Button
               size="sm"
               data-testid="load-more"
@@ -575,7 +760,7 @@
             />
           {/if}
           <!-- Focus entering the open exchange makes it the action target again. -->
-          <div class="detail-body" onfocusin={() => (focusedId = selectedId)}>
+          <div class="detail-body" role="presentation" onfocusin={() => (focusedId = selectedId)} onkeydown={onDetailKey}>
             {#if selectedId}
               {#key `${selectedId}-${detailEpoch}`}
                 <ExchangeDetail bind:this={detail} id={selectedId} row={selectedRow} />
@@ -592,6 +777,17 @@
       {/snippet}
     </Splitter>
   </div>
+  {/if}
+
+  {#if colMenuAnchor}
+    <Menu
+      items={columnItems}
+      open={colMenuAnchor !== null}
+      anchor={colMenuAnchor}
+      onclose={() => (colMenuAnchor = null)}
+      label="Columns"
+      testid="column-menu"
+    />
   {/if}
 
   {#if menuId}
@@ -670,11 +866,32 @@
     height: 100%;
     min-width: 0;
     overflow: auto;
+    container-type: inline-size;
   }
+  /* A narrow list (the default split on a laptop) gives Host and Path room:
+     older rows show only their date (the full time stays in `title`), and the
+     tag chips ellipsize sooner. */
+  @container (max-width: 720px) {
+    td.time .date + .clock {
+      display: none;
+    }
+    td.tags .chips {
+      max-width: 6rem;
+    }
+    /* One chip and a "+N" count; the full list stays in the cell's `title`. */
+    .chips :global(.chip:nth-child(n + 2)) {
+      display: none;
+    }
+    .chips .more {
+      display: inline;
+    }
+  }
+  /* Auto layout: every column but Host and Path takes its natural width, and
+     Host and Path share what is left (ellipsized, full text in `title`), so
+     the table fits the default 45/55 split without a horizontal scroll. */
   table {
     width: 100%;
-    min-width: 820px;
-    table-layout: fixed;
+    table-layout: auto;
     border-collapse: separate;
     border-spacing: 0;
     font-size: var(--fs-sm);
@@ -690,7 +907,7 @@
   th,
   td {
     text-align: left;
-    padding: 4px var(--s-2);
+    padding: 4px;
     border-bottom: 1px solid var(--border-faint);
     white-space: nowrap;
     overflow: hidden;
@@ -704,13 +921,35 @@
     cursor: pointer;
     padding: 0;
   }
+  /* The sort arrow takes room only on the sorted column. */
   .arrow {
     display: inline-block;
-    width: 1em;
     font-size: var(--fs-xs);
+  }
+  .arrow:not(:empty) {
+    margin-left: 2px;
+  }
+  th.sel input,
+  td.sel input {
+    margin: 0;
+    vertical-align: middle;
   }
   tbody tr {
     cursor: default;
+    /* Keep a keyboard-focused row clear of the sticky header and footer. */
+    scroll-margin-top: 32px;
+    scroll-margin-bottom: 52px;
+  }
+  tbody tr:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+  }
+  .list:focus-visible {
+    outline: none;
+  }
+  .history :global(.search) {
+    width: 16rem;
+    max-width: 100%;
   }
   tbody tr:hover td {
     background: var(--bg-hover);
@@ -722,32 +961,31 @@
   td.path {
     font-family: var(--font-mono);
   }
-  .c-sel {
-    width: 32px;
-  }
-  .c-idx {
-    width: 40px;
-  }
-  .c-time {
-    width: 72px;
-  }
-  .c-method {
-    width: 76px;
+  /* Natural-width columns: 1px plus nowrap shrinks them to their content. */
+  .c-sel,
+  .c-idx,
+  .c-time,
+  .c-method,
+  .c-status,
+  .c-len,
+  .c-state,
+  .c-tags {
+    width: 1px;
   }
   .c-host {
-    width: 18%;
+    width: 35%;
   }
-  .c-status {
-    width: 56px;
+  .c-path {
+    width: 65%;
   }
-  .c-len {
-    width: 68px;
+  /* Slimmer badges in the table rows. */
+  td :global(.badge) {
+    padding: 0 4px;
   }
-  .c-state {
-    width: 88px;
-  }
-  .c-tags {
-    width: 12%;
+  /* A zero max-width lets Host and Path shrink below their text and ellipsize. */
+  td.host,
+  td.path {
+    max-width: 0;
   }
   td.time,
   td.num {
@@ -780,6 +1018,7 @@
     display: flex;
     gap: var(--s-1);
     min-width: 0;
+    max-width: 6rem;
     overflow: hidden;
   }
   /* Chips shrink and ellipsize (Chip's text already clips with an ellipsis). */
@@ -789,6 +1028,12 @@
   }
   .chips :global(.chip .text) {
     min-width: 0;
+  }
+  .more {
+    display: none;
+    flex: none;
+    font-size: var(--fs-xs);
+    color: var(--fg-muted);
   }
   .empty {
     color: var(--fg-faint);

@@ -1,9 +1,11 @@
 import { test, expect, type Page } from '@playwright/test';
 import { XSS_CORPUS } from './fixtures/xss-corpus';
 import { watch, liveProbe } from './fixtures/xss-detect';
+import { exId, mockBench } from './fixtures/repeater-mock';
 import { apply, CODECS, type Direction } from '../src/lib/decode/codecs';
 import { fromTextareaText } from '../src/lib/decode/textarea';
 import { bytesToLatin1 } from '../src/lib/editor/encoding';
+import { clipText } from '../src/lib/format';
 
 // Text-rendering half of the XSS gate: captured bytes are attacker-controlled,
 // so seed the corpus into every rendered field and prove nothing executes.
@@ -565,4 +567,234 @@ test('U1: Start panel, status bar and Settings reject or quote hostile health va
     expect(new URL(page.url()).origin).toBe(new URL(startUrl).origin);
   }
   expect(violations).toEqual([]);
+});
+
+// U2 D1: the viewer's Pretty views are derived from captured bytes. Seed the
+// corpus into a JSON string value (and key), a urlencoded form value (and key)
+// and a query value (and key), render each in Pretty, and prove nothing runs.
+test('U2: Pretty JSON, form and query views render the corpus as text', async ({ page, baseURL }) => {
+  test.setTimeout(120_000);
+  const origin = new URL(baseURL!).origin;
+  const pairs = XSS_CORPUS.map((p, i) => `${encodeURIComponent(p.value)}=${encodeURIComponent(p.value)}&k${i}=${encodeURIComponent(p.value)}`).join('&');
+  const target = `/search?${pairs}`;
+  const json = JSON.stringify({
+    items: XSS_CORPUS.map((p) => ({ name: p.name, value: p.value })),
+    ...Object.fromEntries(XSS_CORPUS.map((p) => [p.value, p.value])),
+  });
+  const reqHead = `POST ${target} HTTP/1.1\r\nHost: h.example\r\nContent-Type: application/x-www-form-urlencoded\r\n\r\n`;
+  const respHead = 'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n';
+  const detail = {
+    ...DETAIL,
+    request: { ...DETAIL.request, head: { type: 'http1-raw', bytes: b64(reqHead), parser_version: 1 } },
+    response: { ...DETAIL.response, head: { type: 'http1-raw', bytes: b64(respHead), parser_version: 1 } },
+  };
+  const body = (text: string) => (r: import('@playwright/test').Route) =>
+    r.fulfill({
+      status: 200,
+      contentType: 'application/octet-stream',
+      headers: { 'x-crosswire-length': String(Buffer.byteLength(text)) },
+      body: Buffer.from(text, 'utf8'),
+    });
+  await page.route('**/api/v1/counts', (r) => r.fulfill({ status: 200, json: COUNTS }));
+  await page.route(/\/api\/v1\/exchanges\/[^/?]+$/, (r) => r.fulfill({ status: 200, json: detail }));
+  await page.route(/\/api\/v1\/exchanges\/[^/]+\/body\/req$/, body(pairs));
+  await page.route(/\/api\/v1\/exchanges\/[^/]+\/body\/resp$/, body(json));
+  await page.route(/\/api\/v1\/exchanges(\?.*)?$/, (r) =>
+    r.fulfill({ status: 200, json: { items: [{ ...ROW, host: 'h.example', path: target }], next_cursor: null } }),
+  );
+  const violations = watch(page, origin);
+  await page.goto('/');
+  const startUrl = page.url();
+  await page.getByTestId('history-row').locator('td.open').first().click();
+  await expect(page.getByTestId('exchange-detail')).toBeVisible();
+
+  // Response: Pretty JSON is the default; every payload shows as editor text.
+  await showResponseSide(page);
+  const resp = page.getByTestId('detail-response');
+  await expect(resp.getByTestId('detail-tab-pretty')).toHaveAttribute('aria-selected', 'true');
+  // CodeMirror renders only the lines in view, so drive each payload into
+  // view with find (a hostile needle in the find box too) before checking it.
+  const pretty = page.getByTestId('detail-resp-pretty-json');
+  await resp.getByTestId('detail-find').click();
+  const needle = resp.getByTestId('detail-findbar-input');
+  for (const p of XSS_CORPUS) {
+    const escaped = JSON.stringify(p.value).slice(1, -1);
+    await needle.fill(escaped);
+    await expect(resp.getByTestId('detail-findbar-count'), p.name).toHaveText(/^1\/\d+$/);
+    await expect(pretty.locator('.cm-find-current'), p.name).toHaveCount(1);
+    await expect(pretty, p.name).toContainText(escaped, { useInnerText: false });
+  }
+  await needle.press('Escape');
+
+  // Request: query table and form table, keys and values are text cells.
+  await showRequestSide(page);
+  const req = page.getByTestId('detail-request');
+  await expect(req.getByTestId('detail-tab-pretty')).toHaveAttribute('aria-selected', 'true');
+  for (const kind of ['query', 'form'] as const) {
+    const table = page.getByTestId(`detail-req-pretty-${kind}`);
+    const values = await table.getByTestId(`detail-req-pretty-${kind}-value`).allTextContents();
+    const keys = await table.getByTestId(`detail-req-pretty-${kind}-key`).allTextContents();
+    for (const p of XSS_CORPUS) {
+      expect(values, `${kind} value ${p.name}`).toContain(p.value);
+      expect(keys, `${kind} key ${p.name}`).toContain(p.value);
+    }
+  }
+  // Long hostile values sit in a title attribute: still just text.
+  await page.mouse.move(5, 5);
+  await page.getByTestId('detail-req-pretty-form-value').first().hover();
+  await page.mouse.move(300, 300);
+
+  await assertInert(page, violations, startUrl);
+});
+
+// ---- U2 surfaces: search box, repeater bench, diff view, project identity --
+
+test('U2: a hostile search query filters the hostile row as plain text', async ({ page, baseURL }) => {
+  test.setTimeout(120_000);
+  const origin = new URL(baseURL!).origin;
+  await mockApi(page);
+  const errors: string[] = [];
+  page.on('pageerror', (e) => errors.push(e.message));
+  const violations = watch(page, origin);
+  await page.goto('/');
+  const startUrl = page.url();
+  await expect(page.getByTestId('history-row')).toHaveCount(1);
+  const search = page.getByTestId('history-search');
+  for (const p of XSS_CORPUS) {
+    await search.fill(p.value);
+    await expect(search, p.name).toHaveValue(p.value);
+    // The hostile row's host, path and tags all contain every payload.
+    await expect(page.getByTestId('history-row'), p.name).toHaveCount(1);
+    await expect(page.getByTestId('history-count'), p.name).toContainText('1 of 1 loaded match');
+  }
+  await search.fill(`${ALL} no-such-row`);
+  await expect(page.getByTestId('history-empty')).toHaveText('No loaded exchange matches the search.');
+  await search.press('Escape');
+  expect(errors).toEqual([]);
+  await assertInert(page, violations, startUrl);
+});
+
+test('U2: repeater tab names, send history, notices, errors and the diff view render a hostile draft as text', async ({ page, baseURL }) => {
+  test.setTimeout(180_000);
+  const origin = new URL(baseURL!).origin;
+  const conn = { host: 'bench.example', port: 80, tls: false, reuse: false, follow: 'off' };
+  const respHead = `HTTP/1.1 200 OK\r\n${HEADERS}\r\n\r\n`;
+  // Every line differs between the two sides, so each payload is both a
+  // deleted and an added line.
+  const older = XSS_CORPUS.map((p) => `old ${p.value}`).join('\n');
+  const newer = XSS_CORPUS.map((p) => `new ${p.value}`).join('\n');
+  // Hostile records, two per payload: a failed send (payload error, time,
+  // digest and target), then alternately a `request` that is not base64 or a
+  // truncated record whose digest and exchange id are the payload.
+  const hostile = XSS_CORPUS.flatMap((p, i) => [
+    { at: p.value, request_sha256: `${p.value}#e${i}`, request_len: 18, request: b64('GET / HTTP/1.1\r\n\r\n'), error: p.value, target: p.value, conn, mode: 'raw' },
+    i % 2 === 0
+      ? { at: `${p.value}#n${i}`, request_sha256: `${p.value}#n${i}`, request_len: i, request: p.value, exchange_id: p.value, target: p.value, conn, mode: p.value }
+      : { at: `2026-11-01T10:00:${String(i).padStart(2, '0')}Z`, request_sha256: `${p.value}#t${i}`, request_len: 300_000, truncated: true, exchange_id: p.value, status: 200, conn, mode: p.value },
+  ]);
+  const history = [
+    { at: '2026-11-01T11:00:01Z', request_sha256: 'a'.repeat(64), request_len: 10, exchange_id: exId(1), status: 200, target: `GET /${XSS_CORPUS[4].value}`, conn, mode: 'raw' },
+    { at: '2026-11-01T11:00:00Z', request_sha256: 'b'.repeat(64), request_len: 10, exchange_id: exId(0), status: 200, target: `GET /${XSS_CORPUS[0].value}`, conn, mode: 'raw' },
+    ...hostile,
+  ].slice(0, 50);
+  const seed = XSS_CORPUS.map((p, i) => ({
+    tab_id: `01HZZZZZZZZZZZZZZZZZZZXSS${String.fromCharCode(65 + i)}`,
+    json: {
+      raw: `GET /${p.value} HTTP/1.1\r\nHost: ${p.value}\r\n\r\n`,
+      conn: { ...conn, host: p.value, sni: p.value },
+      mode: 'raw',
+      title: p.value,
+      ...(i === 0 ? { history } : {}),
+    },
+  }));
+  await mockBench(page, [], seed, {
+    [exId(0)]: { status: 200, head: respHead, body: Buffer.from(older) },
+    [exId(1)]: { status: 200, head: respHead, body: Buffer.from(newer) },
+  });
+  const violations = watch(page, origin);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto('/');
+  await page.getByTestId('nav-repeater').click();
+  const startUrl = page.url();
+
+  // Tab names: every payload is a tab title, verbatim text.
+  const titles = page.getByTestId('repeater-tab-select');
+  await expect(titles).toHaveCount(XSS_CORPUS.length);
+  const texts = await titles.allTextContents();
+  for (const p of XSS_CORPUS) expect(texts.map((t) => t.trim()), p.name).toContain(p.value);
+  await titles.first().click();
+
+  // The send-history strip of the first tab: hostile errors as text.
+  const rows = page.getByTestId('send-history-row');
+  await expect(rows).toHaveCount(history.length);
+  const strip = page.getByTestId('send-history');
+  // A reason shows its first ~80 characters (clipText) as text and keeps the
+  // whole payload, verbatim, in its title.
+  for (const p of XSS_CORPUS.slice(0, (history.length - 2) / 2)) {
+    const reason = strip.locator('.reason').filter({ hasText: clipText(p.value) }).first();
+    await expect(reason, p.name).toHaveText(clipText(p.value));
+    await expect(reason, p.name).toHaveAttribute('title', p.value);
+  }
+
+  // Compare the two real responses: hostile head and body lines on both sides.
+  await page.getByTestId('compare-previous').click();
+  const diff = page.getByTestId('diff-view');
+  await expect(diff).toBeVisible();
+  // Labels carry the stored request target (bounded to 80 characters).
+  await expect(diff.getByTestId('diff-newer')).toContainText(XSS_CORPUS[4].value);
+  await expect(diff.getByTestId('diff-older')).toContainText(XSS_CORPUS[0].value);
+  await diff.getByTestId('diff-hide-unchanged').uncheck();
+  const dels = await diff.locator('[data-testid="diff-line"][data-kind="del"]').allTextContents();
+  const adds = await diff.locator('[data-testid="diff-line"][data-kind="add"]').allTextContents();
+  const same = await diff.locator('[data-testid="diff-line"][data-kind="same"]').allTextContents();
+  for (const p of XSS_CORPUS) {
+    expect(dels.some((t) => t.includes(`old ${p.value}`)), `del ${p.name}`).toBe(true);
+    expect(adds.some((t) => t.includes(`new ${p.value}`)), `add ${p.name}`).toBe(true);
+    expect(same.some((t) => t.includes(p.value.replace(/[\r\n]/g, ''))), `head ${p.name}`).toBe(true);
+  }
+  await assertInert(page, violations, startUrl);
+  await diff.getByTestId('diff-close').click();
+
+  // Restore every hostile record: notices and errors stay text, nothing is sent.
+  const notice = page.getByTestId('send-history-notice');
+  for (let i = 2; i < history.length; i++) {
+    const rec = history[i] as { error?: string; truncated?: boolean; request_sha256: string };
+    await rows.nth(i).click();
+    if (rec.error) {
+      await expect(notice, `row ${i}`).toContainText('Not sent yet');
+      await expect(page.getByTestId('tab-error').first(), `row ${i}`).toContainText(rec.error);
+    } else if (rec.truncated) {
+      await expect(notice, `row ${i}`).toContainText('too large to keep');
+      await expect(notice, `row ${i}`).toContainText(rec.request_sha256.slice(0, 12));
+    } else {
+      await expect(notice, `row ${i}`).toContainText('could not be read');
+    }
+  }
+  await assertInert(page, violations, startUrl);
+});
+
+test('U2: a hostile project name and path stay text in the chip, its title and the window title', async ({ page, baseURL }) => {
+  test.setTimeout(120_000);
+  const origin = new URL(baseURL!).origin;
+  let health: Record<string, unknown> = {};
+  await page.route('**/api/v1/health', (r) => r.fulfill({ status: 200, json: health }));
+  await page.route('**/api/v1/counts', (r) => r.fulfill({ status: 200, json: COUNTS }));
+  await page.route('**/api/v1/scope', (r) => r.fulfill({ status: 200, json: { include: [], exclude: [] } }));
+  await page.route(/\/api\/v1\/exchanges(\?.*)?$/, (r) =>
+    r.fulfill({ status: 200, json: { items: [ROW], next_cursor: null } }),
+  );
+  const violations = watch(page, origin);
+  for (const p of XSS_CORPUS) {
+    const path = `/home/${p.value}/engagements/${p.value}`;
+    health = { status: 'ok', schema_version: 3, format_version: 7, project: { name: p.value, path } };
+    await page.goto('/');
+    const startUrl = page.url();
+    const chip = page.getByTestId('topbar-project');
+    await expect(chip, p.name).toHaveText(p.value);
+    await expect(chip, p.name).toHaveAttribute('title', path);
+    await expect(page, p.name).toHaveTitle(`${p.value} · History · Crosswire`);
+    expect(await page.evaluate(() => document.head.querySelectorAll('title').length), p.name).toBe(1);
+    await chip.hover();
+    await assertInert(page, violations, startUrl);
+  }
 });

@@ -6,6 +6,14 @@ import {
   newTabId,
   deriveTitle,
   responseView,
+  hostCaret,
+  hostHeader,
+  targetFromHost,
+  responseRawText,
+  NEW_TAB_TEMPLATE,
+  HISTORY_MAX,
+  HISTORY_REQUEST_MAX,
+  DRAFT_BUDGET,
   type RepeaterApi,
   type RepeaterTab,
 } from './repeater.svelte';
@@ -13,6 +21,8 @@ import { ApiError } from '../api/errors';
 import { hexPage, HEX_PAGE } from '../editor/hex-window';
 import { bytesToLatin1 } from '../editor/encoding';
 import type { SendOutcomeDto } from '../api/repeater';
+import { sha256Hex } from '../sha256';
+import { DIFF_MAX_BYTES } from '../diff/lines';
 
 const ID_RE = /^[0-9A-HJKMNP-TV-Z]{26}$/;
 
@@ -38,6 +48,7 @@ function mockApi(over: Partial<RepeaterApi> = {}): RepeaterApi {
     deleteTab: vi.fn().mockResolvedValue(undefined),
     getExchange: vi.fn(),
     getBody: vi.fn(),
+    getRespBody: vi.fn(),
     ...over,
   };
 }
@@ -317,7 +328,8 @@ describe('tab titles', () => {
     const r = createRepeater({ api: mockApi() });
     const a = r.newTab();
     const b = r.newTab({ raw: enc('PUT /a HTTP/1.1\r\nHost: h.test\r\n\r\n') });
-    expect(r.titleFor(r.tabs.find((t) => t.id === a)!)).toBe('Tab 1');
+    // A fresh tab holds the template, whose Host header is still empty.
+    expect(r.titleFor(r.tabs.find((t) => t.id === a)!)).toBe('GET');
     expect(r.titleFor(r.tabs.find((t) => t.id === b)!)).toBe('PUT h.test');
   });
 
@@ -333,11 +345,29 @@ describe('tab titles', () => {
     expect(r.titleFor(tab())).toBe('POST b.test');
   });
 
-  it('the rename is in-memory only (not in the draft json)', () => {
-    const r = createRepeater({ api: mockApi() });
+  it('a rename is persisted in the draft and restored on load', async () => {
+    const api = mockApi();
+    const r = createRepeater({ api });
     const id = r.newTab();
-    r.renameTab(id, 'x');
-    expect(toJson(r.tabs.find((t) => t.id === id)!)).not.toHaveProperty('title');
+    await r.flushDrafts();
+    (api.putTab as ReturnType<typeof vi.fn>).mockClear();
+    r.renameTab(id, 'login probe');
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(api.putTab).toHaveBeenCalledTimes(1);
+    const json = (api.putTab as ReturnType<typeof vi.fn>).mock.calls[0][1];
+    expect(json).toMatchObject({ title: 'login probe' });
+    const back = fromJson(id, JSON.parse(JSON.stringify(json)))!;
+    expect(back.title).toBe('login probe');
+    // A revert drops the field.
+    r.renameTab(id, '');
+    expect(toJson(r.tabs[0])).not.toHaveProperty('title');
+  });
+
+  it('fromJson bounds a stored title and ignores a non-string one', () => {
+    const base = { raw: 'GET / HTTP/1.1\r\n\r\n' };
+    expect(fromJson('X', { ...base, title: 'x'.repeat(500) })!.title).toHaveLength(120);
+    expect(fromJson('X', { ...base, title: 7 })!.title).toBeUndefined();
+    expect(fromJson('X', { ...base, title: '   ' })!.title).toBeUndefined();
   });
 });
 
@@ -392,5 +422,409 @@ describe('hex paging', () => {
     expect(hexPage(100, 9)).toEqual({ page: 0, pages: 1, start: 0, end: 100 });
     expect(hexPage(32768 * 2, 1.7).page).toBe(1);
     expect(hexPage(32768 * 2, Number.NaN).page).toBe(0);
+  });
+});
+
+describe('new tab template', () => {
+  it('a new tab starts from GET / with an empty Host header, focused on Host', () => {
+    const r = createRepeater({ api: mockApi() });
+    const id = r.newTab();
+    const tab = r.tabs.find((t) => t.id === id)!;
+    expect(bytesToLatin1(tab.raw)).toBe(NEW_TAB_TEMPLATE);
+    expect(NEW_TAB_TEMPLATE).toBe('GET / HTTP/1.1\r\nHost: \r\n\r\n');
+    expect(tab.focusHost).toBe(true);
+    expect(hostCaret(tab.raw)).toBe('GET / HTTP/1.1\r\nHost: '.length);
+  });
+
+  it('a seeded tab (send to repeater) keeps its bytes and does not grab focus', () => {
+    const r = createRepeater({ api: mockApi() });
+    const id = r.newTab({ raw: RAW });
+    const tab = r.tabs.find((t) => t.id === id)!;
+    expect(Array.from(tab.raw)).toEqual(Array.from(RAW));
+    expect(tab.focusHost).toBeFalsy();
+  });
+
+  it('hostCaret finds the end of the Host line, or null', () => {
+    expect(hostCaret(enc('POST /x HTTP/1.1\r\nAccept: */*\r\nhost: a.test\r\n\r\n'))).toBe(
+      'POST /x HTTP/1.1\r\nAccept: */*\r\nhost: a.test'.length,
+    );
+    expect(hostCaret(enc('GET / HTTP/1.1\r\n\r\nHost: body\r\n'))).toBeNull();
+  });
+});
+
+describe('send history', () => {
+  const sendN = (n: number) =>
+    vi.fn().mockImplementation(async () => outcome({ exchange_id: `EX${n++}`, ttfb_ms: n, total_ms: 2 * n }));
+
+  it('every send appends a record, newest first, with timings, conn and the sent bytes', async () => {
+    const api = mockApi({ sendRequest: sendN(1) });
+    const r = createRepeater({ api });
+    const id = r.newTab({ conn: { host: 'a.test', port: 8443, tls: true }, raw: RAW });
+    await r.send(id);
+    r.setRaw(id, enc('GET /2 HTTP/1.1\r\n\r\n'));
+    await r.send(id);
+    const h = r.tabs[0].history!;
+    expect(h).toHaveLength(2);
+    expect(h[0].exchange_id).toBe('EX2');
+    expect(h[1].exchange_id).toBe('EX1');
+    expect(h[1]).toMatchObject({ ttfb_ms: 2, total_ms: 4, scope_state: 'in', request_len: RAW.length });
+    expect(h[1].conn).toMatchObject({ host: 'a.test', port: 8443, tls: true });
+    expect(Array.from(latin1(atob(h[1].request!)))).toEqual(Array.from(RAW));
+    expect(h[1].request_sha256).toBe(sha256Hex(RAW));
+    expect(Number.isNaN(Date.parse(h[0].at))).toBe(false);
+    expect(h[0].truncated).toBeFalsy();
+  });
+
+  it('a failed send is recorded with its error and no exchange id', async () => {
+    const api = mockApi({ sendRequest: vi.fn().mockRejectedValue(new ApiError('bad_gateway', 'connect refused', 502)) });
+    const r = createRepeater({ api });
+    const id = r.newTab({ conn: { host: 'a.test' }, raw: RAW });
+    await r.send(id);
+    const rec = r.tabs[0].history![0];
+    expect(rec.error).toBe('connect refused');
+    expect(rec.exchange_id).toBeUndefined();
+    expect(rec.request).toBeDefined();
+  });
+
+  it('keeps at most 50 records', async () => {
+    const api = mockApi({ sendRequest: sendN(1) });
+    const r = createRepeater({ api });
+    const id = r.newTab({ raw: RAW });
+    for (let i = 0; i < 53; i++) await r.send(id);
+    const h = r.tabs[0].history!;
+    expect(h).toHaveLength(HISTORY_MAX);
+    expect(HISTORY_MAX).toBe(50);
+    expect(h[0].exchange_id).toBe('EX53');
+    expect(h[49].exchange_id).toBe('EX4');
+  });
+
+  it('a request over 256 KiB keeps only its digest and is marked truncated', async () => {
+    const api = mockApi();
+    const r = createRepeater({ api });
+    const big = new Uint8Array(HISTORY_REQUEST_MAX + 1).fill(0x41);
+    const id = r.newTab({ raw: big });
+    await r.send(id);
+    const rec = r.tabs[0].history![0];
+    expect(rec.truncated).toBe(true);
+    expect(rec.request).toBeUndefined();
+    expect(rec.request_sha256).toBe(sha256Hex(big));
+    expect(rec.request_len).toBe(big.length);
+  });
+
+  it('the history is persisted through the draft PUT and loaded back', async () => {
+    const api = mockApi({ sendRequest: sendN(1) });
+    const r = createRepeater({ api });
+    const id = r.newTab({ raw: RAW });
+    await r.send(id);
+    await r.flushDrafts();
+    const json = (api.putTab as ReturnType<typeof vi.fn>).mock.calls.at(-1)![1];
+    const back = fromJson(id, JSON.parse(JSON.stringify(json)))!;
+    expect(back.history).toHaveLength(1);
+    expect(back.history![0]).toEqual(JSON.parse(JSON.stringify(r.tabs[0].history![0])));
+  });
+
+  it('fromJson drops malformed records and caps the list', () => {
+    const good = { at: '2026-11-01T00:00:00.000Z', request_sha256: 'ab', request_len: 1, conn: { host: 'h', port: 1, tls: false, reuse: false, follow: 'off' }, mode: 'raw' };
+    const back = fromJson('X', {
+      raw: '',
+      history: [
+        good,
+        null,
+        { at: 5 },
+        { ...good, at: 'x1', status: 'x', exchange_id: 9 },
+        ...Array.from({ length: 60 }, (_, i) => ({ ...good, at: `t${i}` })),
+      ],
+    })!;
+    expect(back.history).toHaveLength(50);
+    expect(back.history![1].status).toBeUndefined();
+    expect(back.history![1].exchange_id).toBeUndefined();
+    expect(fromJson('X', { raw: '', history: 'nope' })!.history).toEqual([]);
+    // A stored duplicate (same time, digest and exchange) is dropped: it is the list key.
+    expect(fromJson('X', { raw: '', history: [good, good, { ...good, exchange_id: 'E' }] })!.history).toHaveLength(2);
+  });
+
+  it('keeps the draft under the server limit by dropping the oldest request bytes first', async () => {
+    const api = mockApi({ sendRequest: sendN(1) });
+    const r = createRepeater({ api });
+    const id = r.newTab({ raw: new Uint8Array(200 * 1024).fill(0x42) });
+    for (let i = 0; i < 6; i++) await r.send(id);
+    await r.flushDrafts();
+    const json = (api.putTab as ReturnType<typeof vi.fn>).mock.calls.at(-1)![1];
+    const size = new TextEncoder().encode(JSON.stringify(json)).length;
+    expect(size).toBeLessThanOrEqual(DRAFT_BUDGET);
+    expect(DRAFT_BUDGET).toBeLessThan(1024 * 1024);
+    const h = r.tabs[0].history!;
+    expect(h[0].request).toBeDefined(); // the newest keeps its bytes
+    expect(h[5].truncated).toBe(true); // the oldest lost them
+    expect(h[5].request_sha256).toBe(h[0].request_sha256);
+  });
+
+  it('noteResponse fills status and size on the matching record and persists it', async () => {
+    const api = mockApi({ sendRequest: sendN(1) });
+    const r = createRepeater({ api });
+    const id = r.newTab({ raw: RAW });
+    await r.send(id);
+    await r.flushDrafts();
+    (api.putTab as ReturnType<typeof vi.fn>).mockClear();
+    r.noteResponse(id, 'EX1', { status: 404, size: 1234 });
+    expect(r.tabs[0].history![0]).toMatchObject({ status: 404, size: 1234 });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(api.putTab).toHaveBeenCalledTimes(1);
+    // Same values again: no new save.
+    r.noteResponse(id, 'EX1', { status: 404, size: 1234 });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(api.putTab).toHaveBeenCalledTimes(1);
+  });
+
+  it('clearHistory empties the list and saves', async () => {
+    const api = mockApi();
+    const r = createRepeater({ api });
+    const id = r.newTab({ raw: RAW });
+    await r.send(id);
+    r.clearHistory(id);
+    expect(r.tabs[0].history).toEqual([]);
+    await r.flushDrafts();
+    expect((api.putTab as ReturnType<typeof vi.fn>).mock.calls.at(-1)![1]).toMatchObject({ history: [] });
+  });
+});
+
+describe('restore from history (Review Focus 3)', () => {
+  it('restores the exact sent bytes over an edited draft, sets dirty and sends nothing', async () => {
+    const api = mockApi({
+      sendRequest: vi
+        .fn()
+        .mockResolvedValueOnce(outcome({ exchange_id: 'A', ttfb_ms: 5, total_ms: 6 }))
+        .mockResolvedValueOnce(outcome({ exchange_id: 'B' }))
+        .mockResolvedValueOnce(outcome({ exchange_id: 'C' })),
+    });
+    const r = createRepeater({ api });
+    const id = r.newTab({ conn: { host: 'a.test', port: 81 }, raw: RAW });
+    await r.send(id);
+    r.setRaw(id, enc('POST /edited HTTP/1.1\r\n\r\n'));
+    r.setConn(id, { host: 'b.test' });
+    await r.send(id);
+    r.setRaw(id, enc('PUT /later-edit HTTP/1.1\r\n\r\n'));
+    const tab = r.tabs[0];
+    const rev = tab.rev ?? 0;
+    expect(tab.dirty).toBe(true);
+    await r.send(id); // third send so dirty resets, then edit again
+    expect(tab.dirty).toBe(false);
+    r.setRaw(id, enc('PUT /unsent HTTP/1.1\r\n\r\n'));
+    (api.sendRequest as ReturnType<typeof vi.fn>).mockClear();
+
+    r.restore(id, 2); // the first send (A)
+    expect(Array.from(tab.raw)).toEqual(Array.from(RAW));
+    expect(tab.conn.host).toBe('a.test');
+    expect(tab.dirty).toBe(true);
+    expect(tab.rev).toBe(rev + 1); // the editor re-seeds
+    expect(tab.outcome?.exchange_id).toBe('A');
+    expect(tab.outcome?.ttfb_ms).toBe(5);
+    expect(tab.notice).toMatch(/not sent/i);
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(api.sendRequest).not.toHaveBeenCalled();
+    // The restore is an edit of the draft: it autosaves.
+    const json = (api.putTab as ReturnType<typeof vi.fn>).mock.calls.at(-1)![1] as { raw: string };
+    expect(json.raw).toBe(bytesToLatin1(RAW));
+  });
+
+  it('a truncated record restores the response only and says so', async () => {
+    const api = mockApi({ sendRequest: vi.fn().mockResolvedValue(outcome({ exchange_id: 'BIG' })) });
+    const r = createRepeater({ api });
+    const big = new Uint8Array(HISTORY_REQUEST_MAX + 10).fill(0x41);
+    const id = r.newTab({ raw: big });
+    await r.send(id);
+    r.setRaw(id, RAW);
+    r.restore(id, 0);
+    const tab = r.tabs[0];
+    expect(Array.from(tab.raw)).toEqual(Array.from(RAW)); // editor untouched
+    expect(tab.outcome?.exchange_id).toBe('BIG');
+    expect(tab.notice).toMatch(/response only/i);
+    expect(api.sendRequest).toHaveBeenCalledTimes(1);
+  });
+
+  it('a failed record restores the request and shows its error', async () => {
+    const api = mockApi({ sendRequest: vi.fn().mockRejectedValue(new ApiError('x', 'refused', 502)) });
+    const r = createRepeater({ api });
+    const id = r.newTab({ raw: RAW });
+    await r.send(id);
+    r.setRaw(id, enc('X'));
+    r.restore(id, 0);
+    const tab = r.tabs[0];
+    expect(Array.from(tab.raw)).toEqual(Array.from(RAW));
+    expect(tab.outcome).toBeUndefined();
+    expect(tab.error).toBe('refused');
+  });
+
+  it('an out-of-range index is ignored', () => {
+    const r = createRepeater({ api: mockApi() });
+    const id = r.newTab({ raw: RAW });
+    r.restore(id, 3);
+    expect(Array.from(r.tabs[0].raw)).toEqual(Array.from(RAW));
+  });
+});
+
+describe('compare with previous', () => {
+  function ex(head: string) {
+    return { id: 'x', request: {}, response: { head: { type: 'http1-raw', bytes: btoa(head) } } };
+  }
+
+  it('picks the shown response and the previous one with a response', async () => {
+    const ids = ['A', 'B', 'C'];
+    const api = mockApi({
+      sendRequest: vi
+        .fn()
+        .mockResolvedValueOnce(outcome({ exchange_id: ids[0] }))
+        .mockRejectedValueOnce(new ApiError('x', 'fail', 502))
+        .mockResolvedValueOnce(outcome({ exchange_id: ids[2] })),
+    });
+    const r = createRepeater({ api });
+    const id = r.newTab({ raw: RAW });
+    expect(r.comparePair(r.tabs[0])).toBeNull();
+    await r.send(id);
+    expect(r.comparePair(r.tabs[0])).toBeNull(); // one response only
+    await r.send(id); // failed: no response
+    await r.send(id);
+    const pair = r.comparePair(r.tabs[0])!;
+    expect(pair.newer.exchange_id).toBe('C');
+    expect(pair.older.exchange_id).toBe('A');
+  });
+
+  it('loads both responses as Raw text (head + body, Latin-1)', async () => {
+    const api = mockApi({
+      sendRequest: vi
+        .fn()
+        .mockResolvedValueOnce(outcome({ exchange_id: 'A' }))
+        .mockResolvedValueOnce(outcome({ exchange_id: 'B' })),
+      getExchange: vi.fn().mockImplementation(async (x: string) =>
+        ex(x === 'A' ? 'HTTP/1.1 200 OK\r\nX: 1\r\n\r\n' : 'HTTP/1.1 500 Oops\r\nX: 1\r\n\r\n'),
+      ),
+      getRespBody: vi.fn().mockImplementation(async (x: string) => {
+        if (x === 'B') throw new ApiError('not_found', 'no body', 404);
+        return new Uint8Array([0x68, 0xe9, 0x0a, 0x62]);
+      }),
+    });
+    const r = createRepeater({ api });
+    const id = r.newTab({ raw: RAW });
+    await r.send(id);
+    await r.send(id);
+    const c = (await r.compareWithPrevious(id))!;
+    expect(c.older.exchange_id).toBe('A');
+    expect(c.olderText).toBe('HTTP/1.1 200 OK\r\nX: 1\r\n\r\nhé\nb');
+    expect(c.newerText).toBe('HTTP/1.1 500 Oops\r\nX: 1\r\n\r\n');
+  });
+
+  it('responseRawText renders a normalized head as name: value lines', () => {
+    const t = responseRawText(
+      { response: { head: { type: 'normalized', map: [[':status', btoa('204')], ['a', btoa('b')]] } } },
+      new Uint8Array(),
+    );
+    expect(t).toBe(':status: 204\r\na: b\r\n\r\n');
+    expect(responseRawText({}, new Uint8Array([0x7a]))).toBe('z');
+  });
+});
+
+describe('target from the Host header', () => {
+  it('hostHeader reads the head only', () => {
+    expect(hostHeader(enc('GET / HTTP/1.1\r\nHOST:  a.test:8443 \r\n\r\n'))).toBe('a.test:8443');
+    expect(hostHeader(enc('GET / HTTP/1.1\r\n\r\nHost: body.test\r\n'))).toBeNull();
+    expect(hostHeader(enc('GET / HTTP/1.1\r\nHost: \r\n\r\n'))).toBe('');
+  });
+
+  it('targetFromHost parses host, port and bracketed IPv6', () => {
+    const t = (s: string) => targetFromHost(enc(`GET / HTTP/1.1\r\nHost: ${s}\r\n\r\n`));
+    expect(t('api.test')).toEqual({ host: 'api.test' });
+    expect(t('api.test:443')).toEqual({ host: 'api.test', port: 443 });
+    expect(t('[::1]:8080')).toEqual({ host: '::1', port: 8080 });
+    expect(t('[2001:db8::2]')).toEqual({ host: '2001:db8::2' });
+    expect(t('a.test:0')).toBeNull();
+    expect(t('a.test:65536')).toBeNull();
+    expect(t('a b')).toBeNull();
+    expect(t('')).toBeNull();
+    expect(t('a.test:')).toBeNull();
+    expect(targetFromHost(enc('GET / HTTP/1.1\r\n\r\n'))).toBeNull();
+  });
+
+  it('send fills an empty target from Host:port 443 and turns TLS on', async () => {
+    const api = mockApi();
+    const r = createRepeater({ api });
+    const id = r.newTab();
+    r.setRaw(id, enc('GET / HTTP/1.1\r\nHost: api.example.test:443\r\n\r\n'));
+    await r.send(id);
+    const body = (api.sendRequest as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(body).toMatchObject({ host: 'api.example.test', port: 443, tls: true });
+    expect(r.tabs[0].conn).toMatchObject({ host: 'api.example.test', port: 443, tls: true });
+    await r.flushDrafts();
+    expect((api.putTab as ReturnType<typeof vi.fn>).mock.calls.at(-1)![1]).toMatchObject({
+      conn: { host: 'api.example.test', port: 443, tls: true },
+    });
+  });
+
+  it('a bare Host keeps port 80 without TLS; a non-standard port keeps TLS as set', async () => {
+    const api = mockApi();
+    const r = createRepeater({ api });
+    const a = r.newTab({ raw: enc('GET / HTTP/1.1\r\nHost: plain.test\r\n\r\n') });
+    await r.send(a);
+    expect((api.sendRequest as ReturnType<typeof vi.fn>).mock.calls[0][0]).toMatchObject({
+      host: 'plain.test',
+      port: 80,
+      tls: false,
+    });
+    const b = r.newTab({ conn: { tls: true }, raw: enc('GET / HTTP/1.1\r\nHost: odd.test:8443\r\n\r\n') });
+    await r.send(b);
+    expect((api.sendRequest as ReturnType<typeof vi.fn>).mock.calls[1][0]).toMatchObject({
+      host: 'odd.test',
+      port: 8443,
+      tls: true,
+    });
+  });
+
+  it('never overwrites a target the user set', async () => {
+    const api = mockApi();
+    const r = createRepeater({ api });
+    const id = r.newTab({ conn: { host: 'set.test', port: 9000 }, raw: enc('GET / HTTP/1.1\r\nHost: other.test:443\r\n\r\n') });
+    await r.send(id);
+    expect((api.sendRequest as ReturnType<typeof vi.fn>).mock.calls[0][0]).toMatchObject({ host: 'set.test', port: 9000, tls: false });
+    expect(r.tabs[0].conn.host).toBe('set.test');
+  });
+
+  it('a blank or garbage Host leaves the target empty for the server to refuse', async () => {
+    const api = mockApi();
+    const r = createRepeater({ api });
+    const a = r.newTab();
+    await r.send(a);
+    const b = r.newTab({ raw: enc('GET / HTTP/1.1\r\nHost: bad host:99999\r\n\r\n') });
+    await r.send(b);
+    const calls = (api.sendRequest as ReturnType<typeof vi.fn>).mock.calls;
+    expect(calls[0][0].host).toBe('');
+    expect(calls[1][0].host).toBe('');
+  });
+});
+
+describe('compare size cap', () => {
+  it('a side over DIFF_MAX_BYTES is reported too large without decoding it', async () => {
+    const huge = new Uint8Array(DIFF_MAX_BYTES + 1).fill(0x61);
+    const api = mockApi({
+      sendRequest: vi
+        .fn()
+        .mockResolvedValueOnce(outcome({ exchange_id: 'A' }))
+        .mockResolvedValueOnce(outcome({ exchange_id: 'B' })),
+      getExchange: vi.fn().mockResolvedValue({ response: { head: { type: 'http1-raw', bytes: btoa('HTTP/1.1 200 OK\r\n\r\n') } } }),
+      getRespBody: vi.fn().mockImplementation(async (x: string) => (x === 'B' ? huge : new Uint8Array([0x61]))),
+    });
+    const r = createRepeater({ api });
+    const id = r.newTab({ raw: RAW });
+    await r.send(id);
+    await r.send(id);
+    const c = (await r.compareWithPrevious(id))!;
+    expect(c.tooLarge).toBe(true);
+    expect(c.newerText).toBe('');
+    expect(c.olderText).toBe('');
+  });
+
+  it('records the request line for the compare labels', async () => {
+    const r = createRepeater({ api: mockApi() });
+    const id = r.newTab({ raw: enc('POST /api/login?x=1 HTTP/1.1\r\nHost: a\r\n\r\n') });
+    await r.send(id);
+    expect(r.tabs[0].history![0].target).toBe('POST /api/login?x=1');
   });
 });

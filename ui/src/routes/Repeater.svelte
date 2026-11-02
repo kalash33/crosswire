@@ -3,7 +3,6 @@
   import { repeater } from '../lib/stores/repeater.svelte';
   import { keymap } from '../lib/keymap';
   import RepeaterTab from '../lib/components/RepeaterTab.svelte';
-  import { toasts } from '../lib/ui/toasts.svelte';
   import Button from '../lib/ui/Button.svelte';
   import EmptyState from '../lib/ui/EmptyState.svelte';
   import Icon from '../lib/ui/Icon.svelte';
@@ -17,11 +16,10 @@
     if (next) repeater.selectTab(next.id);
   }
 
-  // Send a tab; a failure is shown in the response pane and raised as a toast.
+  // Send a tab. The store records a failure on the tab and raises the one
+  // error toast for every caller.
   async function sendTab(id: string): Promise<void> {
     await repeater.send(id);
-    const t = repeater.tabs.find((x) => x.id === id);
-    if (t?.error) toasts.push({ kind: 'error', text: `Send failed: ${t.error}` });
   }
 
   // Load persisted tab drafts on mount. If none survive, open a fresh tab so the
@@ -31,7 +29,8 @@
   onMount(() => {
     void (async () => {
       await repeater.loadTabs();
-      if (repeater.tabs.length === 0) repeater.newTab();
+      // Not an explicit "New": leave keyboard focus where it is.
+      if (repeater.tabs.length === 0) repeater.newTab({}, { focus: false });
     })();
     const offs = [
       keymap.register('send', () => {

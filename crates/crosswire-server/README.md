@@ -39,6 +39,7 @@ and `crosswire token` mints the scoped tokens scripts authenticate with.
 crosswire [--log LEVEL] <COMMAND>
 
   serve    Run the intercepting proxy and the API, recording into a project
+  app      serve, plus the UI in its own window and a browser wired to the proxy
   token    Mint, list, revoke or rotate a project's API tokens
   browser  Launch a browser pre-configured to use the proxy
   ca       Inspect or export the interception CA
@@ -63,6 +64,8 @@ Logs go to **stderr**; stdout carries command output only.
 | `--api-bind ADDR` | `127.0.0.1:8081` | the API listener (a **separate** socket from the proxy); a non-loopback value warns and binds anyway |
 | `--bootstrap-file PATH` | none | write the one-time bootstrap URL to a 0600 file instead of printing it on stdout |
 | `--enforce-scope-strictly` | off | refuse out-of-scope repeater sends outright instead of recording them with an out-of-scope audit row |
+| `--open[=browser\|app]` | off | once the API listens, open the bootstrap URL: `browser` (the value when none is given) in the system's default browser (`open`, `xdg-open`, `cmd /c start`), `app` in a Chromium-based browser's app mode (`--app=URL`, its own 0700 profile at `<project>/app-profile`), falling back to `browser` when none is installed. A failure only warns on stderr; `serve` keeps running and its exit code is unchanged. `CROSSWIRE_OPENER=PATH` replaces the default-browser opener |
+| `--browser-path PATH` | auto-detect | the Chromium-based browser for `--open=app` and `crosswire app` |
 
 The proxy's other limits keep their defaults; they are in the
 [`crosswire-proxy` README](https://github.com/kalash33/crosswire/blob/main/crates/crosswire-proxy/README.md).
@@ -91,11 +94,16 @@ Startup runs in this order, so a bad configuration creates nothing:
    `crosswire browser` can find it.
 8. Bind the API listener, build its shared state over the same store, scope,
    intercept and a repeater, and mint the single-use bootstrap token.
-9. Print four lines on stdout (below), then serve the proxy and the API
-   concurrently under one shutdown signal until a signal arrives.
-10. On shutdown, log the counters, audit `listener.stop`, and close the store.
+9. Print four lines on stdout (below); with `--open` (or `crosswire app`),
+   launch the browsers. Then serve the proxy and the API concurrently under one
+   shutdown signal until a signal arrives.
+10. On shutdown, log the counters, audit `listener.stop`, close the store,
+    and then stop the browsers `serve` launched (the app window and the wired
+    browser: SIGTERM, then a kill after 5 s). The browsers stop last, so one
+    that ignores SIGTERM can delay the exit but never the clean close.
     `Store::close` runs on every path once the store is open, so the project is
-    marked cleanly closed even after an error.
+    marked cleanly closed even after an error, and the launched browsers are
+    stopped on those paths too.
 
 The audit log is `audit.jsonl` in the project, actor `cli`, result `ok`. The
 `serve` actions are `ca.generate` (only when the CA was created), `allow.add`,
@@ -128,6 +136,16 @@ to a 0600 file instead, and stdout names only the path:
 ```text
 bootstrap url written to /path/to/file (valid for 60 s)
 ```
+
+`--open` hands the same URL to the opener or browser it launches, always as one
+argv entry and never through a shell; the URL is still printed (or written to
+`--bootstrap-file`), so a failed open costs nothing. The token is single-use, so
+once the opened page has exchanged it, the copy in the browser's argv is spent.
+Until then another local user can read it from the process list (`ps`,
+`/proc/<pid>/cmdline`) and race the browser for the session, so on a shared
+multi-user host prefer `--bootstrap-file` without `--open`. With both flags the
+0600 file is still written, but after a successful open it holds a token that
+has already been used.
 
 ### `crosswire token`
 
@@ -171,6 +189,21 @@ proxy address and `http://crosswire/` and exits **3**.
 
 `crosswire browser reset-profile --project DIR` deletes the profile directory
 and audits `browser.profile_reset` (so it, too, needs the project unlocked).
+
+### `crosswire app`
+
+`crosswire app --project DIR [serve flags]` is `serve --open=app` plus a
+browser wired to the proxy (the `crosswire browser` launch, with the address
+`serve` just bound) once the proxy is listening: one command gives the whole
+workstation. It takes every `serve` flag; `--open=browser` is refused (exit
+**2**). The UI opens in its own app window (profile `<project>/app-profile`), the
+wired browser uses `<project>/browser-profile`, so the two are separate browser
+instances. With no Chromium-based browser the UI falls back to the default
+browser and the wired launch is skipped with a warning naming the proxy
+address; serving continues. Ctrl-C (or SIGTERM) stops `serve` and both browsers.
+Only browsers this run started are stopped: if an earlier run was killed with
+`kill -9` and left its app window open, the next launch on the same profile is
+handed to that window, which a later Ctrl-C does not close.
 
 ### `crosswire ca`
 

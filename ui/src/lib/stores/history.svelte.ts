@@ -40,6 +40,24 @@ export interface Row extends ExchangeRowDto {
   uncommitted: boolean;
 }
 
+/**
+ * Client-side search over the loaded rows: a case-insensitive substring match
+ * on host, path and tags. A blank query keeps every row. Pure, text only.
+ */
+export function clientFilter<T extends { host: string | null; path: string | null; tags: readonly string[] }>(
+  rows: readonly T[],
+  q: string,
+): readonly T[] {
+  const needle = q.trim().toLowerCase();
+  if (needle === '') return rows;
+  return rows.filter(
+    (r) =>
+      (r.host ?? '').toLowerCase().includes(needle) ||
+      (r.path ?? '').toLowerCase().includes(needle) ||
+      r.tags.some((t) => t.toLowerCase().includes(needle)),
+  );
+}
+
 /** One page of rows, keyed by an opaque keyset cursor. */
 export interface PageDto<T> {
   items: T[];
@@ -121,8 +139,11 @@ export function createHistory(opts: HistoryOptions = {}) {
   let activeFilter = $state<ExchangeFilter>({});
   let loading = $state(false);
   let error = $state<string | null>(null);
-  // Plain (non-reactive) paging cursor: null means "no more / not yet loaded".
-  let nextCursor: string | null = null;
+  // Paging cursor: null means "no more / not yet loaded". Reactive, because
+  // `hasMore` drives the Load more button: as a plain variable an expression
+  // like `!hasMore || loading` short-circuited on the first (empty) render,
+  // tracked nothing, and left the button disabled for good.
+  let nextCursor = $state<string | null>(null);
   let loaded = false;
 
   function params(after: string | undefined): QueryParams {

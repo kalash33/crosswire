@@ -18,6 +18,8 @@ const msg = (head: string, body: unknown) => ({
 interface Opts {
   /** Request head for every exchange (default a plain GET). */
   reqHead?: string;
+  /** Overrides for each listed row (merged over the plain GET rows). */
+  rowPatch?: (i: number) => Record<string, unknown>;
 }
 
 async function mock(page: Page, opts: Opts = {}) {
@@ -27,6 +29,7 @@ async function mock(page: Page, opts: Opts = {}) {
         // Newest first, so table order is ids order.
         id, created_at: 1_700_000_000_000 - i, method: 'GET', host: 'shop.example',
         path: `/p/${i + 1}?q=1`, status: 200, resp_len: BODY.length, state: 'committed', tags: [],
+        ...(opts.rowPatch?.(i) ?? {}),
       })),
   });
   await mockEvents(page);
@@ -241,3 +244,60 @@ test('side by side, the detail-tab ids are scoped per message', async ({ page })
   await expect(page.getByTestId('detail-resp-hex')).toBeVisible();
   await expect(page.getByTestId('detail-req-headers')).toBeVisible();
 });
+
+// Product item 1: at the default 45/55 split, every History column is readable
+// without a horizontal scroll. Host and Path may ellipsize (their full text is
+// in `title`); the fixed-width columns and every header label must not clip.
+for (const vp of [
+  { width: 1440, height: 900 },
+  { width: 1280, height: 720 },
+]) {
+  test(`History fits the default split at ${vp.width}x${vp.height}`, async ({ page }) => {
+    await page.setViewportSize(vp);
+    await page.addInitScript(() => {
+      if (!sessionStorage.getItem('cleared')) {
+        localStorage.clear();
+        sessionStorage.setItem('cleared', '1');
+      }
+    });
+    await mock(page, {
+      rowPatch: (i) => ({
+        // An older row shows the long "MMM DD HH:MM:SS" time.
+        created_at: Date.UTC(2023, 9, 31, 13, 52, 30 - i),
+        method: ['GET', 'OPTIONS', 'DELETE'][i],
+        host: 'api.staging.shop-example-long-subdomain.example.com',
+        path: `/v1/orders/${i}/line-items?page=2&expand=customer,shipping,billing`,
+        status: [200, 404, 503][i],
+        resp_len: [1_048_576, 12_345, 999][i],
+        state: ['committed', 'error', 'committed'][i],
+        tags: [['idor', 'auth'], ['todo'], []][i],
+      }),
+    });
+    await page.goto('/');
+    await openRow(page);
+    if (process.env.HISTORY_SHOT_DIR) {
+      await page.screenshot({ path: `${process.env.HISTORY_SHOT_DIR}/history-${vp.width}x${vp.height}.png` });
+    }
+    const list = page.getByTestId('history-list');
+    const fit = await list.evaluate((el) => ({ sw: el.scrollWidth, cw: el.clientWidth }));
+    expect(fit.sw).toBeLessThanOrEqual(fit.cw);
+    const tags = list.locator('thead th', { hasText: /^Tags$/ });
+    const tbox = await tags.boundingBox();
+    const lbox = await list.boundingBox();
+    expect(tbox).not.toBeNull();
+    expect(tbox!.x + tbox!.width).toBeLessThanOrEqual(lbox!.x + lbox!.width + 0.5);
+    expect(tbox!.x + tbox!.width).toBeLessThanOrEqual(vp.width);
+    // Every header label is whole (no ellipsis), and so are the short cells.
+    const clipped = await list.evaluate((el) => {
+      const bad: string[] = [];
+      for (const th of el.querySelectorAll('thead th')) {
+        if (th.scrollWidth > th.clientWidth) bad.push(`th:${th.textContent?.trim()}`);
+      }
+      for (const td of el.querySelectorAll('tbody td:not(.host):not(.path):not(.tags)')) {
+        if (td.scrollWidth > td.clientWidth) bad.push(`td:${td.textContent?.trim()}`);
+      }
+      return bad;
+    });
+    expect(clipped).toEqual([]);
+  });
+}

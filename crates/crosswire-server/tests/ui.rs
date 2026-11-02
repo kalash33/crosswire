@@ -338,3 +338,47 @@ async fn serves_ui_bundle_with_csp_and_keeps_api_gated() {
 
     sigint_and_wait(&mut child.0);
 }
+
+/// The installable-app files the UI links from `index.html` are served from
+/// the bundle with their own content types, under the unchanged UI CSP.
+#[tokio::test(flavor = "multi_thread")]
+async fn serves_the_manifest_and_icons_with_their_content_types() {
+    let tmp = tempfile::tempdir().unwrap();
+    let project = tmp.path().join("proj");
+    let ca_dir = tmp.path().join("ca");
+    let mut child = Reap(spawn_serve(
+        project.to_str().unwrap(),
+        ca_dir.to_str().unwrap(),
+    ));
+    let (api, _boot) = tokio::task::block_in_place(|| wait_startup(&mut child.0));
+
+    for (path, want) in [
+        ("/manifest.webmanifest", "application/manifest+json"),
+        ("/icons/icon.svg", "image/svg+xml"),
+        ("/icons/icon-192.png", "image/png"),
+        ("/icons/icon-512.png", "image/png"),
+    ] {
+        let (st, hdrs, body) = http(api, "GET", path, &[], None).await;
+        assert_eq!(st, 200, "GET {path}");
+        assert_eq!(header(&hdrs, "content-type"), Some(want), "{path}");
+        assert_eq!(header(&hdrs, "x-content-type-options"), Some("nosniff"));
+        let csp = header(&hdrs, "content-security-policy").expect("a CSP header");
+        assert!(csp.contains("default-src 'self'"), "{path}: {csp}");
+        assert!(!body.is_empty(), "{path}");
+    }
+    let (_, _, manifest) = http(api, "GET", "/manifest.webmanifest", &[], None).await;
+    let m: serde_json::Value = serde_json::from_slice(&manifest).unwrap();
+    assert_eq!(m["name"], "Crosswire");
+    assert_eq!(m["display"], "standalone");
+
+    // index.html links them.
+    let (_, _, index) = http(api, "GET", "/", &[], None).await;
+    let index = String::from_utf8_lossy(&index);
+    assert!(
+        index.contains("rel=\"manifest\" href=\"/manifest.webmanifest\""),
+        "{index}"
+    );
+    assert!(index.contains("href=\"/icons/icon.svg\""), "{index}");
+
+    sigint_and_wait(&mut child.0);
+}
