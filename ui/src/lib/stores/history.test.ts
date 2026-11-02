@@ -424,6 +424,83 @@ describe('history store: window support', () => {
   });
 });
 
+describe('history store: races and teardown', () => {
+  function sub() {
+    let emit: (e: Event) => void = () => {};
+    return { subscribe: (oe: (e: Event) => void) => ((emit = oe), () => {}), emit: (e: Event) => emit(e) };
+  }
+
+  it('a stale loadMore resolved after applyFilter is dropped and loading stays true', async () => {
+    let resolveStale: (p: PageDto<ExchangeRowDto>) => void = () => {};
+    let resolveNew: (p: PageDto<ExchangeRowDto>) => void = () => {};
+    const get = vi
+      .fn()
+      .mockResolvedValueOnce(page([row('A')], 'c1'))
+      .mockImplementationOnce(() => new Promise((r) => (resolveStale = r)))
+      .mockImplementationOnce(() => new Promise((r) => (resolveNew = r)));
+    const h = createHistory({ get, subscribe: noSub });
+    await h.applyFilter({});
+    const more = h.loadMore();
+    const filt = h.applyFilter({ host: 'n.test' });
+    resolveStale(page([row('OLD')], null));
+    await more;
+    expect(h.rows.map((r) => r.id)).toEqual(['A']);
+    expect(h.loading).toBe(true);
+    resolveNew(page([row('NEW')], null));
+    await filt;
+    expect(h.rows.map((r) => r.id)).toEqual(['NEW']);
+    expect(h.loading).toBe(false);
+  });
+
+  it('dispose cancels a pending flush', async () => {
+    const s = sub();
+    const queue: (() => void)[] = [];
+    const h = createHistory({
+      get: vi.fn().mockResolvedValue(page([row('A')])),
+      subscribe: s.subscribe,
+      schedule: (fn) => queue.push(fn),
+    });
+    await h.applyFilter({});
+    const before = h.rows;
+    s.emit({ type: 'received', id: 'N', seq: 1 } as Event);
+    h.dispose();
+    queue.shift()!();
+    expect(h.rows).toBe(before);
+  });
+
+  it('a committed event for an unloaded id is a no-op', async () => {
+    const s = sub();
+    const h = createHistory({
+      get: vi.fn().mockResolvedValue(page([row('A')])),
+      subscribe: s.subscribe,
+      schedule: sync,
+    });
+    await h.applyFilter({});
+    const before = h.rows;
+    s.emit({ type: 'committed', ids: ['ZZ'], seq: 2 } as Event);
+    expect(h.rows).toBe(before);
+  });
+
+  it('drops a page that was in flight when a flush trimmed the tail', async () => {
+    const s = sub();
+    let resolve: (p: PageDto<ExchangeRowDto>) => void = () => {};
+    const get = vi
+      .fn()
+      .mockResolvedValueOnce(page([row('A'), row('B'), row('C')], 'c1'))
+      .mockImplementationOnce(() => new Promise((r) => (resolve = r)));
+    const h = createHistory({ get, subscribe: s.subscribe, maxRows: 4, schedule: sync });
+    await h.applyFilter({});
+    const more = h.loadMore();
+    s.emit({ type: 'received', id: 'N1', seq: 1 } as Event);
+    s.emit({ type: 'received', id: 'N2', seq: 2 } as Event);
+    resolve(page([row('D')], 'c2'));
+    await more;
+    expect(h.rows.map((r) => r.id)).toEqual(['N2', 'N1', 'A', 'B']);
+    expect(h.capped).toBe(true);
+    expect(h.loading).toBe(false);
+  });
+});
+
 describe('clientFilter', () => {
   const rows = [
     { host: 'Api.Example.test', path: '/Login', tags: ['auth'] },

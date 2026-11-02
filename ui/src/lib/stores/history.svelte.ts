@@ -161,6 +161,8 @@ export function createHistory(opts: HistoryOptions = {}) {
     return indexMap;
   }
   let seq = 0;
+  // Bumped whenever a live flush trims the tail at the cap.
+  let trimmed = 0;
   let disposed = false;
   let activeFilter = $state<ExchangeFilter>({});
   let loading = $state(false);
@@ -192,12 +194,16 @@ export function createHistory(opts: HistoryOptions = {}) {
 
   async function fetchPage(after: string | undefined, append: boolean): Promise<void> {
     const mine = ++seq;
+    const trimmedAtStart = trimmed;
     loading = true;
     error = null;
     try {
       const page = await get<PageDto<ExchangeRowDto>>(EXCHANGES, params(after));
       // A newer fetch (a replace) superseded this one: drop its result.
       if (mine !== seq) return;
+      // A live flush trimmed the tail while this page was in flight: appending
+      // now would leave a gap past the trimmed rows (and exceed the cap).
+      if (append && trimmed !== trimmedAtStart) return;
       if (append) {
         // Dedupe against loaded rows (and within the page); a page that
         // crosses the cap is appended whole.
@@ -292,7 +298,13 @@ export function createHistory(opts: HistoryOptions = {}) {
     }
     if (!changed) return;
     fresh.reverse();
-    rows = fresh.length > 0 ? [...fresh, ...base].slice(0, maxRows) : base;
+    if (fresh.length === 0) {
+      rows = base;
+      return;
+    }
+    const merged = [...fresh, ...base];
+    if (merged.length > maxRows) trimmed++;
+    rows = merged.slice(0, maxRows);
   }
 
   function onEvent(ev: Event): void {
@@ -434,6 +446,7 @@ export function createHistory(opts: HistoryOptions = {}) {
     loadMore,
     dispose(): void {
       disposed = true;
+      queue = [];
       unsubscribe();
     },
   };

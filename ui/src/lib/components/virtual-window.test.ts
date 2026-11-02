@@ -65,6 +65,18 @@ describe('windowFor', () => {
   });
 });
 
+describe('zero row height', () => {
+  it('windowFor returns a finite head window', () => {
+    expect(windowFor(500, VIEW, 0, HEAD, 1000)).toEqual({ start: 0, end: OVERSCAN, before: 0, after: 0 });
+    expect(windowFor(0, VIEW, NaN, HEAD, 3)).toEqual({ start: 0, end: 3, before: 0, after: 0 });
+  });
+
+  it('anchorAt and restoreAnchor return null', () => {
+    expect(anchorAt(100, 0, HEAD, ['a', 'b'])).toBeNull();
+    expect(restoreAnchor({ id: 'a', offset: 0 }, () => 0, 0, HEAD)).toBeNull();
+  });
+});
+
 describe('revealTop', () => {
   it('is null for a fully visible row', () => {
     expect(revealTop(5, 0, VIEW, ROW, HEAD, FOOT)).toBeNull();

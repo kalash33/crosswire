@@ -25,6 +25,8 @@ export function windowFor(
   total: number,
   overscan: number = OVERSCAN,
 ): Win {
+  // Not laid out yet (rowH 0/NaN): render a stable head, never NaN pads.
+  if (!(rowH > 0)) return { start: 0, end: Math.max(0, Math.min(total, overscan)), before: 0, after: 0 };
   const first = Math.floor(Math.max(0, scrollTop - headH) / rowH);
   const visible = Math.ceil(viewportH / rowH);
   const end = Math.max(0, Math.min(total, first + visible + overscan));
@@ -55,6 +57,7 @@ export function anchorAt(
   headH: number,
   ids: readonly string[],
 ): { id: string; offset: number } | null {
+  if (!(rowH > 0)) return null;
   const i = Math.ceil(Math.max(0, scrollTop - headH) / rowH);
   if (i >= ids.length) return null;
   return { id: ids[i], offset: headH + i * rowH - scrollTop };
@@ -67,6 +70,7 @@ export function restoreAnchor(
   rowH: number,
   headH: number,
 ): number | null {
+  if (!(rowH > 0)) return null;
   const i = indexOf(anchor.id);
   if (i < 0) return null;
   return headH + i * rowH - anchor.offset;
