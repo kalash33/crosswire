@@ -4,6 +4,7 @@ import {
   createKeymap,
   DEFAULT_BINDINGS,
   chordFromEvent,
+  findHint,
   formatChord,
   normalizeChord,
   recordChord,
@@ -153,6 +154,10 @@ describe('keymap bindings()', () => {
     expect(formatChord('ctrl+space')).toBe('Ctrl+Space');
     expect(formatChord('?')).toBe('?');
     expect(formatChord('ctrl+shift+]')).toBe('Ctrl+Shift+]');
+  });
+
+  it("names the viewer's find chord with its scope", () => {
+    expect(findHint()).toBe('Ctrl+F in the viewer');
   });
 });
 

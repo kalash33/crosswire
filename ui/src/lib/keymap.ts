@@ -80,6 +80,18 @@ export function formatChord(chord: string): string {
     .join('+');
 }
 
+/**
+ * The message viewer's find chord. Find is not a keymap action: it belongs to
+ * the focused viewer, which keeps the chord from the global dispatcher (where
+ * the same chord may be bound, e.g. to Forward), so its hint names the scope.
+ */
+export const VIEWER_FIND_CHORD = 'ctrl+f';
+
+/** Hint for the viewer's find button, e.g. "Ctrl+F in the viewer". */
+export function findHint(): string {
+  return `${formatChord(VIEWER_FIND_CHORD)} in the viewer`;
+}
+
 /** True when keystrokes on `target` are text entry (fields, CodeMirror). */
 function isEditable(target: EventTarget | null): boolean {
   if (!(target instanceof Element)) return false;

@@ -188,3 +188,50 @@ test('Reset and Reset all restore the defaults', async ({ page }) => {
   await expect(shortcutRow(page, 'send-to-repeater').locator('kbd')).toHaveText('Ctrl+R');
   await expect(shortcutRow(page, 'copy-raw').locator('kbd')).toHaveText('Ctrl+Shift+S');
 });
+
+test('the TopBar intercept hint follows a remap without a reload', async ({ page }) => {
+  await mockKeys(page);
+  await page.goto('/settings');
+  const sw = page.getByTestId('topbar-intercept');
+  await expect(sw).toHaveAttribute('title', 'Hold requests at the proxy (Ctrl+I)');
+  await page.getByTestId('shortcut-change-toggle-intercept').click();
+  await page.keyboard.press('Control+Alt+KeyI');
+  await expect(shortcutRow(page, 'toggle-intercept').locator('kbd')).toHaveText('Ctrl+Alt+I');
+  await expect(sw).toHaveAttribute('title', 'Hold requests at the proxy (Ctrl+Alt+I)');
+  await page.getByTestId('shortcuts-reset-all').click();
+  await expect(sw).toHaveAttribute('title', 'Hold requests at the proxy (Ctrl+I)');
+});
+
+test('Ctrl+F inside a viewer opens find and never reaches the global keymap', async ({ page }) => {
+  // Bind Ctrl+F to a global action (toggle intercept) so a leak is observable
+  // from any route; Forward moves out of the way.
+  await page.addInitScript(() =>
+    localStorage.setItem(
+      'crosswire.keymap',
+      JSON.stringify({ forward: 'ctrl+alt+f', 'toggle-intercept': 'ctrl+f' }),
+    ),
+  );
+  const h = await mockKeys(page);
+  await page.goto('/');
+  await page.getByTestId('history-row').locator('td.open').first().click();
+  await expect(page.getByTestId('detail-id')).toHaveText(ROW_ID);
+  const side = page.getByTestId('detail-side-resp');
+  if ((await side.count()) > 0) await side.click();
+  const resp = page.getByTestId('detail-response');
+  await expect(resp.getByTestId('detail-find')).toHaveAttribute('title', 'Find in message (Ctrl+F in the viewer)');
+  // A textual tab: Ctrl+F opens the viewer's find bar.
+  await resp.getByTestId('detail-tab-raw').click();
+  await resp.getByTestId('detail-viewer').focus();
+  await page.keyboard.press('Control+KeyF');
+  await expect(resp.getByTestId('detail-findbar-input')).toBeFocused();
+  // Headers (not textual): the browser keeps Ctrl+F, the app still never sees it.
+  await resp.getByTestId('detail-tab-headers').click();
+  await resp.getByTestId('detail-viewer').focus();
+  await page.keyboard.press('Control+KeyF');
+  await page.waitForTimeout(300);
+  expect(h.interceptPuts).toBe(0);
+  // Outside the viewer the chord is live (so the checks above were meaningful).
+  await page.getByTestId('history-row').first().focus();
+  await page.keyboard.press('Control+KeyF');
+  await expect.poll(() => h.interceptPuts).toBe(1);
+});

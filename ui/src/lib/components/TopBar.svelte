@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { router, routes } from '../router.svelte';
   import { intercept } from '../stores/intercept.svelte';
   import { events } from '../stores/events.svelte';
@@ -13,7 +14,13 @@
   let { onShortcuts }: { onShortcuts: () => void } = $props();
 
   const title = $derived(routes.find((r) => r.path === router.path)?.label ?? '');
-  const toggleChord = formatChord(keymap.chordFor('toggle-intercept') ?? '');
+  // The TopBar never unmounts, so its hint follows remaps live.
+  let keymapVersion = $state(0);
+  onMount(() => keymap.subscribe(() => keymapVersion++));
+  const toggleChord = $derived.by(() => {
+    void keymapVersion;
+    return formatChord(keymap.chordFor('toggle-intercept') ?? '');
+  });
   const on = $derived(intercept.loaded && intercept.enabled);
 
   // Health names the project; the StatusBar loads it too (one shared fetch).
@@ -49,7 +56,7 @@
     aria-checked={on}
     disabled={!intercept.loaded}
     data-testid="topbar-intercept"
-    title={`Hold requests at the proxy (${toggleChord})`}
+    title={toggleChord ? `Hold requests at the proxy (${toggleChord})` : 'Hold requests at the proxy'}
     onclick={() => void intercept.setEnabled(!intercept.enabled)}
   >
     <span class="track" aria-hidden="true"><span class="thumb"></span></span>

@@ -36,7 +36,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     rows and a 45/55 first-run split.
   - *Remappable shortcuts*: Settings records a new chord per action, refuses
     browser-reserved chords, bare keys and conflicts, persists the overrides
-    in the browser and resets one or all; every hint follows the keymap.
+    in the browser and resets one or all; the hints shown in Settings and the
+    shortcuts sheet follow the keymap. Ctrl+F inside a message viewer is the
+    viewer's own find and never reaches a remappable action.
   - *Identity*: the top bar shows the project name (path on hover) and the
     window title reads `project · view · Crosswire`; a favicon, an
     apple-touch icon and a web app manifest (`display: standalone`, drawn

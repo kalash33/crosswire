@@ -27,6 +27,7 @@
   import { bytesToLatin1 } from '../editor/encoding';
   import { parseHeadLines } from '../http/headers';
   import { humanBytes } from '../format';
+  import { findHint } from '../keymap';
   import type { EditorLanguage } from '../editor/lang';
   import {
     contentTypeOf,
@@ -223,17 +224,19 @@
     root?.focus();
   }
 
-  // Ctrl+F (or Cmd+F) opens find ONLY while focus is inside this viewer; the
-  // default action is prevented only then, so the browser's own find and the
-  // app's chords keep working everywhere else.
+  // Ctrl+F (or Cmd+F) belongs to this viewer while focus is inside it: the
+  // keystroke never reaches the global dispatcher, where the same chord may be
+  // bound to another action (Forward, by default). On a textual tab it opens
+  // find; elsewhere (Headers, Hex) the browser's own find runs. Outside the
+  // viewer the app's chords and the browser's find are untouched.
   onMount(() => {
     const el = root;
     if (!el) return;
     const onkey = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'f') {
+        e.stopPropagation();
         if (!textual) return;
         e.preventDefault();
-        e.stopPropagation();
         openFind();
       }
     };
@@ -319,7 +322,7 @@
         size="sm"
         icon="search"
         label="Find in message"
-        kbd="Ctrl+F"
+        kbd={findHint()}
         active={findOpen}
         aria-pressed={findOpen}
         disabled={!textual}
