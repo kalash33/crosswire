@@ -14,6 +14,12 @@ updates:
     groups:
       ui-deps:
         patterns: ["*"]
+    # svelte-check declares a peer range on TypeScript; a major bump breaks
+    # `npm ci` (ERESOLVE) until svelte-check supports it. Take TypeScript
+    # majors by hand once it does.
+    ignore:
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: github-actions
     directory: /
     schedule:
