@@ -69,6 +69,26 @@ against the current URL. Every hop is sent as a plain `GET` with
 `Connection: close`, whatever the redirect status: a `307` or `308` does **not**
 preserve the original method or body.
 
+## Copy renderers
+
+[`to_curl`] renders a recorded request as a `curl` command for a POSIX shell or
+PowerShell (`Shell::Posix`, `Shell::PowerShell`), and [`to_raw`] as its wire
+bytes. [`quote`] is the one routine that makes a value safe for a shell.
+[`body_is_blob`] tells a caller that a body lives in a pack and must be fetched
+separately. Both renderers read only the message they are given, so rendering a
+redacted message cannot leak what the redaction removed. The API serves them as
+`GET /api/v1/exchanges/{id}/curl` and `/raw`.
+
+## Key types
+
+| type | what it is |
+| --- | --- |
+| `Repeater`, `SendRequest`, `SendOutcome`, `SendError` | the repeater, its request and outcome, and why a send failed (`SendError::OutOfScope` among them) |
+| `Mode`, `FollowRedirects` | `Raw` / `Assisted`; `Off` / `InScope` / `Always` |
+| `record_exchange`, `Recorded`, `RecordError` | the recording recipe below |
+| `Url` | the redirect target parser |
+| `to_curl`, `to_raw`, `quote`, `Shell`, `body_is_blob` | the copy renderers above |
+
 ## Recording recipe
 
 [`record::record_exchange`] sends a request over a `Session`, reads the whole

@@ -206,7 +206,7 @@ cargo test --release -p crosswire-store --test perf_ingest -- --nocapture
 # against 2,000/s. Only the body mix and a gross-regression floor are asserted.
 ```
 
-**Status: REPORT-ONLY.** The measured ingest rate (about 700 exchanges/s,
+**Status: REPORT-ONLY** ([ADR-0006](../docs/adr/0006-performance-gates-0-1-0.md)). The measured ingest rate (about 700 exchanges/s,
 about 65 MB/s of body bytes, on the M2 below) is **below the §13 target of
 2,000 exchanges/s**. The test prints the `SUMMARY ingest` line (committed,
 secs, rate, mb_per_s, mix) and asserts only the submitted body mix and a
@@ -277,6 +277,12 @@ passive sampling.
 
 (The earlier forced-layout harness read 283 ms max frame; passive sampling
 roughly halves it but the target is still missed by ~3.6x.)
+
+Re-measured after the U2 History paging change (100,000 rows, real paging):
+max frame 200 ms, p99 150 ms, 76 of 356 frames over 32 ms, filter 190 ms. The
+frame target is still missed. The decision to ship 0.1.0 with this gate
+report-only, and the 0.1.1 plan, are in
+[ADR-0006](../docs/adr/0006-performance-gates-0-1-0.md).
 
 # oha cross-check (authoritative p99 and throughput)
 
