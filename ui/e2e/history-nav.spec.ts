@@ -274,3 +274,24 @@ test('a regex-like search query is literal text and raises no error', async ({ p
   }
   expect(h.pageErrors).toEqual([]);
 });
+
+test('Load more is enabled while the server has more pages and appends the next page', async ({ page }) => {
+  await page.route('**/api/v1/counts', (r) => r.fulfill({ status: 200, json: COUNTS }));
+  const afters: (string | null)[] = [];
+  await page.route(/\/api\/v1\/exchanges(\?.*)?$/, (r) => {
+    const after = new URL(r.request().url()).searchParams.get('after');
+    afters.push(after);
+    const items = after === null ? ROWS.slice(0, 3) : ROWS.slice(3);
+    return r.fulfill({ status: 200, json: { items, next_cursor: after === null ? 'page-2' : null } });
+  });
+  await page.goto('/');
+  await expect(rowsLoc(page)).toHaveCount(3);
+  const more = page.getByTestId('load-more');
+  await expect(more).toHaveText('Load more');
+  await expect(more).toBeEnabled();
+  await more.click();
+  await expect(rowsLoc(page)).toHaveCount(ROWS.length);
+  expect(afters).toEqual([null, 'page-2']);
+  await expect(more).toHaveText('End');
+  await expect(more).toBeDisabled();
+});

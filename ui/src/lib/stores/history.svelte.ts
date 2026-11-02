@@ -139,8 +139,11 @@ export function createHistory(opts: HistoryOptions = {}) {
   let activeFilter = $state<ExchangeFilter>({});
   let loading = $state(false);
   let error = $state<string | null>(null);
-  // Plain (non-reactive) paging cursor: null means "no more / not yet loaded".
-  let nextCursor: string | null = null;
+  // Paging cursor: null means "no more / not yet loaded". Reactive, because
+  // `hasMore` drives the Load more button: as a plain variable an expression
+  // like `!hasMore || loading` short-circuited on the first (empty) render,
+  // tracked nothing, and left the button disabled for good.
+  let nextCursor = $state<string | null>(null);
   let loaded = false;
 
   function params(after: string | undefined): QueryParams {
