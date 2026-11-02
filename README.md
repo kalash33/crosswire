@@ -5,55 +5,22 @@
 [![CI](https://github.com/kalash33/crosswire/actions/workflows/ci.yml/badge.svg)](https://github.com/kalash33/crosswire/actions/workflows/ci.yml)
 [![License: Apache-2.0 OR MIT](https://img.shields.io/badge/license-Apache--2.0%20OR%20MIT-blue.svg)](#licence)
 [![MSRV 1.88](https://img.shields.io/badge/MSRV-1.88-orange.svg)](Cargo.toml)
-[![Status: alpha.2](https://img.shields.io/badge/status-alpha.2%20backend%20and%20web%20UI-yellow.svg)](CHANGELOG.md)
+[![Release](https://img.shields.io/github/v/release/kalash33/crosswire?include_prereleases)](https://github.com/kalash33/crosswire/releases)
 
-Crosswire is an open-source web application security testing platform for
-authorised testing. Every other open proxy is built on a normalising HTTP
-stack, so the bytes a tester sends and sees are not always the bytes on the
-wire. Crosswire is built on a byte-exact one, which makes two things possible
-that the others cannot do: fidelity-sensitive testing where malformed and
-ambiguous HTTP matters, and **evidence-grade captures** that are hashed,
-crash-safe and verifiable. The daily workflow (history, repeater, intercept,
-scope) is built underneath that. It is a pure community project: no company
-behind it, nothing gated, free self-hosted team mode when it ships.
+Crosswire is an open-source web application security testing proxy for
+authorised testing. It is an HTTP/1.1 intercepting (MITM) proxy that records
+every exchange into a crash-safe project, byte for byte, with the web UI embedded
+in one binary: a history with Pretty, Raw, Headers and Hex views, a repeater
+with send history and response diff, request intercept, scope rules, a decoder,
+tags and notes. It is built on a byte-exact HTTP stack, so malformed and
+ambiguous HTTP is kept and sent as it is, with every deviation recorded as a
+diagnostic. It does **not** yet do HTTP/2, Intruder-style fuzzing, response
+intercept, match-and-replace or extensions; see the [roadmap](#project-status-and-roadmap).
+It is a pure community project: no company behind it, nothing gated.
 
-> **Status: alpha.2, with the web UI embedded in the binary.** The `crosswire`
-> binary runs an HTTP/1.1 intercepting proxy that records a browser session into
-> a project directory, byte for byte, and a separate loopback REST and WebSocket
-> API with scope, a repeater, request intercept and scoped tokens, and it serves
-> the web UI from that API. A browser launcher wires Chrome to the proxy. The
-> schema is frozen for v0.1.0; the release pipeline is in progress.
+![Crosswire History view: a captured JSON response shown in the Pretty tab](docs/images/crosswire-history.png)
 
-## The promise
-
-Most proxies rebuild requests from a parsed model, so what you typed is not
-always what went on the wire. Crosswire is built around one rule:
-
-- **What you send is sent byte for byte**, and what came back is recorded
-  exactly as received, including malformed, ambiguous and deliberately odd
-  HTTP that compliant libraries refuse to produce. Every deviation from the
-  RFCs is kept as a diagnostic with the exact byte span, never silently fixed.
-- **Projects never corrupt.** Anything whose `committed` event you saw survives
-  a crash; every loss is bracketed by a gap marker. Verified by a kill -9 test.
-- **Memory stays bounded** under hostile servers and pages: every limit has a
-  default, an action and an observable.
-
-## How it compares
-
-Checked against GitHub on 2026-10-24; the fuller version is in the spec §2.
-
-| Tool | What it is | Why Crosswire exists beside it |
-|---|---|---|
-| ZAP by Checkmarx | The established free scanner and proxy (Java) | Scanner-first; its proxy normalises HTTP |
-| OpenTRAP | New Burp-style UI on the ZAP engine (Java, AGPL) | Same normalising proxy underneath |
-| mitmproxy | The developer's interception tool (Python) | No tester workflow; not byte-exact |
-| proxelar | Rust traffic workbench on hyper | hyper rewrites framing; no diagnostics |
-| Burp Suite, Caido | The commercial workbenches | Closed source; Crosswire is the open sidecar beside them |
-
-None of these records diagnostics with byte spans, none sends a deliberately
-malformed message unchanged, and none makes a crash-safety or bounded-memory
-promise. A measured comparison, the fidelity corpus run through each tool, is a
-planned deliverable before the first public release.
+Coming from Burp Suite? Start with [Coming from Burp](docs/coming-from-burp.md).
 
 ## Install
 
@@ -91,8 +58,8 @@ provenance is covered by the attestations below).
    gh attestation verify crosswire-server-<target>.tar.xz --repo kalash33/crosswire
    ```
 
-4. **From source** (needs Rust only; the web UI is already embedded, so Node is
-   not required):
+4. **From source** (needs Rust 1.88 or newer only; the web UI is already
+   embedded, so Node is not required):
 
    ```
    cargo install --git https://github.com/kalash33/crosswire crosswire-server --locked
@@ -100,10 +67,24 @@ provenance is covered by the attestations below).
 
 ## Quick start
 
-Requires a Rust toolchain (1.88 or newer) on macOS or Linux.
+One command starts the proxy, opens the UI in its own window and launches a
+Chromium-based browser (Chrome, Chromium, Edge or Brave) already wired to the
+proxy, with a dedicated profile and no system trust change:
 
 ```sh
-cargo run -p crosswire-server -- serve --project ./demo
+crosswire app --project ./demo
+```
+
+Browse in the wired browser and the traffic appears in History. Ctrl-C stops the
+proxy, the UI window and the browser, and closes the project cleanly.
+
+### The manual path
+
+`crosswire app` is `serve --open=app` plus `crosswire browser`. To run the
+pieces yourself:
+
+```sh
+crosswire serve --project ./demo --open
 ```
 
 ```
@@ -113,28 +94,27 @@ api listening on 127.0.0.1:8081
 open http://localhost:8081/#bootstrap=<token> within 60 s
 ```
 
-Point a browser's HTTP and HTTPS proxy at `127.0.0.1:8080`, then either:
-
-- open `http://crosswire/` through the proxy, download the CA (`/ca.der` or
-  `/ca.pem`) and trust it in the browser; or
-- install nothing and launch Chrome or Chromium with the CA's pin:
-
-  ```sh
-  --proxy-server=127.0.0.1:8080 \
-  --ignore-certificate-errors-spki-list=$(cargo run -q -p crosswire-server -- ca spki)
-  ```
-
-Or let Crosswire launch a Chromium-based browser already wired to the proxy
-(`--proxy` is needed while `serve` is running):
+`--open` opens that one-time bootstrap URL in your default browser (`--open=app`
+uses a standalone Chromium app window); without it, open the URL yourself within
+60 seconds. Then launch a browser wired to the proxy (`--proxy` is needed while
+`serve` is running):
 
 ```sh
-cargo run -q -p crosswire-server -- browser --project ./demo --proxy 127.0.0.1:8080
+crosswire browser --project ./demo --proxy 127.0.0.1:8080
 ```
 
-Everything the browser does is now recorded into `./demo`. Ctrl-C stops the
-proxy and closes the project cleanly. Per-browser and per-OS instructions,
-including Firefox, Android and iOS, are in [docs/ca-install.md](docs/ca-install.md);
-every `serve` option is in [the server README](crates/crosswire-server/README.md).
+To use your own browser instead, point its HTTP and HTTPS proxy at
+`127.0.0.1:8080` and trust the CA: open `http://crosswire/` through the proxy,
+download `/ca.der` or `/ca.pem`, or launch Chrome or Chromium with the CA's pin:
+
+```sh
+--proxy-server=127.0.0.1:8080 \
+--ignore-certificate-errors-spki-list=$(crosswire ca spki)
+```
+
+Per-browser and per-OS instructions, including Firefox, Android and iOS, are in
+[docs/ca-install.md](docs/ca-install.md); every `serve` option is in
+[the server README](crates/crosswire-server/README.md).
 
 ### Calling the API
 
@@ -159,49 +139,80 @@ only as a hash. The whole guide, with scope, repeater, intercept and the event
 stream, is [docs/api.md](docs/api.md); the credential design is
 [ADR-0004](docs/adr/0004-api-credentials.md).
 
-By default the proxy and repeater refuse to reach loopback, link-local,
-cloud-metadata, unspecified, multicast and broadcast addresses and the proxy
-and API ports, evaluated after DNS resolution. `--allow HOST:PORT` lifts only
-the loopback and link-local refusals; every allowance is audited.
+## Features
 
-## What works today
-
-| Area | Built |
-|---|---|
-| HTTP/1.1 relay | Byte-for-byte on both sides, keep-alive, pipelining, `Expect: 100-continue`, chunked with extensions and trailers, until-close bodies |
-| TLS | Termination with leaves minted per host from a local CA (IP SANs included), SNI passthrough per host or suffix, TLS 1.2+ with rustls |
-| Upstream policy | Certificates verified by default; per-host override, recorded on the exchange and audited |
-| Recording | Every exchange with timing, TLS details, diagnostics, interim 1xx heads, the rewrite diffs, and bodies up to a capture cap with the full hash and length |
-| Failure handling | Generated 400/502/504 pages recorded as error exchanges; timeouts; undelimitable responses and WebSocket upgrades become counted opaque tunnels |
-| Project store | SQLite plus content packs, bounded writer queue with a fsynced spill journal, gap markers, audit log |
-| Safety | Destination gate, connection and pending-CONNECT caps, proxy authentication on non-loopback binds, a hostile-input fixture per limit |
-| Proof | 104-case golden corpus relayed whole and fragmented (208 captures, all 26 diagnostic codes), a real headless-Chrome session recorded in CI, a kill -9 durability test |
-| API | REST and WebSocket on its own loopback socket: exchanges, markers, counts, an event stream, an OpenAPI document; bootstrap sessions and `read`/`send`/`admin` tokens hashed at rest; same-site and `Host` enforcement, no CORS, rate-limited and audited failures |
-| Scope | Include and exclude rules (host, suffix, regex, IP, CIDR, port, scheme, path), a verdict recorded on every exchange, pasted program lists imported, persisted in the project |
-| Repeater | Raw and assisted modes, scope checks, redirects, recorded in their own namespace, saved drafts |
-| Request intercept | Hold, edit and forward, drop, forward-all, with skip rules, hold limits and an overflow policy; starts disabled |
-| Browser launcher | `crosswire browser` for Chrome, Chromium, Edge or Brave with a dedicated profile and no system trust change |
-| Security gates | 15 of the 18 section 13 gates have an executable test ([docs/security-gates.md](docs/security-gates.md)); install to first capture is timed under 120 s in CI |
-
-**Not there yet:** response intercept, intercept-rule persistence,
-auto-passthrough, HTTP/2 proxying, OS keychain integration, CA installation and
-the 1M-exchange memory check. The three gates that need the UI or export tooling
-(XSS corpus, preview zero-egress, redaction golden) are open. See
-[CHANGELOG.md](CHANGELOG.md) for details.
-
-## Roadmap
-
-| Milestone | Contents | State |
+| Area | What it does | Status |
 |---|---|---|
-| **alpha.1** headless recorder | h1 library, exchange schema, local CA, upstream client, crash-safe store, MITM proxy, `crosswire serve` | **Built** |
-| **alpha.2** the sidecar | History view, repeater (assisted and raw), request intercept, scope, browser launcher, REST API, web UI | **Built**: backend and embedded web UI |
-| **beta** daily tools | Match-and-replace, decoder, tags and notes, copy-as-curl, docs site | Planned |
-| **v0.1.0** | Security gates green, release pipeline, launch | In progress: schema frozen, release pipeline |
-| Later | Intruder, HTTP/2, WebSocket editing, plugins, free self-hosted team mode, HTTP/3 | Spec §14 |
+| HTTP/1.1 MITM proxy | Byte-for-byte relay on both sides, keep-alive, pipelining, chunked with extensions and trailers; TLS termination with per-host leaves from a local CA; SNI passthrough per host or suffix | Shipped |
+| Byte-exact history | Every exchange with timing, TLS details, diagnostics with byte spans, interim 1xx heads and bodies up to a capture cap (full hash and length kept); crash-safe SQLite project store with gap markers and an audit log | Shipped |
+| Message viewer | Pretty (JSON and form or query parameters as tables), Raw (coloured heads, line wrap, visible control characters, find), Headers and Hex tabs; large bodies bounded | Shipped |
+| History tools | Search, filters, column picker, bulk tag and add-to-scope, tags and notes, copy as curl, copy raw | Shipped |
+| Repeater | Raw and assisted modes, scope checks, redirects, saved drafts, per-tab send history (last 50), restore a past send, "Compare with previous" line diff, renamable tabs | Shipped |
+| Request intercept | Hold, edit and forward, drop, forward-all, skip rules, hold limits and an overflow policy; starts disabled | Shipped |
+| Scope | Include and exclude rules (host, suffix, regex, IP, CIDR, port, scheme, path), a verdict on every exchange, pasted program lists imported, optional strict enforcement | Shipped |
+| Decoder | Decode the selected message in its own pane or route | Shipped |
+| Browser launcher | `crosswire browser` and `crosswire app`: Chrome, Chromium, Edge or Brave with a dedicated profile | Shipped |
+| Web UI | Embedded in the binary; dark and light themes, remappable shortcuts, installable as its own window | Shipped |
+| REST and WebSocket API | Own loopback socket, bootstrap session and scoped tokens, OpenAPI document | Shipped |
+| Response intercept | Hold and edit responses | Not yet (0.2) |
+| Match-and-replace | Rules applied to traffic | Not yet (0.2) |
+| Intruder | Positions, payloads, attacks | Not yet (0.2) |
+| HTTP/2 and WebSocket editing | Proxying and editing | Not yet (spec section 14) |
+| Extensions and plugins | | Not yet |
+| Team mode | Free self-hosted team mode | Not yet (spec section 14) |
 
-The full design, including the honest competitive picture, the threat model
-for the tool itself and dated estimates, is in
-[the spec](docs/superpowers/specs/2026-10-22-crosswire-design.md).
+## Security model
+
+A security tool has to be safe to run. The design is in
+[the spec](docs/superpowers/specs/2026-10-22-crosswire-design.md) section 11;
+each gate and the test that proves it is in
+[docs/security-gates.md](docs/security-gates.md).
+
+- **Loopback-only API.** The API listens on its own loopback socket. A
+  single-use, 60-second bootstrap token is exchanged for a `SameSite=Strict`
+  session cookie; scripts use `read`, `send` or `admin` tokens stored only as a
+  hash. Requests must be same-origin with a `localhost` or `127.0.0.1` `Host`;
+  no CORS header is ever sent; authentication failures are rate-limited and
+  audited.
+- **Destination gate (SSRF).** After DNS resolution, the proxy and repeater
+  refuse loopback, link-local, cloud-metadata, unspecified, multicast and
+  broadcast addresses and Crosswire's own ports, including IPv6 transition
+  forms. `--allow HOST:PORT` lifts only the loopback and link-local refusals,
+  and each allowance is audited.
+- **Untrusted content is never trusted.** Captured traffic is attacker-controlled.
+  The UI renders it as text under fixed rules, and the HTML preview runs in a
+  sandboxed frame under a deny-all CSP that cannot make a network request.
+- **Hostile projects are refused.** The project store validates what it opens
+  (torn packs, decompression bombs, hostile SQLite or journal files, symlinked
+  project files) and refuses a project it cannot trust.
+- **Redaction on copy and export.** Share-safe copy and export variants redact
+  secrets; the plain copy shortcuts keep the data so a request can be replayed.
+- **The CA key is never exposed.** The API and the CA page serve the
+  certificate only; the private key stays in your config directory.
+- **Idle means silent.** An idle Crosswire makes no upstream connection and no
+  DNS lookup.
+
+Crosswire is for authorised testing only. Point it at systems you own or have
+written permission to test.
+
+## Project status and roadmap
+
+**Status: v0.1.0.** The wire format and project format are frozen for the 0.1
+series, the release pipeline is in place (attested binaries for three targets),
+and the section 13 security gates each map to a named test
+([docs/security-gates.md](docs/security-gates.md)). Two performance targets (ingest
+rate and History table speed at a million rows) are report-only in 0.1.0 and are
+the main 0.1.x work. See [CHANGELOG.md](CHANGELOG.md).
+
+| Milestone | Contents |
+|---|---|
+| **0.1.0** | HTTP/1.1 proxy, byte-exact history, repeater, intercept, scope, decoder, embedded web UI, attested releases |
+| **0.1.x** | Virtualised History table, faster ingest, release hardening |
+| **0.2** | Response intercept, match-and-replace, Intruder, crates.io publishing |
+| Later | HTTP/2, WebSocket editing, plugins, free self-hosted team mode, HTTP/3 |
+
+The full design, including the honest competitive picture and dated estimates,
+is in [the spec](docs/superpowers/specs/2026-10-22-crosswire-design.md), section 14.
 
 ## Architecture
 
@@ -219,7 +230,7 @@ for the tool itself and dated estimates, is in
    crosswire-model  frozen exchange schema, events, redaction
    crosswire-ca     local CA and cached leaf issuer
    crosswire-core   spans, diagnostics, shared types
-   crosswire-server the `crosswire` binary (`serve`, `token`, `browser`, `ca`)
+   crosswire-server the `crosswire` binary (`serve`, `app`, `token`, `browser`, `ca`)
 ```
 
 | Crate | Responsibility | Docs |
@@ -234,7 +245,7 @@ for the tool itself and dated estimates, is in
 | `crosswire-scope` | Scope rule grammar, evaluator and importer | [README](crates/crosswire-scope/README.md) |
 | `crosswire-tools` | The repeater | [README](crates/crosswire-tools/README.md) |
 | `crosswire-api` | The REST and WebSocket API and its credentials | [README](crates/crosswire-api/README.md), [guide](docs/api.md), [ADR-0004](docs/adr/0004-api-credentials.md), [OpenAPI](docs/api/openapi.json) |
-| `crosswire-server` | The `crosswire` binary: `serve`, `token`, `browser`, `ca` | [README](crates/crosswire-server/README.md) |
+| `crosswire-server` | The `crosswire` binary: `serve`, `app`, `token`, `browser`, `ca` | [README](crates/crosswire-server/README.md) |
 
 `corpus/h1` holds the golden fidelity corpus ([README](corpus/h1/README.md));
 `crates/crosswire-recorder-tests` holds cross-crate integration tests.
@@ -252,7 +263,7 @@ Commands live in the `justfile`:
 | `just fuzz-smoke` | 60 s of each h1 fuzz target (nightly + `cargo-fuzz`) |
 | `just bench` | Builds the h1 vs `httparse` criterion benchmark |
 | `just first-capture` | Builds, serves, drives a headless browser to `https://example.com/` and times the first recorded exchange (needs network and a Chromium-based browser) |
-| `just serve --project ./demo` | The quick start |
+| `just serve --project ./demo` | `crosswire serve` on a demo project |
 
 CI runs lint, tests, feature checks, docs, packaging and the browser session on
 Ubuntu and macOS, plus an MSRV 1.88 check and `cargo deny`. Design decisions
@@ -261,14 +272,15 @@ are recorded in [docs/adr/](docs/adr/); the on-disk project format in
 [docs/security-gates.md](docs/security-gates.md); the velocity log in
 [docs/log.md](docs/log.md).
 
-## Contributing and security
+## Contributing, governance and security
 
-Contributions are welcome from the beta onward in the areas listed in
+Contributions are welcome in the areas listed in
 [CONTRIBUTING.md](CONTRIBUTING.md) (DCO sign-off, the AI-assisted-PR rule,
 which crates are design-locked until their 0.1 release). Report security
 issues privately as described in [SECURITY.md](SECURITY.md) (72-hour
 acknowledgement). The project follows the Contributor Covenant
-([CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)).
+([CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)). How decisions are made is in
+[GOVERNANCE.md](GOVERNANCE.md).
 
 Crosswire is for authorised testing only. Point it at systems you own or have
 written permission to test.

@@ -4,7 +4,7 @@ Thanks for your interest. Crosswire is a pure community open-source project; the
 
 ## Before v0.2: expectations
 
-The project is pre-alpha and maintained part-time. Until v0.2 there is no response-time promise except for security reports (see [SECURITY.md](SECURITY.md)). Issues and pull requests are labelled best-effort.
+The project is young and maintained part-time. Until v0.2 there is no response-time promise except for security reports (see [SECURITY.md](SECURITY.md)). Issues and pull requests are labelled best-effort.
 
 ## Response times
 
