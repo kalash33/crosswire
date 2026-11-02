@@ -201,6 +201,18 @@ impl Drop for Reap {
     }
 }
 
+/// Reopens the project and asserts the last run closed it cleanly (a run that
+/// died before `Store::close` leaves a gap marker on the next open).
+fn assert_closed_cleanly(project: &Path) -> Store {
+    let store = Store::open(Project::open(project).unwrap(), StoreConfig::default()).unwrap();
+    let markers = store.markers(None, 100).unwrap().items;
+    assert!(
+        markers.iter().all(|m| m.kind() != MarkerKind::Gap),
+        "unclean shutdown left a gap marker: {markers:?}"
+    );
+    store
+}
+
 /// Reads the child's stdout until the listening line, within 30 s.
 fn wait_listening(child: &mut Child) -> SocketAddr {
     let stdout = child.stdout.take().unwrap();
@@ -328,12 +340,7 @@ async fn serve_records_a_tls_fetch_and_closes_cleanly() {
     let status = tokio::task::block_in_place(|| wait_exit(&mut child.0, Duration::from_secs(10)));
     assert_eq!(status.code(), Some(0), "exit status {status:?}");
 
-    let store = Store::open(Project::open(&project).unwrap(), StoreConfig::default()).unwrap();
-    let markers = store.markers(None, 100).unwrap().items;
-    assert!(
-        markers.iter().all(|m| m.kind() != MarkerKind::Gap),
-        "unclean shutdown left a gap marker: {markers:?}"
-    );
+    let store = assert_closed_cleanly(&project);
     let filter = ExchangeFilter {
         host: Some(format!("127.0.0.1:{}", upstream.port())),
         ..ExchangeFilter::default()
@@ -1195,4 +1202,78 @@ async fn app_launches_both_browsers_and_stops_them_with_serve() {
             .success();
         assert!(!alive, "browser pid {} still running", launch[0]);
     }
+    drop(assert_closed_cleanly(&project));
+}
+
+/// A launched browser that ignores SIGTERM cannot cost the project its clean
+/// close: the browsers are only asked to stop once the store has closed, so a
+/// supervisor that SIGKILLs `crosswire app` during the stop grace (here, as
+/// soon as the browsers see SIGTERM) still finds the project closed cleanly.
+#[tokio::test(flavor = "multi_thread")]
+async fn app_closes_the_store_before_stopping_a_stubborn_browser() {
+    let tmp = tempfile::tempdir().unwrap();
+    let project = tmp.path().join("proj");
+    let ca_dir = tmp.path().join("ca");
+    let pids = tmp.path().join("pids.log");
+    let terms = tmp.path().join("term.log");
+    // A fake browser that records its pid, then logs and ignores SIGTERM.
+    let fake = tmp.path().join("fake-chrome");
+    std::fs::write(
+        &fake,
+        format!(
+            "#!/bin/sh\necho \"$$\" >> '{}'\ntrap 'echo term >> {}' TERM\nwhile :; do sleep 0.1; done\n",
+            pids.display(),
+            terms.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let mut child = Reap(spawn_piped(
+        &[
+            "app",
+            "--project",
+            project.to_str().unwrap(),
+            "--ca-dir",
+            ca_dir.to_str().unwrap(),
+            "--browser-path",
+            fake.to_str().unwrap(),
+        ],
+        &[],
+    ));
+    let _errs = stderr_lines(&mut child.0);
+    let startup = tokio::task::block_in_place(|| wait_serve_startup(&mut child.0));
+    let read_lines = |p: &Path| -> Vec<String> {
+        std::fs::read_to_string(p)
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_string)
+            .collect()
+    };
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while read_lines(&pids).len() < 2 {
+        assert!(Instant::now() < deadline, "two launches expected");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_healthy(startup.api).await;
+
+    let pid = child.0.id().to_string();
+    assert!(Command::new("kill")
+        .args(["-INT", &pid])
+        .status()
+        .unwrap()
+        .success());
+    // The browsers see SIGTERM only after the store has closed; the supervisor
+    // kills `serve` right then, inside the stop grace.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while read_lines(&terms).is_empty() {
+        assert!(Instant::now() < deadline, "the browsers never got SIGTERM");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    child.0.kill().unwrap();
+    let _ = child.0.wait();
+    for browser in read_lines(&pids) {
+        let _ = Command::new("kill").args(["-9", &browser]).status();
+    }
+    drop(assert_closed_cleanly(&project));
 }

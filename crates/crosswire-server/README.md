@@ -97,11 +97,13 @@ Startup runs in this order, so a bad configuration creates nothing:
 9. Print four lines on stdout (below); with `--open` (or `crosswire app`),
    launch the browsers. Then serve the proxy and the API concurrently under one
    shutdown signal until a signal arrives.
-10. On shutdown, stop the browsers `serve` launched (the app window and the
-    wired browser: SIGTERM, then a kill after 5 s), log the counters, audit
-    `listener.stop`, and close the store.
+10. On shutdown, log the counters, audit `listener.stop`, close the store,
+    and then stop the browsers `serve` launched (the app window and the wired
+    browser: SIGTERM, then a kill after 5 s). The browsers stop last, so one
+    that ignores SIGTERM can delay the exit but never the clean close.
     `Store::close` runs on every path once the store is open, so the project is
-    marked cleanly closed even after an error.
+    marked cleanly closed even after an error, and the launched browsers are
+    stopped on those paths too.
 
 The audit log is `audit.jsonl` in the project, actor `cli`, result `ok`. The
 `serve` actions are `ca.generate` (only when the CA was created), `allow.add`,

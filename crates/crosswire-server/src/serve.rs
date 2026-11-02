@@ -86,10 +86,18 @@ async fn serve(cfg: ProxyConfig, args: &ServeArgs, ca_dir: &Path) -> Result<(), 
     if store.open_report().unclean_gap.is_some() {
         tracing::warn!("the previous run did not shut down cleanly; a gap marker was recorded");
     }
-    let served = serve_with_store(cfg, args, ca_dir, Arc::clone(&store)).await;
+    let mut launched = Launched::default();
+    let served = serve_with_store(cfg, args, ca_dir, Arc::clone(&store), &mut launched).await;
     // The store is always closed here, on every path out of `serve_with_store`
     // (success, early `?` error, or shutdown): see `close_store`.
     let closed = close_store(store);
+    // The browsers `serve` launched stop with it, but only AFTER the clean
+    // close: a browser that ignores SIGTERM holds the exit for up to the stop
+    // grace, and a supervisor's SIGKILL in that window must find the project
+    // already closed, not turn the clean close into a gap marker.
+    if let Err(e) = tokio::task::spawn_blocking(move || launched.stop()).await {
+        tracing::warn!(error = %e, "stopping the launched browsers failed");
+    }
     served.and(closed)
 }
 
@@ -127,6 +135,7 @@ async fn serve_with_store(
     args: &ServeArgs,
     ca_dir: &Path,
     store: Arc<Store>,
+    launched: &mut Launched,
 ) -> Result<(), CliError> {
     let audit = |action: &str, target: &str| {
         store
@@ -304,8 +313,8 @@ async fn serve_with_store(
     tracing::info!(%addr, %api_addr, "proxy and api listening");
 
     // The API listener is bound (connections queue until it is served just
-    // below), so the browsers can be started now. A failure only warns.
-    let mut launched = Launched::default();
+    // below), so the browsers can be started now. A failure only warns. The
+    // caller stops them once the store has closed (see `serve`).
     if let Some(mode) = args.open {
         launched.extend(open::open_ui(
             mode,
@@ -348,10 +357,6 @@ async fn serve_with_store(
     // dropped here, so the `AppState` (and its store clone) is gone.
     let (ran, api_res) = tokio::join!(proxy.run(rx), api_server);
     let ran = ran.map_err(|e| CliError::runtime("proxy", e));
-    // The browsers `serve` launched stop with it.
-    if let Err(e) = tokio::task::spawn_blocking(move || launched.stop()).await {
-        tracing::warn!(error = %e, "stopping the launched browsers failed");
-    }
     if let Err(e) = api_res {
         tracing::warn!(error = %e, "the API listener stopped with an error");
     }
