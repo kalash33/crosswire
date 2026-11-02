@@ -452,6 +452,13 @@
     return off;
   });
 
+  /** `timeCell` split into its date part (older rows only) and its clock. */
+  function timeParts(ms: number): { date: string; clock: string } {
+    const t = timeCell(ms);
+    const sp = t.lastIndexOf(' ');
+    return sp > 0 ? { date: t.slice(0, sp), clock: t.slice(sp) } : { date: '', clock: t };
+  }
+
   function fullTime(ms: number): string {
     try {
       return new Date(ms).toLocaleString();
@@ -609,7 +616,7 @@
               {#if shown('time')}<col class="c-time" />{/if}
               {#if shown('method')}<col class="c-method" />{/if}
               <col class="c-host" />
-              <col />
+              <col class="c-path" />
               {#if shown('status')}<col class="c-status" />{/if}
               {#if shown('len')}<col class="c-len" />{/if}
               {#if shown('state')}<col class="c-state" />{/if}
@@ -665,10 +672,11 @@
                   </td>
                   <td class="num idx">{i + 1}</td>
                   {#if shown('time')}
+                    {@const t = timeParts(row.created_at)}
                     <td class="open time" title={fullTime(row.created_at)} onclick={() => openRow(row.id)}>
                       {#if row.uncommitted}<span class="dot" title="Uncommitted (not yet durable)" data-testid="uncommitted-marker"
                           >●</span
-                        >{/if}{timeCell(row.created_at)}
+                        >{/if}{#if t.date}<span class="date">{t.date}</span>{/if}<span class="clock">{t.clock}</span>
                     </td>
                   {/if}
                   {#if shown('method')}
@@ -701,7 +709,11 @@
                   {/if}
                   {#if shown('tags')}
                     <td class="tags" title={row.tags.join(', ')}>
-                      <span class="chips">{#each row.tags as tag (tag)}<Chip>{tag}</Chip>{/each}</span>
+                      <span class="chips"
+                        >{#each row.tags as tag (tag)}<Chip>{tag}</Chip>{/each}{#if row.tags.length > 1}<span class="more"
+                            >+{row.tags.length - 1}</span
+                          >{/if}</span
+                      >
                     </td>
                   {/if}
                 </tr>
@@ -854,11 +866,32 @@
     height: 100%;
     min-width: 0;
     overflow: auto;
+    container-type: inline-size;
   }
+  /* A narrow list (the default split on a laptop) gives Host and Path room:
+     older rows show only their date (the full time stays in `title`), and the
+     tag chips ellipsize sooner. */
+  @container (max-width: 720px) {
+    td.time .date + .clock {
+      display: none;
+    }
+    td.tags .chips {
+      max-width: 6rem;
+    }
+    /* One chip and a "+N" count; the full list stays in the cell's `title`. */
+    .chips :global(.chip:nth-child(n + 2)) {
+      display: none;
+    }
+    .chips .more {
+      display: inline;
+    }
+  }
+  /* Auto layout: every column but Host and Path takes its natural width, and
+     Host and Path share what is left (ellipsized, full text in `title`), so
+     the table fits the default 45/55 split without a horizontal scroll. */
   table {
     width: 100%;
-    min-width: 820px;
-    table-layout: fixed;
+    table-layout: auto;
     border-collapse: separate;
     border-spacing: 0;
     font-size: var(--fs-sm);
@@ -874,7 +907,7 @@
   th,
   td {
     text-align: left;
-    padding: 4px var(--s-2);
+    padding: 4px;
     border-bottom: 1px solid var(--border-faint);
     white-space: nowrap;
     overflow: hidden;
@@ -888,10 +921,18 @@
     cursor: pointer;
     padding: 0;
   }
+  /* The sort arrow takes room only on the sorted column. */
   .arrow {
     display: inline-block;
-    width: 1em;
     font-size: var(--fs-xs);
+  }
+  .arrow:not(:empty) {
+    margin-left: 2px;
+  }
+  th.sel input,
+  td.sel input {
+    margin: 0;
+    vertical-align: middle;
   }
   tbody tr {
     cursor: default;
@@ -920,33 +961,31 @@
   td.path {
     font-family: var(--font-mono);
   }
-  .c-sel {
-    width: 32px;
-  }
-  .c-idx {
-    width: 40px;
-  }
-  /* Fits "MMM DD HH:MM:SS" (an older row) or the uncommitted dot plus a clock. */
-  .c-time {
-    width: 116px;
-  }
-  .c-method {
-    width: 76px;
+  /* Natural-width columns: 1px plus nowrap shrinks them to their content. */
+  .c-sel,
+  .c-idx,
+  .c-time,
+  .c-method,
+  .c-status,
+  .c-len,
+  .c-state,
+  .c-tags {
+    width: 1px;
   }
   .c-host {
-    width: 18%;
+    width: 35%;
   }
-  .c-status {
-    width: 56px;
+  .c-path {
+    width: 65%;
   }
-  .c-len {
-    width: 68px;
+  /* Slimmer badges in the table rows. */
+  td :global(.badge) {
+    padding: 0 4px;
   }
-  .c-state {
-    width: 88px;
-  }
-  .c-tags {
-    width: 12%;
+  /* A zero max-width lets Host and Path shrink below their text and ellipsize. */
+  td.host,
+  td.path {
+    max-width: 0;
   }
   td.time,
   td.num {
@@ -979,6 +1018,7 @@
     display: flex;
     gap: var(--s-1);
     min-width: 0;
+    max-width: 6rem;
     overflow: hidden;
   }
   /* Chips shrink and ellipsize (Chip's text already clips with an ellipsis). */
@@ -988,6 +1028,12 @@
   }
   .chips :global(.chip .text) {
     min-width: 0;
+  }
+  .more {
+    display: none;
+    flex: none;
+    font-size: var(--fs-xs);
+    color: var(--fg-muted);
   }
   .empty {
     color: var(--fg-faint);
