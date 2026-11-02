@@ -7,35 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.1.0-rc.2](https://github.com/kalash33/crosswire/releases/tag/v0.1.0-rc.2) - 2026-11-02
+## [0.1.0] - 2026-11-03
 
-### Added
-
-- *(ui)* project identity, favicon and installable manifest
-- *(api)* project name and path on /health
-- *(server)* serve --open and the app subcommand
-- *(api)* report the proxy bind address on /health
-
-### Documentation
-
-- truth pass over API, CA, crate READMEs, gates; ADR-0006
-- allowlist lifts only loopback and link-local; changelog order
-
-### Fixed
-
-- *(server)* stop launched browsers after the store closes
-- *(api)* report the project path only to loopback peers
-- *(client)* canonicalise transition forms, close destination-gate gaps
-
-### Internal
-
-- *(ui)* rebuild embedded bundle
-- *(ui)* rebuild embedded bundle
-- *(server)* run the manifest content-type test
-- *(server)* bind the API to port 0 in the TLS fetch smoke test
-- *(ui)* rebuild embedded bundle
-- *(ui)* rebuild embedded bundle
-- *(ui)* rebuild embedded bundle
+The first public release.
 
 ### Added
 
@@ -269,6 +243,7 @@ no UI yet. The minimum supported Rust version is 1.88.
 - **docs**: the project format (`docs/format.md`), ADR-0001 to ADR-0003, the
   CA install guide and the h1 diagnostics catalogue.
 
-[Unreleased]: https://github.com/kalash33/crosswire/compare/v0.1.0-rc.2...HEAD
+[Unreleased]: https://github.com/kalash33/crosswire/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/kalash33/crosswire/releases/tag/v0.1.0
 [0.1.0-alpha.2]: https://github.com/kalash33/crosswire/tree/05bc968
 [0.1.0-alpha.1]: https://github.com/kalash33/crosswire/tree/f44ec2a
