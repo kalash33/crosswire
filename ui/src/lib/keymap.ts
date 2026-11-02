@@ -7,6 +7,44 @@
 // shift, then the key, lowercased, joined by "+" (e.g. "ctrl+shift+]").
 // Ctrl is the modifier (not Cmd) so macOS browser Cmd-shortcuts stay out of
 // the conflict surface; Meta-modified events never match.
+//
+// Scopes (V1): every action belongs to one scope. A chord is unique only among
+// scopes that can be active at the same time ("co-active"), so the viewer's
+// Find and Intercept's Forward can both be Ctrl+F. At dispatch the innermost
+// focused scope wins: the chain is the `data-keyscope` ancestors of the event
+// target, then the route's scope, then `global`.
+
+/** Keymap scopes in display order (Settings and the `?` sheet group by these). */
+export const SCOPES = ['global', 'history', 'repeater', 'intercept', 'viewer'] as const;
+export type Scope = (typeof SCOPES)[number];
+
+export const SCOPE_LABELS: Readonly<Record<Scope, string>> = {
+  global: 'Everywhere',
+  history: 'History',
+  repeater: 'Repeater',
+  intercept: 'Intercept',
+  viewer: 'Message viewer',
+};
+
+/**
+ * Where a scope can be active. The route scopes are mutually exclusive (one
+ * view is mounted); the viewer lives inside History (detail) and Repeater
+ * (response). If Intercept ever embeds a viewer, `viewer` gains `intercept`,
+ * which makes Find and Forward clash on Ctrl+F: rebind one in the same change
+ * (the "defaults have no co-active clash" test fails until then).
+ */
+export const PARENTS: Readonly<Record<Scope, readonly Scope[]>> = {
+  global: [],
+  history: ['global'],
+  repeater: ['global'],
+  intercept: ['global'],
+  viewer: ['history', 'repeater', 'global'],
+};
+
+/** True when `a` and `b` can be active together, so a chord must not be shared. */
+export function coActive(a: Scope, b: Scope): boolean {
+  return a === b || PARENTS[b].includes(a) || PARENTS[a].includes(b);
+}
 
 export const ACTIONS = [
   'send-to-repeater',
@@ -20,10 +58,41 @@ export const ACTIONS = [
   'copy-as-curl',
   'copy-raw',
   'show-shortcuts',
+  'focus-search',
+  'find',
 ] as const;
 
 export type Action = (typeof ACTIONS)[number];
-export type Handler = (event: KeyboardEvent) => void;
+
+/**
+ * A key handler. Returning `false` declines the key: it is not
+ * preventDefault'd and no outer scope sees it, so the browser default runs.
+ */
+export type Handler = (event: KeyboardEvent) => void | boolean;
+
+export const ACTION_SCOPES: Readonly<Record<Action, Scope>> = {
+  // Global: reserved app-wide; whichever view is mounted supplies the handler.
+  'send-to-repeater': 'global',
+  'toggle-intercept': 'global',
+  'decode-selection': 'global',
+  'copy-as-curl': 'global',
+  'copy-raw': 'global',
+  'show-shortcuts': 'global',
+  'focus-search': 'history',
+  send: 'repeater',
+  'tab-next': 'repeater',
+  'tab-prev': 'repeater',
+  forward: 'intercept',
+  drop: 'intercept',
+  find: 'viewer',
+};
+
+/**
+ * Actions added after the U2 storage format. A stored U2 override that lands
+ * on one of their defaults was legal when it was saved, so load keeps both and
+ * innermost-scope-wins resolves the key (see `shadows`).
+ */
+const POST_U2_ACTIONS: ReadonlySet<Action> = new Set<Action>(['focus-search', 'find']);
 
 // Burp Suite defaults where Burp binds the action:
 //   send-to-repeater Ctrl+R, forward Ctrl+F, drop Ctrl+D, send Ctrl+Space
@@ -48,6 +117,10 @@ export const DEFAULT_BINDINGS: Readonly<Record<Action, string>> = {
   // Plain `?` opens the shortcut cheat sheet (the GitHub/Gmail convention). A
   // chord without Ctrl/Alt never fires while typing in a field (see dispatch).
   'show-shortcuts': '?',
+  // `/` focuses the History search (the GitHub/Gmail convention).
+  'focus-search': '/',
+  // The viewer's find shares Ctrl+F with Forward: the scopes never overlap.
+  find: 'ctrl+f',
 };
 
 /** Human labels for the cheat sheet and Settings (one per action). */
@@ -63,13 +136,16 @@ export const ACTION_LABELS: Readonly<Record<Action, string>> = {
   'copy-as-curl': 'Copy as curl',
   'copy-raw': 'Copy the raw request',
   'show-shortcuts': 'Show keyboard shortcuts',
+  'focus-search': 'Focus the History search',
+  find: 'Find in the message',
 };
 
-/** One row of the shortcut table. */
+/** One row of the shortcut table; `chord` is null when the action is unbound. */
 export interface Binding {
   action: Action;
-  chord: string;
+  chord: string | null;
   label: string;
+  scope: Scope;
 }
 
 /** Display form of a normalized chord: `ctrl+shift+d` -> `Ctrl+Shift+D`. */
@@ -80,16 +156,46 @@ export function formatChord(chord: string): string {
     .join('+');
 }
 
-/**
- * The message viewer's find chord. Find is not a keymap action: it belongs to
- * the focused viewer, which keeps the chord from the global dispatcher (where
- * the same chord may be bound, e.g. to Forward), so its hint names the scope.
- */
-export const VIEWER_FIND_CHORD = 'ctrl+f';
+/** The route scope for a router path; null where no view scope applies. */
+export function routeScopeFor(path: string): Scope | null {
+  switch (path) {
+    case '/':
+      return 'history';
+    case '/repeater':
+      return 'repeater';
+    case '/intercept':
+      return 'intercept';
+    default:
+      return null;
+  }
+}
 
-/** Hint for the viewer's find button, e.g. "Ctrl+F in the viewer". */
-export function findHint(): string {
-  return `${formatChord(VIEWER_FIND_CHORD)} in the viewer`;
+function isScope(v: string | null): v is Scope {
+  return v !== null && (SCOPES as readonly string[]).includes(v);
+}
+
+/**
+ * The scopes a key on `target` passes through, innermost first: the
+ * `data-keyscope` values of the target and its ancestors, then `routeScope`
+ * (covers focus outside the view: body, top bar, rail), then `global`.
+ */
+export function scopeChain(target: EventTarget | null, routeScope: Scope | null): Scope[] {
+  const chain: Scope[] = [];
+  const push = (s: Scope) => {
+    if (!chain.includes(s)) chain.push(s);
+  };
+  let el: Element | null =
+    target instanceof Element ? target : target instanceof Node ? target.parentElement : null;
+  while (el) {
+    const hit: Element | null = el.closest('[data-keyscope]');
+    if (!hit) break;
+    const s = hit.getAttribute('data-keyscope');
+    if (isScope(s)) push(s);
+    el = hit.parentElement;
+  }
+  if (routeScope) push(routeScope);
+  push('global');
+  return chain;
 }
 
 /** True when keystrokes on `target` are text entry (fields, CodeMirror). */
@@ -99,6 +205,11 @@ function isEditable(target: EventTarget | null): boolean {
     target.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"])') !==
     null
   );
+}
+
+/** True inside an open menu or dialog, where plain keys belong to the widget. */
+function inMenuOrDialog(target: EventTarget | null): boolean {
+  return target instanceof Element && target.closest('[role="menu"], [role="dialog"]') !== null;
 }
 
 const CODE_KEYS: Record<string, string> = {
@@ -222,8 +333,10 @@ export function createKeymap(
 ) {
   const storageKey = options.storageKey ?? null;
   const defaults = initial;
+  // An action absent from `bindings` is unbound (its chord was taken over).
   const bindings = new Map<Action, string>(Object.entries(initial) as [Action, string][]);
   const handlers = new Map<Action, Handler>();
+  const bound = new Map<Action, { el: Element; handler: Handler }[]>();
   const overrides = new Map<Action, string>();
   const listeners = new Set<() => void>();
 
@@ -241,17 +354,27 @@ export function createKeymap(
     }
   }
 
+  const overlap = (a: Action, b: Action): boolean => coActive(ACTION_SCOPES[a], ACTION_SCOPES[b]);
+
   function loadOverrides(): void {
     if (storageKey === null) return;
     const stored = readOverrides(storageKey);
     // Resolve against the FINAL override set (not storage order): drop an
-    // override whose chord another action ends up holding, until stable.
+    // override whose chord a co-active action ends up holding, until stable.
+    // A post-U2 action still on its default does not count: that clash was
+    // legal when the override was saved, so both are kept as a shadow.
     for (;;) {
       const finalChord = (a: Action): string => stored[a] ?? defaults[a];
       const clash = ACTIONS.find(
         (a) =>
           stored[a] !== undefined &&
-          ACTIONS.some((o) => o !== a && finalChord(o) === stored[a] && (stored[o] === undefined || o < a)),
+          ACTIONS.some(
+            (o) =>
+              o !== a &&
+              overlap(o, a) &&
+              finalChord(o) === stored[a] &&
+              (stored[o] === undefined ? !POST_U2_ACTIONS.has(o) : o < a),
+          ),
       );
       if (!clash) break;
       delete stored[clash];
@@ -262,9 +385,39 @@ export function createKeymap(
     }
   }
 
-  function actionFor(chord: string): Action | undefined {
-    for (const [action, c] of bindings) if (c === chord) return action;
-    return undefined;
+  /** Other actions on `chord` whose scope is co-active with `action`'s, in ACTIONS order. */
+  function holders(chord: string, action: Action): Action[] {
+    return ACTIONS.filter((o) => o !== action && bindings.get(o) === chord && overlap(o, action));
+  }
+
+  /** The action of `scope` bound to `chord` (at most one per scope). */
+  function actionIn(scope: Scope, chord: string): Action | undefined {
+    return ACTIONS.find((a) => ACTION_SCOPES[a] === scope && bindings.get(a) === chord);
+  }
+
+  /** The innermost element-bound handler containing `target`, else the unbound one. */
+  function handlerFor(action: Action, target: EventTarget | null): Handler | undefined {
+    if (target instanceof Node) {
+      let best: { el: Element; handler: Handler } | undefined;
+      for (const b of bound.get(action) ?? []) {
+        if (b.el.contains(target) && (!best || best.el.contains(b.el))) best = b;
+      }
+      if (best) return best.handler;
+    }
+    return handlers.get(action);
+  }
+
+  /**
+   * Scopes to try for a key. With a route scope (or an explicit null) this is
+   * `scopeChain`. Without one (callers that do not know the route yet) every
+   * scope follows the DOM chain, as U2's single flat table did: a view-scoped
+   * action fires wherever its view registered a handler.
+   */
+  function chainFor(target: EventTarget | null, routeScope: Scope | null | undefined): Scope[] {
+    if (routeScope !== undefined) return scopeChain(target, routeScope);
+    const chain = scopeChain(target, null);
+    for (const s of SCOPES) if (!chain.includes(s)) chain.push(s);
+    return chain;
   }
 
   loadOverrides();
@@ -273,31 +426,60 @@ export function createKeymap(
     chordFor(action: Action): string | undefined {
       return bindings.get(action);
     },
-    /** Every action with its current chord and label, in ACTIONS order. */
+    /** Every action in ACTIONS order with its chord (null when unbound), label and scope. */
     bindings(): Binding[] {
-      const out: Binding[] = [];
-      for (const action of ACTIONS) {
-        const chord = bindings.get(action);
-        if (chord) out.push({ action, chord, label: ACTION_LABELS[action] });
-      }
-      return out;
+      return ACTIONS.map((action) => ({
+        action,
+        chord: bindings.get(action) ?? null,
+        label: ACTION_LABELS[action],
+        scope: ACTION_SCOPES[action],
+      }));
     },
-    /** Register the handler for an action (one per action; last wins). */
-    register(action: Action, handler: Handler): () => void {
+    /**
+     * Actions in outer scopes on the same chord that `action` hides while its
+     * scope is focused (e.g. Find over a global action moved onto Ctrl+F).
+     * Only loaded U2 data can produce one; interactive remaps never do.
+     */
+    shadows(action: Action): Action[] {
+      const chord = bindings.get(action);
+      if (chord === undefined) return [];
+      const outer = PARENTS[ACTION_SCOPES[action]];
+      return ACTIONS.filter((o) => o !== action && bindings.get(o) === chord && outer.includes(ACTION_SCOPES[o]));
+    },
+    /**
+     * Register the handler for an action. Without `el`: one per action, last
+     * wins. With `el`: bound to that element; any number per action, and a key
+     * uses the innermost one whose element contains the event target.
+     */
+    register(action: Action, handler: Handler, opts: { el?: Element } = {}): () => void {
+      const el = opts.el;
+      if (el) {
+        const entry = { el, handler };
+        const list = bound.get(action) ?? [];
+        list.push(entry);
+        bound.set(action, list);
+        return () => {
+          const cur = bound.get(action);
+          if (!cur) return;
+          const i = cur.indexOf(entry);
+          if (i >= 0) cur.splice(i, 1);
+          if (cur.length === 0) bound.delete(action);
+        };
+      }
       handlers.set(action, handler);
       return () => {
         if (handlers.get(action) === handler) handlers.delete(action);
       };
     },
     /**
-     * Rebind an action and persist it. A chord already held by another action
-     * is taken over (that action goes unbound and is not persisted); callers
-     * that must not steal check `validateChord` first.
+     * Rebind an action and persist it. A chord already held by a co-active
+     * action is taken over (that action goes unbound and is not persisted);
+     * holders in disjoint scopes keep it. Callers that must not steal check
+     * `validateChord` first.
      */
     remap(action: Action, chord: string): void {
       const norm = normalizeChord(chord) ?? chord.toLowerCase();
-      const holder = actionFor(norm);
-      if (holder && holder !== action) {
+      for (const holder of holders(norm, action)) {
         bindings.delete(holder);
         overrides.delete(holder);
       }
@@ -309,8 +491,9 @@ export function createKeymap(
     },
     /**
      * Drop one override (or all, with no argument) and restore the defaults.
-     * If a restored default chord is held by another action, that holder's own
-     * override is dropped too (cascading) so two actions never share a chord.
+     * If a restored default chord is held by a co-active action, that holder's
+     * own override is dropped too (cascading) so two co-active actions never
+     * share a chord.
      */
     reset(action?: Action): void {
       const queue: Action[] = action ? [action] : [...ACTIONS];
@@ -318,8 +501,7 @@ export function createKeymap(
         const a = queue.shift() as Action;
         overrides.delete(a);
         const def = defaults[a];
-        const holder = actionFor(def);
-        if (holder && holder !== a) {
+        for (const holder of holders(def, a)) {
           // Another action sits on this default: send it back to its own.
           if (overrides.has(holder)) queue.push(holder);
           else bindings.delete(holder);
@@ -339,7 +521,11 @@ export function createKeymap(
       notify();
     },
     saveOverrides,
-    /** Refuse reserved, modifier-less and conflicting chords for `action`. */
+    /**
+     * Refuse reserved, modifier-less and conflicting chords for `action`. Only
+     * a co-active holder conflicts; the message names the first one in ACTIONS
+     * order and its scope.
+     */
     validateChord(chord: string, action: Action): ChordCheck {
       const norm = normalizeChord(chord);
       if (norm === null) return { ok: false, reason: 'That is not a valid shortcut.' };
@@ -352,11 +538,11 @@ export function createKeymap(
       if (modifierless(norm)) {
         return { ok: false, reason: 'Add Ctrl or Alt: a bare key would fire while you type or break navigation.' };
       }
-      const holder = actionFor(norm);
-      if (holder && holder !== action) {
+      const holder = holders(norm, action)[0];
+      if (holder) {
         return {
           ok: false,
-          reason: `${formatChord(norm)} is already used by "${ACTION_LABELS[holder]}".`,
+          reason: `${formatChord(norm)} is already used by "${ACTION_LABELS[holder]}" (${SCOPE_LABELS[ACTION_SCOPES[holder]]}).`,
         };
       }
       return { ok: true };
@@ -367,21 +553,26 @@ export function createKeymap(
       return () => listeners.delete(fn);
     },
     /**
-     * The single keydown entry point. Only a chord bound to an action WITH a
-     * registered handler is preventDefault'd and dispatched; anything else is
-     * left to the browser untouched.
+     * The single keydown entry point. Walks the scope chain innermost first;
+     * the first scope whose action on this chord has a handler takes the key:
+     * it is preventDefault'd, unless the handler declines (returns false), in
+     * which case the browser keeps it. Either way no outer scope sees it.
+     * Anything else is left to the browser untouched.
      */
-    dispatch(e: KeyboardEvent): void {
+    dispatch(e: KeyboardEvent, routeScope?: Scope | null): void {
       const chord = chordFromEvent(e);
       if (chord === null) return;
-      // A plain-key chord (no Ctrl/Alt) is text while the user is typing.
-      if (!/^(ctrl|alt)\+/.test(chord) && isEditable(e.target)) return;
-      const action = actionFor(chord);
-      if (!action) return;
-      const handler = handlers.get(action);
-      if (!handler) return;
-      e.preventDefault();
-      handler(e);
+      // A plain-key chord (no Ctrl/Alt) is text while the user is typing, and
+      // belongs to the widget inside an open menu or dialog.
+      if (!/^(ctrl|alt)\+/.test(chord) && (isEditable(e.target) || inMenuOrDialog(e.target))) return;
+      for (const scope of chainFor(e.target, routeScope)) {
+        const action = actionIn(scope, chord);
+        if (!action) continue;
+        const handler = handlerFor(action, e.target);
+        if (!handler) continue;
+        if (handler(e) !== false) e.preventDefault();
+        return;
+      }
     },
   };
 }

@@ -37,7 +37,7 @@
       {#each rows as r (r.action)}
         <tr data-testid="shortcut-row" data-action={r.action}>
           <td class="label">{r.label}</td>
-          <td class="chord"><Kbd keys={formatChord(r.chord)} /></td>
+          <td class="chord">{#if r.chord}<Kbd keys={formatChord(r.chord)} />{/if}</td>
         </tr>
       {/each}
     </tbody>

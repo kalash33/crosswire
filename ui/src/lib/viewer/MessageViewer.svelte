@@ -27,7 +27,7 @@
   import { bytesToLatin1 } from '../editor/encoding';
   import { parseHeadLines } from '../http/headers';
   import { humanBytes } from '../format';
-  import { findHint } from '../keymap';
+  import { findHint } from '../keymap-hints.svelte';
   import type { EditorLanguage } from '../editor/lang';
   import {
     contentTypeOf,

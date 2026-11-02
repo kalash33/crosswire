@@ -96,7 +96,7 @@
                 {/if}
               </td>
               <td class="chord">
-                <Kbd keys={formatChord(b.chord)} />
+                {#if b.chord}<Kbd keys={formatChord(b.chord)} />{/if}
                 <span class="actions">
                   <Button
                     size="sm"
