@@ -135,23 +135,25 @@ preview token).
 
 ## Performance gates (spec §13)
 
-Two of the §13 performance targets are **not met at 0.1.0**. Both harnesses run
-**REPORT-ONLY**: they print a `SUMMARY` line and assert only gross-regression
-floors, never the §13 target. The decision, the root causes and the 0.1.1
-commitments are in [ADR-0006](adr/0006-performance-gates-0-1-0.md); the harness
-wiring is in [bench/README.md](../bench/README.md). Numbers are from the
+Two of the §13 performance targets were **not met at 0.1.0** and shipped
+**REPORT-ONLY** ([ADR-0006](adr/0006-performance-gates-0-1-0.md)). In 0.1.1 the
+History list is virtualised and the UI frame/filter gate **asserts** at 100k
+rows in CI; ingest stays REPORT-ONLY (it prints a `SUMMARY` line and asserts
+only gross-regression floors). The harness wiring is in
+[bench/README.md](../bench/README.md). Numbers are from the
 reference maintainer machine (MacBook Air M2, 8 GiB, macOS), release builds,
 headless Chromium.
 
 | §13 target | Harness | Measured | Status |
 |---|---|---|---|
 | Ingest >= 2,000 exchanges/s at the 60/30/9/1 body mix | `crosswire-store/tests/perf_ingest.rs` (`just perf`) | about 700/s (about 65 MB/s of bodies) | **REPORT-ONLY, target not met.** Asserts only the body mix and a 300/s floor |
-| UI: no frame > 32 ms over a 10 s scroll | `ui/e2e/perf-scroll.spec.ts` (`just ui-perf`, `scripts/ui-perf.sh`, seeded by `crosswire-store/examples/seed_project.rs`) | 100k rows with real paging: max 200 ms, p99 150 ms, 76 of 356 frames over 32 ms. An earlier maintainer run at 1M rows: max 117 ms | **REPORT-ONLY, target not met.** Asserts only max frame < 2 s |
-| UI: filter applied in < 300 ms | same | 190 ms at 100k; 163 ms at 1M | met, but the spec asserts only filter < 5 s |
+| UI: no frame > 32 ms over a 10 s scroll | `ui/e2e/perf-scroll.spec.ts` (`just ui-perf`, `scripts/ui-perf.sh`, seeded by `crosswire-store/examples/seed_project.rs`; CI `ui-perf` job on ubuntu, one retry) | 0.1.1 virtualised list, 100k rows, 10 local runs: max frame 16.8 ms in 9, one run 33.3 ms (a single dropped vsync frame); p99 16.8 ms; DOM rows 37 against a bound of 37 (21 visible + 2 x 8); 34 to 35 auto-loaded pages, 3,500 to 3,600 rows. Before (0.1.0, not virtualised): max 200 ms | **ASSERTED** at 100k: max frame <= 32 ms, DOM rows <= visible + 2 x OVERSCAN, pages loaded >= 1, rows loaded >= 1,000. 1M stays report-only (maintainer) |
+| UI: filter applied in < 300 ms | same | 21 to 33 ms in 9 of 10 runs, 194 ms in one | **ASSERTED** at 100k (< 300 ms) |
 | Peak anonymous RSS < 500 MB at 1M rows | `crosswire-store/benches/history.rs` via `scripts/perf-gate.sh` | 21 MB | met, asserted at 1M by `just perf` |
 | First capture visible in the UI in < 2 minutes | `ui/e2e/first-capture-ui.spec.ts` (`just first-capture-ui`, CI ubuntu) | 5 to 14 s in maintainer runs | met, asserted (limit 120 s) |
 
-The frame misses share one cause: the History table is not virtualised, so
-every loaded row stays in the DOM (about 3.8k rows at 100k). The ingest miss is
-body-volume bound on the single writer thread. Both are fixed or re-specified
-in 0.1.1, not by lowering the targets quietly.
+The 0.1.0 frame miss had one cause: the History table was not virtualised, so
+every loaded row stayed in the DOM (about 3.8k rows at 100k). 0.1.1 renders only
+the rows in view plus 8 above and below, and the gate asserts that bound. The
+ingest miss is body-volume bound on the single writer thread and is still
+REPORT-ONLY; it is re-specified separately, not by lowering the target quietly.

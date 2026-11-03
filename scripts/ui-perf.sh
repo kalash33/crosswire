@@ -2,14 +2,20 @@
 # UI frame-time / filter-latency trace (spec §13): seed a synthetic project of
 # CROSSWIRE_UI_PERF_ROWS rows (default 100000; the maintainer run is 1000000),
 # serve it with the real `crosswire serve` (embedded production bundle), and
-# drive the history view with Playwright. REPORT-ONLY: prints the SUMMARY
-# ui_perf line and asserts only gross-regression floors (the 32 ms / 300 ms
-# targets are a known gap, see bench/README.md).
+# drive the history view with Playwright. Always prints the SUMMARY ui_perf
+# line and asserts gross-regression floors. CROSSWIRE_UI_PERF_ASSERT=1 also
+# asserts the §13 targets (max frame <= 32 ms, filter < 300 ms, bounded DOM
+# rows, auto-load ran); it defaults to 1 at <= 100k rows (`just ui-perf`, CI)
+# and 0 above (the maintainer 1M run is report-only). An explicit value wins.
 # Mirrors scripts/first-capture-ui.sh's serve lifecycle; no network egress.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 ROWS="${CROSSWIRE_UI_PERF_ROWS:-100000}"
+ASSERT="${CROSSWIRE_UI_PERF_ASSERT:-}"
+if [ -z "$ASSERT" ]; then
+  if [ "$ROWS" -le 100000 ]; then ASSERT=1; else ASSERT=0; fi
+fi
 
 TMP="$(mktemp -d)"
 SERVE_PID=""
@@ -54,6 +60,7 @@ TOKEN=$(sed -n 's/.*#bootstrap=\([^[:space:]]*\).*/\1/p' "$TMP/boot" | head -n1)
 export CROSSWIRE_API_URL="http://$API"
 export CROSSWIRE_BOOTSTRAP_TOKEN="$TOKEN"
 export CROSSWIRE_UI_PERF_ROWS="$ROWS"
+export CROSSWIRE_UI_PERF_ASSERT="$ASSERT"
 
 cd ui
 npx playwright test --config playwright.perf-scroll.config.ts

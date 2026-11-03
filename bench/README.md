@@ -13,7 +13,7 @@ numbers. The 1M ingest/UI runs are maintainer-only (slow, several GB of disk).
 | Throughput | `crates/crosswire-proxy/tests/perf_throughput.rs` | >= 5,000 req/s (+ SNI-tunnel row) | ASSERTED | report-only |
 | History queries / RSS | `crates/crosswire-store/benches/history.rs` via `scripts/perf-gate.sh` (Plan 6) | p95 < 50 ms warm / < 500 ms cold; RSS < 500 MB at 1M | ASSERTED at 1M | asserted at 100k with loose bounds, plus EXPLAIN QUERY PLAN tests |
 | Ingest | `crates/crosswire-store/tests/perf_ingest.rs` | >= 2,000 exchanges/s | REPORT-ONLY: ~700/s, below target (known gap, backlogged); only a 300/s gross floor and the body-mix check assert | not run |
-| UI frame / filter | `ui/e2e/perf-scroll.spec.ts` via `just ui-perf` | frame <= 32 ms, filter < 300 ms | REPORT-ONLY: ~117 ms frame, above target (history list not virtualized, known gap, backlogged); filter met; only generous floors assert | not run |
+| UI frame / filter | `ui/e2e/perf-scroll.spec.ts` via `just ui-perf` | frame <= 32 ms, filter < 300 ms, DOM rows <= visible + 2 x 8 | ASSERTED at 100k in CI (own `ui-perf` job, ubuntu, one retry); 1M report-only (maintainer) | not run (the `ui-perf` job asserts instead) |
 
 `oha` (run as a separate process, see the last section) is the authoritative
 cross-check for the added-latency p99 and for throughput; the in-process
@@ -243,27 +243,45 @@ synthetic project (`scripts/ui-perf.sh` builds, seeds via the
 `crosswire-store` `seed_project` example behind the `synthetic` feature,
 serves, and runs Playwright). Frames are sampled PASSIVELY: an in-page
 `requestAnimationFrame` collector records timestamp deltas and reads no layout;
-the scroll is real wheel events from outside the page and "Load more" is
-clicked on a timer. Then `host = api.example.com` is applied and timed from the
+the scroll is real wheel events from outside the page, and the list
+auto-loads its pages. Then `host = api.example.com` is applied and timed from the
 click until every rendered row is that host.
 
 ```sh
-# Default 100,000 rows; prints the SUMMARY ui_perf line.
+# Default 100,000 rows, asserting; prints the SUMMARY ui_perf line.
 just ui-perf
-# Maintainer size: 1M rows (seeding ~6 min, serve opens it in ~2 min, ~5 GB).
+# Maintainer size: 1M rows, report-only (seeding ~6 min, serve opens it in
+# ~2 min, ~5 GB).
 CROSSWIRE_UI_PERF_ROWS=1000000 just ui-perf
 ```
 
-**Status: REPORT-ONLY (frame target NOT met).** The §13 frame target (no frame
-> 32 ms over a 10 s scroll at 1M rows) is not met because the history list is
-not virtualized: every loaded row stays in the DOM, growing to ~47-48k nodes
-(~3.8-3.9k rows) in 10 s, and ~14 % of frames exceed 32 ms. The spec asserts
-only generous gross-regression floors (max frame < 2 s, filter < 5 s), never
-the 32 ms / 300 ms targets (`CROSSWIRE_PERF_ASSERT` has no effect here). Pending
-a maintainer decision to virtualize or window the history list; tracked in the
-pre-0.1.0 backlog. The filter target (< 300 ms) is met at 1M; an earlier run
-with a forced-layout harness saw ~450 ms on a cold first query at 100k (first-
-query warmup), so treat single filter samples as noisy.
+**Status: ASSERTED at <= 100k rows, report-only above** (0.1.1, closing the
+UI half of [ADR-0006](../docs/adr/0006-performance-gates-0-1-0.md)). The
+History list is virtualised: only the rows in view plus `OVERSCAN` (8) above
+and below are in the DOM, between two spacer rows, and the next keyset page
+auto-loads as the window nears the loaded end. The driver therefore sends only
+wheel events (no Load-more clicks) and counts pages from the network
+(`GET /api/v1/exchanges?…after=…`). With `CROSSWIRE_UI_PERF_ASSERT=1`
+(`scripts/ui-perf.sh` defaults it to 1 at <= 100k rows and 0 above; an
+explicit value wins) the spec asserts:
+
+- max frame <= 32 ms over the 10 s scroll (first delta excluded),
+- filter applied in < 300 ms,
+- DOM rows <= `visible_rows + 2 x OVERSCAN`, where `visible_rows` is
+  `ceil(list.clientHeight / rowH)` read after the scroll,
+- `pages_loaded >= 1` and `loaded_rows >= 1,000` (auto-load ran and the scroll
+  went deep),
+
+plus the always-on gross floors (max frame < 2 s, filter < 5 s). CI runs it at
+100k rows in its own `ui-perf` job on ubuntu with one Playwright retry
+(`playwright.perf-scroll.config.ts`); a retried pass is reported as flaky. The
+1M maintainer run (`CROSSWIRE_UI_PERF_ROWS=1000000 just ui-perf`, and the UI
+step of `just perf`) stays report-only but is expected to meet the same
+numbers. The SUMMARY line adds `pages_loaded`, `loaded_rows`, `visible_rows`
+and `dom_row_bound`, so CI logs show the headroom.
+
+The numbers below before the 0.1.1 row are the non-virtualised list, kept for
+the record.
 
 ## Reference machine: MacBook Air (Mac14,2), Apple M2, 8 cores, 8 GiB, macOS
 
@@ -274,6 +292,7 @@ passive sampling.
 |---|---|---|---|---|---|
 | 100,000 | 117 ms | 100 ms | 61 / 474 | 122 ms | 3,900 / 48,344 |
 | 1,000,000 | 117 ms | 100 ms | 64 / 459 | 124 ms | 3,800 / 47,068 |
+| 0.1.1 virtualised, 100k and 1M | TBD (T5) | TBD (T5) | TBD (T5) | TBD (T5) | TBD (T5) |
 
 (The earlier forced-layout harness read 283 ms max frame; passive sampling
 roughly halves it but the target is still missed by ~3.6x.)

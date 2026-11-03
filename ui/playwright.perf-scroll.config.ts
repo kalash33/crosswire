@@ -14,9 +14,13 @@ export default defineConfig({
   testMatch: /perf-scroll\.spec\.ts$/,
   fullyParallel: false,
   forbidOnly: !!process.env.CI,
-  retries: 0,
+  // One retry in CI absorbs a noisy shared runner; a retried pass is still a
+  // flake signal to read, not a pass to ignore.
+  retries: process.env.CI ? 1 : 0,
   workers: 1,
-  reporter: process.env.CI ? 'github' : 'list',
+  // `list` prints the SUMMARY line (test stdout) so CI logs show the headroom;
+  // `github` adds failure annotations in CI.
+  reporter: process.env.CI ? [['list'], ['github']] : 'list',
   timeout: 180_000,
   use: { baseURL: API_URL },
   projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
