@@ -209,3 +209,35 @@ test('the ? sheet groups shortcuts by scope and lists the History list keys', as
   await expect(fixed.first()).toBeVisible();
   await expect(dialog.getByTestId('shortcut-group-history-list')).toContainText('Page Down');
 });
+
+test('with request and response side by side, Ctrl+F finds only in the focused viewer', async ({ page }) => {
+  await page.setViewportSize({ width: 1800, height: 900 });
+  await mockKeys(page);
+  await page.goto('/');
+  await page.getByTestId('history-row').locator('td.open').first().click();
+  await expect(page.getByTestId('detail-id')).toHaveText(ROW_ID);
+  // The layout follows the detail pane's own width: require side-by-side mode.
+  await expect.poll(async () => (await page.getByTestId('history-detail').boundingBox())?.width ?? 0).toBeGreaterThanOrEqual(760);
+  const req = page.getByTestId('detail-request');
+  const resp = page.getByTestId('detail-response');
+  await expect(req).toBeVisible();
+  await expect(resp).toBeVisible();
+  await req.getByTestId('detail-tab-raw').click();
+  await resp.getByTestId('detail-tab-raw').click();
+
+  await req.getByTestId('detail-viewer').focus();
+  await page.keyboard.press('Control+KeyF');
+  await expect(req.getByTestId('detail-findbar-input')).toBeFocused();
+  await expect(resp.getByTestId('detail-findbar-input')).toHaveCount(0);
+
+  // Reverse, from a fresh page so neither find bar is open.
+  await page.reload();
+  await page.getByTestId('history-row').locator('td.open').first().click();
+  await expect(page.getByTestId('detail-id')).toHaveText(ROW_ID);
+  await req.getByTestId('detail-tab-raw').click();
+  await resp.getByTestId('detail-tab-raw').click();
+  await resp.getByTestId('detail-viewer').focus();
+  await page.keyboard.press('Control+KeyF');
+  await expect(resp.getByTestId('detail-findbar-input')).toBeFocused();
+  await expect(req.getByTestId('detail-findbar-input')).toHaveCount(0);
+});

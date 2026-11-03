@@ -10,6 +10,14 @@ keymap.subscribe(() => {
   version++;
 });
 
+/**
+ * The keymap change counter. A `$derived` or template that calls this re-runs on
+ * every remap, reset or load (for code that reads the keymap directly).
+ */
+export function keymapVersion(): number {
+  return version;
+}
+
 /** Display form of an action's current chord, e.g. "Ctrl+Shift+C"; undefined when unbound. */
 export function chordLabel(action: Action): string | undefined {
   void version;

@@ -4,17 +4,17 @@
   // which closes it. Focus goes back to whatever opened it.
   import { onMount } from 'svelte';
   import { keymap, formatChord, SCOPES, SCOPE_LABELS } from '../keymap';
-  import { chordLabel } from '../keymap-hints.svelte';
+  import { keymapVersion } from '../keymap-hints.svelte';
   import IconButton from '../ui/IconButton.svelte';
   import Kbd from '../ui/Kbd.svelte';
 
   let { onClose }: { onClose: () => void } = $props();
 
   let dlg: HTMLDialogElement;
-  // Re-read whenever a chord changes (chordLabel is reactive; the sheet is
+  // Re-read whenever a chord changes (keymapVersion is reactive; the sheet is
   // modal, so remaps happen only while it is closed, but stay correct anyway).
   const groups = $derived.by(() => {
-    void chordLabel('find');
+    void keymapVersion();
     const all = keymap.bindings();
     return SCOPES.map((scope) => ({
       scope,
