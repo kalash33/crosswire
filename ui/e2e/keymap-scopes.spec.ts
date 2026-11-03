@@ -207,6 +207,16 @@ test('the ? sheet groups shortcuts by scope and lists the History list keys', as
   await expect(dialog.locator('[data-testid="shortcut-group-viewer"] [data-action="find"]')).toContainText('Ctrl+F');
   const fixed = dialog.getByTestId('shortcut-fixed-row');
   await expect(fixed.first()).toBeVisible();
+  // The keys History's list really handles (spec §3.1: Enter opens, Space
+  // toggles the checkbox, Esc returns from search or the detail).
+  await expect(fixed.locator('td.label')).toHaveText([
+    'Next / previous row',
+    'Open the row',
+    'Select / unselect the row',
+    'First / last loaded row',
+    'Page up / down',
+    'Back to the list from search or detail',
+  ]);
   await expect(dialog.getByTestId('shortcut-group-history-list')).toContainText('Page Down');
 });
 
@@ -240,4 +250,77 @@ test('with request and response side by side, Ctrl+F finds only in the focused v
   await page.keyboard.press('Control+KeyF');
   await expect(resp.getByTestId('detail-findbar-input')).toBeFocused();
   await expect(req.getByTestId('detail-findbar-input')).toHaveCount(0);
+});
+
+// `/` is the History-scoped, remappable "Focus the History search".
+const historyRow = (page: Page) => page.getByTestId('history-row').first();
+const searchSelection = (page: Page) =>
+  page.getByTestId('history-search').evaluate((el) => {
+    const i = el as HTMLInputElement;
+    return { value: i.value, start: i.selectionStart, end: i.selectionEnd };
+  });
+
+test('/ on History focuses the search box and selects its text', async ({ page }) => {
+  const errors: string[] = [];
+  page.on('pageerror', (e) => errors.push(e.message));
+  await mockKeys(page);
+  await page.goto('/');
+  const search = page.getByTestId('history-search');
+  // A query that still matches the row, so the row stays focusable.
+  await search.fill('a.ex');
+  await historyRow(page).focus();
+  await page.keyboard.press('/');
+  await expect(search).toBeFocused();
+  expect(await searchSelection(page)).toEqual({ value: 'a.ex', start: 0, end: 4 });
+  expect(errors).toEqual([]);
+});
+
+test('/ typed in the search box or a filter field is a slash, not a shortcut', async ({ page }) => {
+  await mockKeys(page);
+  await page.goto('/');
+  const search = page.getByTestId('history-search');
+  await search.fill('a.example');
+  await search.press('/');
+  await expect(search).toBeFocused();
+  await expect(search).toHaveValue('a.example/');
+
+  const host = page.getByTestId('filter-host');
+  if (!(await host.isVisible())) await page.getByTestId('filter-toggle').click();
+  await host.click();
+  await page.keyboard.type('x/y');
+  await expect(host).toBeFocused();
+  await expect(host).toHaveValue('x/y');
+  await expect(search).toHaveValue('a.example/');
+});
+
+test('/ inside the column menu does nothing', async ({ page }) => {
+  await mockKeys(page);
+  await page.goto('/');
+  await page.getByTestId('column-picker').click();
+  const menu = page.getByTestId('column-menu');
+  await expect(menu).toBeVisible();
+  const item = menu.getByRole('menuitem').first();
+  await item.focus();
+  await page.keyboard.press('/');
+  await expect(page.getByTestId('history-search')).not.toBeFocused();
+  await expect(item).toBeFocused();
+});
+
+test('remapping Focus-search to Alt+/ makes / inert and Alt+/ focus the search', async ({ page }) => {
+  await mockKeys(page);
+  await page.goto('/settings');
+  await expect(shortcutRow(page, 'focus-search').locator('kbd')).toHaveText('/');
+  await page.getByTestId('shortcut-change-focus-search').click();
+  await page.keyboard.press('Alt+Slash');
+  await expect(page.getByTestId('shortcut-error-focus-search')).toHaveCount(0);
+  await expect(shortcutRow(page, 'focus-search').locator('kbd')).toHaveText('Alt+/');
+
+  await page.getByTestId('nav-history').click();
+  const search = page.getByTestId('history-search');
+  await historyRow(page).focus();
+  await page.keyboard.press('/');
+  await expect(historyRow(page)).toBeFocused();
+  await expect(search).not.toBeFocused();
+  await page.keyboard.press('Alt+Slash');
+  await expect(search).toBeFocused();
 });

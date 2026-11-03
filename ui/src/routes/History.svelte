@@ -472,7 +472,11 @@
   // The scrollTop this component last wrote itself (a reset to the top, an
   // anchor restore). The scroll event it causes moves the window but is not
   // the user scrolling, so it never auto-loads (spec §3.1.6: no auto-load on
-  // a filter apply, a search, a sort or a live event).
+  // a filter apply, a search, a sort or a live event). A write that never
+  // fires a scroll event (the value was already there) leaves the marker set
+  // until the next frame at a different position, which clears it; that is
+  // harmless, because a frame at the marked position is exactly where the
+  // write left the list, and the first real user scroll moves away from it.
   let programmaticTop: number | null = null;
   function onScroll(): void {
     if (framePending) return;
@@ -616,19 +620,6 @@
       evacuated = false;
     });
   });
-
-  // `/` focuses the search box unless the user is typing in a field or working
-  // in a menu/dialog. (The Shell's keymap does not bind `/`, so it falls through.)
-  function onWindowKey(e: KeyboardEvent): void {
-    if (e.key !== '/' || e.ctrlKey || e.altKey || e.metaKey || e.defaultPrevented) return;
-    if (isTypingTarget(e.target)) return;
-    if (e.target instanceof Element && e.target.closest('[role="menu"], [role="dialog"]')) return;
-    const box = rootEl?.querySelector<HTMLInputElement>('[data-testid="history-search"]');
-    if (!box) return;
-    e.preventDefault();
-    box.focus();
-    box.select();
-  }
 
   function onSearchKey(e: KeyboardEvent): void {
     if (e.key !== 'Escape') return;
@@ -814,10 +805,22 @@
     events.start();
     void connection.load();
     void history.applyFilter({}).finally(() => (firstLoadDone = true));
-    const off = keymap.register('send-to-repeater', () => {
+    const offSend = keymap.register('send-to-repeater', () => {
       if (target.id) void sendToRepeater(target.id);
     });
-    return off;
+    // `/` (remappable, History scope). The keymap already leaves a plain key
+    // alone while the user types in a field or works in a menu or dialog. The
+    // start panel has no search box: decline so the browser keeps the key.
+    const offSearch = keymap.register('focus-search', () => {
+      const box = rootEl?.querySelector<HTMLInputElement>('[data-testid="history-search"]');
+      if (!box) return false;
+      box.focus();
+      box.select();
+    });
+    return () => {
+      offSend();
+      offSearch();
+    };
   });
 
   /** `timeCell` split into its date part (older rows only) and its clock. */
@@ -844,9 +847,7 @@
   </th>
 {/snippet}
 
-<svelte:window onkeydown={onWindowKey} />
-
-<div class="history" data-testid="history-view" bind:this={rootEl}>
+<div class="history" data-testid="history-view" data-keyscope="history" bind:this={rootEl}>
   {#if !start}
   <div class="bar">
     <Button

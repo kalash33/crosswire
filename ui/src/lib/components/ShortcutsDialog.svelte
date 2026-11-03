@@ -23,13 +23,15 @@
     })).filter((g) => g.rows.length > 0);
   });
 
-  // History's list-widget keys: ARIA grid conventions, not remappable.
+  // History's list-widget keys: ARIA grid conventions, not remappable. Keep in
+  // step with History's onListKey/keyTarget, onSearchKey and onDetailKey.
   const LIST_KEYS = [
     { label: 'Next / previous row', keys: ['J', 'K', 'Down', 'Up'] },
-    { label: 'Open the row', keys: ['Enter', 'Space'] },
-    { label: 'First / last row', keys: ['Home', 'End'] },
+    { label: 'Open the row', keys: ['Enter'] },
+    { label: 'Select / unselect the row', keys: ['Space'] },
+    { label: 'First / last loaded row', keys: ['Home', 'End'] },
     { label: 'Page up / down', keys: ['Page Up', 'Page Down'] },
-    { label: 'Close the detail', keys: ['Esc'] },
+    { label: 'Back to the list from search or detail', keys: ['Esc'] },
   ];
 
   onMount(() => {
