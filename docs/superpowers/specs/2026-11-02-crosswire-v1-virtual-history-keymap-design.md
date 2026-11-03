@@ -36,7 +36,7 @@ Variable-height or wrapping rows (rows are single-line, §3.1.3); a canvas or We
   | `c-len` | `5.5rem` | `1.0 MB` |
   | `c-state` | `6.5rem` | `committed` badge |
   | `c-tags` | `7rem` (narrow `6rem`) | one chip + `+N` |
-  | `c-host` / `c-path` | `35%` / `65%` of the rest | ellipsis, full text in `title` (unchanged) |
+  | `c-host` / `c-path` | `40%` / `60%` of the rest (was 35/65: at 1440×900 that left Host under 60 px; 40% keeps Host ≥ 60 px there, as `discoverability.spec.ts` now asserts) | ellipsis, full text in `title` (unchanged) |
 
   The exact `rem`/`ch` values are tuned by the implementer until `discoverability.spec.ts` "History fits the default split" passes at 1440×900 and 1280×720 unchanged; that spec is the acceptance for widths, not this table.
 - **Sticky header:** unchanged CSS (`thead th { position: sticky; top: 0 }`); the pads live inside `tbody`, so the header never scrolls away. The header height `headH` and footer height `footH` are measured once with the row height (§3.1.2) and used for reveal math.
