@@ -238,7 +238,6 @@ export function chordFromEvent(e: KeyboardEvent): string | null {
   return parts.join('+');
 }
 
-
 /** localStorage key holding the persisted `{action: chord}` overrides. */
 export const KEYMAP_KEY = 'crosswire.keymap';
 
@@ -499,8 +498,9 @@ export function createKeymap(
       const queue: Action[] = action ? [action] : [...ACTIONS];
       while (queue.length > 0) {
         const a = queue.shift() as Action;
-        overrides.delete(a);
         const def = defaults[a];
+        if (!overrides.has(a) && bindings.get(a) === def) continue;
+        overrides.delete(a);
         for (const holder of holders(def, a)) {
           // Another action sits on this default: send it back to its own.
           if (overrides.has(holder)) queue.push(holder);

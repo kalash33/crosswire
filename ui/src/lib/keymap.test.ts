@@ -670,6 +670,20 @@ describe('keymap per-scope conflicts', () => {
     expect(km.bindings().map((b) => [b.action, b.chord])).toEqual(ACTIONS.map((a) => [a, DEFAULT_BINDINGS[a]]));
   });
 
+  it('reset of an action already at its default leaves a shadowed override alone', () => {
+    localStorage.setItem(
+      'test.keymap.reset-guard',
+      JSON.stringify({ forward: 'ctrl+alt+f', 'toggle-intercept': 'ctrl+f' }),
+    );
+    const km = createKeymap(DEFAULT_BINDINGS, { storageKey: 'test.keymap.reset-guard' });
+    expect(km.shadows('find')).toEqual(['toggle-intercept']);
+    km.reset('find');
+    expect(km.chordFor('find')).toBe('ctrl+f');
+    expect(km.chordFor('toggle-intercept')).toBe('ctrl+f');
+    expect(km.isOverridden('toggle-intercept')).toBe(true);
+    localStorage.removeItem('test.keymap.reset-guard');
+  });
+
   it('shadows() is empty for the defaults', () => {
     const km = createKeymap();
     for (const a of ACTIONS) expect(km.shadows(a)).toEqual([]);

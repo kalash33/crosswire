@@ -101,7 +101,7 @@
   }
 </script>
 
-<div class="repeater" data-testid="repeater-view">
+<div class="repeater" data-testid="repeater-view" data-keyscope="repeater">
   <div class="tabstrip">
     <div class="tabs" data-testid="repeater-tabs" role="tablist" aria-label="Repeater tabs" bind:this={tabList}>
       {#each repeater.tabs as tab (tab.id)}

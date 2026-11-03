@@ -28,6 +28,7 @@
   import { parseHeadLines } from '../http/headers';
   import { humanBytes } from '../format';
   import { findHint } from '../keymap-hints.svelte';
+  import { keymap } from '../keymap';
   import type { EditorLanguage } from '../editor/lang';
   import {
     contentTypeOf,
@@ -224,24 +225,22 @@
     root?.focus();
   }
 
-  // Ctrl+F (or Cmd+F) belongs to this viewer while focus is inside it: the
-  // keystroke never reaches the global dispatcher, where the same chord may be
-  // bound to another action (Forward, by default). On a textual tab it opens
-  // find; elsewhere (Headers, Hex) the browser's own find runs. Outside the
-  // viewer the app's chords and the browser's find are untouched.
+  // Find is a keymap action in the `viewer` scope, bound to this root: while
+  // focus is inside the viewer its chord (Ctrl+F by default) wins over a view
+  // or global action on the same chord. On a textual tab it opens find;
+  // elsewhere (Headers, Hex) it declines, so the browser's own find runs and
+  // no outer scope sees the key.
   onMount(() => {
     const el = root;
     if (!el) return;
-    const onkey = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'f') {
-        e.stopPropagation();
-        if (!textual) return;
-        e.preventDefault();
+    return keymap.register(
+      'find',
+      () => {
+        if (!textual) return false;
         openFind();
-      }
-    };
-    el.addEventListener('keydown', onkey);
-    return () => el.removeEventListener('keydown', onkey);
+      },
+      { el },
+    );
   });
 
   // ---- Tabs ----------------------------------------------------------------------
@@ -292,7 +291,7 @@
   </p>
 {/snippet}
 
-<div class="viewer" bind:this={root} tabindex="-1" data-testid={`${testidPrefix}-viewer`} data-side={side}>
+<div class="viewer" bind:this={root} tabindex="-1" data-keyscope="viewer" data-testid={`${testidPrefix}-viewer`} data-side={side}>
   <div class="bar">
     {@render title?.()}
     <Tabs {tabs} active={tab} {label} onselect={(id) => (chosen = id as ViewerTab)} />

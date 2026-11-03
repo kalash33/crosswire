@@ -5,7 +5,15 @@
   import { onDestroy, onMount } from 'svelte';
   import { appearance } from '../lib/stores/appearance.svelte';
   import { connection } from '../lib/stores/connection.svelte';
-  import { keymap, formatChord, recordChord, type Action } from '../lib/keymap';
+  import {
+    keymap,
+    formatChord,
+    recordChord,
+    ACTION_LABELS,
+    SCOPES,
+    SCOPE_LABELS,
+    type Action,
+  } from '../lib/keymap';
   import { caPageUrl } from '../lib/components/start';
   import Segmented from '../lib/ui/Segmented.svelte';
   import Kbd from '../lib/ui/Kbd.svelte';
@@ -24,6 +32,13 @@
     void version;
     return keymap.bindings();
   });
+  const groups = $derived(
+    SCOPES.map((scope) => ({
+      scope,
+      label: SCOPE_LABELS[scope],
+      rows: bindings.filter((b) => b.scope === scope),
+    })).filter((g) => g.rows.length > 0),
+  );
   const anyOverridden = $derived(bindings.some((b) => keymap.isOverridden(b.action)));
   const unsubscribe = keymap.subscribe(() => version++);
   onDestroy(unsubscribe);
@@ -79,14 +94,23 @@
 
     <section class="card" aria-labelledby="s-shortcuts" data-testid="settings-shortcuts">
       <h2 id="s-shortcuts">Keyboard shortcuts</h2>
+      {#each groups as g (g.scope)}
+      <section class="group" data-testid="shortcut-group-{g.scope}">
+      <h3>{g.label}</h3>
       <table>
         <tbody>
-          {#each bindings as b (b.action)}
+          {#each g.rows as b (b.action)}
             <tr>
               <td>
                 {b.label}
                 {#if keymap.isOverridden(b.action)}
                   <Badge value="custom" />
+                {/if}
+                {#if keymap.shadows(b.action).length > 0}
+                  <div class="hint" data-testid="shortcut-shadow-{b.action}">
+                    In this view this hides {keymap.shadows(b.action).map((o) => `"${ACTION_LABELS[o]}"`).join(', ')}
+                    on the same shortcut. Change one of them to use both.
+                  </div>
                 {/if}
                 {#if recording === b.action}
                   <div class="hint" role="status">Press the new shortcut… Esc cancels</div>
@@ -96,7 +120,7 @@
                 {/if}
               </td>
               <td class="chord">
-                {#if b.chord}<Kbd keys={formatChord(b.chord)} />{/if}
+                {#if b.chord}<Kbd keys={formatChord(b.chord)} />{:else}<span class="unset">Not set</span>{/if}
                 <span class="actions">
                   <Button
                     size="sm"
@@ -133,6 +157,8 @@
           {/each}
         </tbody>
       </table>
+      </section>
+      {/each}
       {#if anyOverridden}
         <p class="reset-all">
           <Button size="sm" data-testid="shortcuts-reset-all" onclick={() => keymap.reset()}>Reset all</Button>
@@ -283,6 +309,18 @@
     justify-content: flex-end;
     gap: var(--s-2);
     text-align: right;
+  }
+  h3 {
+    margin: var(--s-3) 0 var(--s-1);
+    font-size: var(--fs-sm);
+    font-weight: 600;
+    color: var(--fg-muted);
+  }
+  .group:first-of-type h3 {
+    margin-top: 0;
+  }
+  .unset {
+    color: var(--fg-muted);
   }
   .actions {
     display: inline-flex;
