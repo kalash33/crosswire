@@ -147,13 +147,14 @@ headless Chromium.
 | §13 target | Harness | Measured | Status |
 |---|---|---|---|
 | Ingest >= 2,000 exchanges/s at the 60/30/9/1 body mix | `crosswire-store/tests/perf_ingest.rs` (`just perf`) | about 700/s (about 65 MB/s of bodies) | **REPORT-ONLY, target not met.** Asserts only the body mix and a 300/s floor |
-| UI: no frame > 32 ms over a 10 s scroll | `ui/e2e/perf-scroll.spec.ts` (`just ui-perf`, `scripts/ui-perf.sh`, seeded by `crosswire-store/examples/seed_project.rs`; CI `ui-perf` job on ubuntu, one retry) | 0.1.1 virtualised list, 100k rows, 10 local runs: max frame 16.8 ms in 9, one run 33.3 ms (a single dropped vsync frame); p99 16.8 ms; DOM rows 37 against a bound of 37 (21 visible + 2 x 8); 34 to 35 auto-loaded pages, 3,500 to 3,600 rows. Before (0.1.0, not virtualised): max 200 ms | **ASSERTED** at 100k: max frame <= 32 ms, DOM rows <= visible + 2 x OVERSCAN, pages loaded >= 1, rows loaded >= 1,000. 1M stays report-only (maintainer) |
-| UI: filter applied in < 300 ms | same | 21 to 33 ms in 9 of 10 runs, 194 ms in one | **ASSERTED** at 100k (< 300 ms) |
+| UI: no frame > 32 ms over a 10 s scroll | `ui/e2e/perf-scroll.spec.ts` (`just ui-perf`, `scripts/ui-perf.sh`, seeded by `crosswire-store/examples/seed_project.rs`; CI `ui-perf` job on ubuntu; one retry of the whole measurement on the same serve and session, a retried pass reported as `flaky`) | 0.1.1 virtualised list, 100k rows, 5 local runs: max frame 16.8 ms in all (no frame over 32 ms), p99 16.8 ms; DOM rows 37 against a bound of 50 (2 x 21 visible + 8); 35 auto-loaded pages, 3,600 rows. An earlier round without the settle-before-measure step had one run with a single 33.3 ms frame. Before (0.1.0, not virtualised): max 200 ms | **ASSERTED** at 100k: max frame <= 32 ms, DOM rows <= 2 x visible + OVERSCAN, pages loaded >= 1, rows loaded >= 1,000. 1M stays report-only (maintainer) |
+| UI: filter applied in < 300 ms | same | 10 to 27 ms (5 runs); one 194 ms outlier in an earlier round | **ASSERTED** at 100k (< 300 ms) |
 | Peak anonymous RSS < 500 MB at 1M rows | `crosswire-store/benches/history.rs` via `scripts/perf-gate.sh` | 21 MB | met, asserted at 1M by `just perf` |
 | First capture visible in the UI in < 2 minutes | `ui/e2e/first-capture-ui.spec.ts` (`just first-capture-ui`, CI ubuntu) | 5 to 14 s in maintainer runs | met, asserted (limit 120 s) |
 
 The 0.1.0 frame miss had one cause: the History table was not virtualised, so
 every loaded row stayed in the DOM (about 3.8k rows at 100k). 0.1.1 renders only
-the rows in view plus 8 above and below, and the gate asserts that bound. The
+the rows in view plus 8 above and below, and the gate asserts the spec's
+acceptance bound on it (2 x visible + 8). The
 ingest miss is body-volume bound on the single writer thread and is still
 REPORT-ONLY; it is re-specified separately, not by lowering the target quietly.

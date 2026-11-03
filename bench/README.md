@@ -13,7 +13,7 @@ numbers. The 1M ingest/UI runs are maintainer-only (slow, several GB of disk).
 | Throughput | `crates/crosswire-proxy/tests/perf_throughput.rs` | >= 5,000 req/s (+ SNI-tunnel row) | ASSERTED | report-only |
 | History queries / RSS | `crates/crosswire-store/benches/history.rs` via `scripts/perf-gate.sh` (Plan 6) | p95 < 50 ms warm / < 500 ms cold; RSS < 500 MB at 1M | ASSERTED at 1M | asserted at 100k with loose bounds, plus EXPLAIN QUERY PLAN tests |
 | Ingest | `crates/crosswire-store/tests/perf_ingest.rs` | >= 2,000 exchanges/s | REPORT-ONLY: ~700/s, below target (known gap, backlogged); only a 300/s gross floor and the body-mix check assert | not run |
-| UI frame / filter | `ui/e2e/perf-scroll.spec.ts` via `just ui-perf` | frame <= 32 ms, filter < 300 ms, DOM rows <= visible + 2 x 8 | ASSERTED at 100k in CI (own `ui-perf` job, ubuntu, one retry); 1M report-only (maintainer) | not run (the `ui-perf` job asserts instead) |
+| UI frame / filter | `ui/e2e/perf-scroll.spec.ts` via `just ui-perf` | frame <= 32 ms, filter < 300 ms, DOM rows <= 2 x visible + 8 | ASSERTED at 100k in CI (own `ui-perf` job, ubuntu, one retry); 1M report-only (maintainer) | not run (the `ui-perf` job asserts instead) |
 
 `oha` (run as a separate process, see the last section) is the authoritative
 cross-check for the added-latency p99 and for throughput; the in-process
@@ -267,18 +267,31 @@ explicit value wins) the spec asserts:
 
 - max frame <= 32 ms over the 10 s scroll (first delta excluded),
 - filter applied in < 300 ms,
-- DOM rows <= `visible_rows + 2 x OVERSCAN`, where `visible_rows` is
-  `ceil(list.clientHeight / rowH)` read after the scroll,
+- DOM rows <= `2 x visible_rows + OVERSCAN` (the spec's acceptance bound;
+  the exact window size, `visible_rows + 2 x OVERSCAN`, is pinned by the
+  vitest window math and `history-virtual.spec.ts`), where `visible_rows` is
+  `ceil(list.clientHeight / rowH)` read after the scroll, and at least one row,
 - `pages_loaded >= 1` and `loaded_rows >= 1,000` (auto-load ran and the scroll
   went deep),
 
-plus the always-on gross floors (max frame < 2 s, filter < 5 s). CI runs it at
-100k rows in its own `ui-perf` job on ubuntu with one Playwright retry
-(`playwright.perf-scroll.config.ts`); a retried pass is reported as flaky. The
+plus the always-on gross floors (max frame < 2 s, filter < 5 s). Frames are
+sampled only after the first page has rendered, the network is idle and two
+frames have passed (mount is not measured); page fetches during the scroll are
+inside the window. CI runs it at
+100k rows in its own `ui-perf` job on ubuntu (30 min timeout) with one
+Playwright retry (`playwright.perf-scroll.config.ts`). The retry re-runs the
+whole measurement in a fresh page against the same `serve`, project and
+session: the single-use bootstrap token is exchanged once in the config's
+global setup (`ui/e2e/perf-scroll.setup.ts`) and the session is loaded as
+Playwright `storageState` from a 0600 file in the script's temp directory,
+which its exit trap removes. A pass on the retry is reported as `flaky`, and the
+first attempt's failure stays in the log; it is a signal to read, not a pass to
+ignore. Two failed attempts fail the job. The
 1M maintainer run (`CROSSWIRE_UI_PERF_ROWS=1000000 just ui-perf`, and the UI
 step of `just perf`) stays report-only but is expected to meet the same
-numbers. The SUMMARY line adds `pages_loaded`, `loaded_rows`, `visible_rows`
-and `dom_row_bound`, so CI logs show the headroom.
+numbers. The SUMMARY line adds `slow_frames` (index:ms of each frame over
+32 ms, or `none`), `pages_loaded`, `loaded_rows`, `visible_rows` and
+`dom_row_bound`, so CI logs show the headroom.
 
 The numbers below before the 0.1.1 row are the non-virtualised list, kept for
 the record.

@@ -100,17 +100,24 @@ Commitment 1 is done. The History list is virtualised (only the rows in view
 plus `OVERSCAN` = 8 above and below are in the DOM) and auto-loads keyset pages
 as the window nears the loaded end. `perf-scroll` is now an asserting gate at
 <= 100k rows (`CROSSWIRE_UI_PERF_ASSERT`, defaulted by `scripts/ui-perf.sh`):
-max frame <= 32 ms, filter < 300 ms, DOM rows <= visible + 2 x OVERSCAN,
-at least one auto-loaded page and at least 1,000 rows loaded. The section 13
-targets are unchanged. CI runs it at 100k in its own `ui-perf` job on ubuntu
-with one Playwright retry for shared-runner noise; a retried pass is reported
-as flaky, not hidden. The 1M run stays maintainer-only and report-only.
+max frame <= 32 ms, filter < 300 ms, DOM rows <= 2 x visible + OVERSCAN
+(the spec's acceptance bound), at least one auto-loaded page and at least
+1,000 rows loaded. The section 13 targets are unchanged. CI runs it at 100k in
+its own `ui-perf` job on ubuntu with one Playwright retry for shared-runner
+noise. The retry re-runs the whole measurement in a fresh page on the same
+serve and session (the single-use bootstrap token is exchanged once in a global
+setup and the session reused from a 0600 temp file the script deletes). A
+retried pass is reported as `flaky`, with the first failure in the log, not
+hidden; two failed attempts fail the job. The 1M run stays maintainer-only and
+report-only.
 
-Measured on the reference machine at 100k rows over 10 runs: max frame
-16.8 ms (one 60 Hz frame) in 9 runs and 33.3 ms (one dropped frame) in one;
-p99 16.8 ms; 37 DOM rows against a bound of 37; filter 21 to 33 ms, with one
-194 ms outlier. Frame deltas are quantised to the display refresh, so the
-32 ms target in practice means no dropped frame in about 600: one missed vsync
-fails a run, and the retry is the agreed mitigation for that.
+Measured on the reference machine at 100k rows, 5 runs: max frame 16.8 ms
+(one 60 Hz frame) in every run, no frame over 32 ms, p99 16.8 ms; 37 DOM rows
+against a bound of 50; filter 10 to 27 ms. An earlier round, before frames were
+sampled only after the page settled, had one run of ten with a single 33.3 ms
+frame. Frame deltas are quantised to the display refresh, so the 32 ms target
+in practice means no dropped frame in about 600: one missed vsync fails an
+attempt, and the single retry is the agreed mitigation. Whether that holds on
+CI runners is for the maintainer to judge once CI history exists.
 
 Ingest (commitment 2) is still REPORT-ONLY.

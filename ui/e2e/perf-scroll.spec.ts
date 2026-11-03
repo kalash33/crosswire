@@ -12,13 +12,15 @@ import { OVERSCAN } from '../src/lib/components/virtual-window';
 //
 // ASSERTING when CROSSWIRE_UI_PERF_ASSERT=1 (scripts/ui-perf.sh sets it for
 // <= 100k rows, so `just ui-perf` and CI assert): max frame <= 32 ms, filter
-// < 300 ms, DOM rows <= visible + 2 x OVERSCAN, at least one auto-loaded page
-// and >= 1,000 rows loaded. Above 100k (the maintainer 1M run) it is
+// < 300 ms, DOM rows <= 2 x visible + OVERSCAN (spec §3.3.2), at least one
+// auto-loaded page and >= 1,000 rows loaded. Above 100k (the maintainer 1M run) it is
 // REPORT-ONLY. The SUMMARY line is always printed and the gross-regression
 // floors always assert. Excluded from the default suite (see playwright.config.ts).
 
+// The page is already signed in: the config's global setup exchanged the
+// single-use bootstrap token once and loads that session (storageState) into
+// every attempt, including a retry.
 const API = requireEnv('CROSSWIRE_API_URL');
-const TOKEN = requireEnv('CROSSWIRE_BOOTSTRAP_TOKEN');
 const ROWS = process.env.CROSSWIRE_UI_PERF_ROWS ?? 'unknown';
 const ASSERT = process.env.CROSSWIRE_UI_PERF_ASSERT === '1';
 const SCROLL_MS = 10_000;
@@ -45,9 +47,16 @@ test('history scroll frames and filter latency at scale', async ({ page }) => {
     if (url.pathname === '/api/v1/exchanges' && url.searchParams.has('after')) pageRequests += 1;
   });
 
-  await page.goto(`${API}/#bootstrap=${TOKEN}`);
+  await page.goto(`${API}/`);
   await expect(page.getByTestId('history-view')).toBeVisible();
   await expect(page.getByTestId('history-row').first()).toBeVisible({ timeout: 30_000 });
+  // Settle before measuring, so mount and first-page frames are not counted:
+  // the first page fetched and the app idle on the network, then two frames.
+  // Page fetches triggered by the scroll still fall inside the window.
+  await page.waitForLoadState('networkidle');
+  await page.evaluate(
+    () => new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r()))),
+  );
 
   // ---- 10 s scroll, frames collected PASSIVELY in-page ----
   // The in-page collector only records rAF timestamps; it reads no layout. The
@@ -92,7 +101,8 @@ test('history scroll frames and filter latency at scale', async ({ page }) => {
       domRows: document.querySelectorAll('[data-testid="history-row"]').length,
       domNodes: document.getElementsByTagName('*').length,
       visibleRows: rowH > 0 ? Math.ceil(list.clientHeight / rowH) : 0,
-      loadedRows: Number(/(\d+) loaded/.exec(count)?.[1] ?? '0'),
+      // Tolerates thousands separators ("3,600", "3 600", "3.600").
+      loadedRows: Number((/(\d[\d,.\u00a0\u202f ]*) loaded/.exec(count)?.[1] ?? '0').replace(/\D/g, '')),
     };
   });
 
@@ -101,7 +111,9 @@ test('history scroll frames and filter latency at scale', async ({ page }) => {
   const maxFrame = Math.max(...frames);
   const sorted = [...frames].sort((a, b) => a - b);
   const p99 = sorted[Math.floor(sorted.length * 0.99)] ?? 0;
-  const over32 = frames.filter((d) => d > MAX_FRAME_MS).length;
+  // Index (in `frames`) and duration of every frame over the target.
+  const slow = frames.flatMap((d, i) => (d > MAX_FRAME_MS ? [`${i}:${d.toFixed(1)}`] : []));
+  const over32 = slow.length;
 
   // ---- filter: input -> filtered rows rendered ----
   // Back to the top of the scroll region (the window does not scroll).
@@ -127,10 +139,13 @@ test('history scroll frames and filter latency at scale', async ({ page }) => {
     }
   }, FILTER_HOST);
 
-  const domBound = scroll.visibleRows + 2 * OVERSCAN;
+  // The acceptance bound (spec §3.3.2). The exact window size (visible +
+  // 2 x OVERSCAN) is pinned by the vitest window math and history-virtual.spec.
+  const domBound = 2 * scroll.visibleRows + OVERSCAN;
   console.log(
     `SUMMARY ui_perf rows=${ROWS} assert=${ASSERT ? 1 : 0} max_frame_ms=${maxFrame.toFixed(1)} ` +
       `p99_frame_ms=${p99.toFixed(1)} frames=${frames.length} frames_over_32ms=${over32} ` +
+      `slow_frames=${slow.length ? slow.join(',') : 'none'} ` +
       `pages_loaded=${pages} loaded_rows=${scroll.loadedRows} dom_rows=${scroll.domRows} ` +
       `visible_rows=${scroll.visibleRows} dom_row_bound=${domBound} dom_nodes=${scroll.domNodes} ` +
       `filter_ms=${filterMs.toFixed(1)}`,
@@ -148,7 +163,7 @@ test('history scroll frames and filter latency at scale', async ({ page }) => {
   expect.soft(scroll.visibleRows, 'no measurable row height after the scroll').toBeGreaterThan(0);
   expect.soft(scroll.domRows, 'no history rows rendered after the scroll').toBeGreaterThan(0);
   expect
-    .soft(scroll.domRows, `DOM rows not bounded by visible (${scroll.visibleRows}) + 2 x OVERSCAN (${OVERSCAN})`)
+    .soft(scroll.domRows, `DOM rows not bounded by 2 x visible (${scroll.visibleRows}) + OVERSCAN (${OVERSCAN})`)
     .toBeLessThanOrEqual(domBound);
   expect.soft(pages, 'auto-load never fetched a page during the scroll').toBeGreaterThanOrEqual(1);
   expect.soft(scroll.loadedRows, 'the scroll did not go deep').toBeGreaterThanOrEqual(MIN_LOADED_ROWS);

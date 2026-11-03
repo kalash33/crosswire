@@ -22,8 +22,18 @@ SERVE_PID=""
 cleanup() {
   if [ -n "$SERVE_PID" ] && kill -0 "$SERVE_PID" 2>/dev/null; then
     kill -INT "$SERVE_PID" 2>/dev/null || true
+    # Bounded: give serve ~10 s to shut down cleanly, then kill it.
+    for _ in $(seq 1 100); do
+      kill -0 "$SERVE_PID" 2>/dev/null || break
+      sleep 0.1
+    done
+    if kill -0 "$SERVE_PID" 2>/dev/null; then
+      echo "serve did not exit 10 s after SIGINT; sending SIGKILL" >&2
+      kill -KILL "$SERVE_PID" 2>/dev/null || true
+    fi
     wait "$SERVE_PID" 2>/dev/null || true
   fi
+  # Also removes the Playwright session state (the cookie) written below.
   rm -rf "$TMP"
 }
 trap cleanup EXIT
@@ -61,6 +71,10 @@ export CROSSWIRE_API_URL="http://$API"
 export CROSSWIRE_BOOTSTRAP_TOKEN="$TOKEN"
 export CROSSWIRE_UI_PERF_ROWS="$ROWS"
 export CROSSWIRE_UI_PERF_ASSERT="$ASSERT"
+# The Playwright global setup exchanges the single-use bootstrap token once and
+# saves the session here (0600, inside this private temp dir), so a retried
+# attempt starts signed in instead of presenting a spent token.
+export CROSSWIRE_UI_PERF_STATE="$TMP/session-state.json"
 
 cd ui
 npx playwright test --config playwright.perf-scroll.config.ts
