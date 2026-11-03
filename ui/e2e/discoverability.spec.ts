@@ -299,5 +299,22 @@ for (const vp of [
       return bad;
     });
     expect(clipped).toEqual([]);
+    // Host and Path stay usable at the first-run split, not just unclipped.
+    const widths = await list.evaluate((el) => {
+      const r = el.querySelector('tr[data-testid="history-row"]')!;
+      return {
+        host: r.querySelector('td.host')!.getBoundingClientRect().width,
+        path: r.querySelector('td.path')!.getBoundingClientRect().width,
+      };
+    });
+    expect(widths.host).toBeGreaterThanOrEqual(60);
+    expect(widths.path).toBeGreaterThanOrEqual(90);
+    // A sorted header keeps its whole label (the arrow sits in its padding).
+    for (const col of ['Status', 'Length', 'Method', 'Host', 'Path']) {
+      await list.locator('thead th button', { hasText: new RegExp(`^${col}`) }).click();
+      const th = list.locator('thead th[aria-sort="ascending"]');
+      await expect(th).toContainText(col);
+      expect(await th.evaluate((el) => el.scrollWidth <= el.clientWidth), `sorted ${col}`).toBe(true);
+    }
   });
 }

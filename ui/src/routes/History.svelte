@@ -14,7 +14,7 @@
   import { router } from '../lib/router.svelte';
   import { humanBytes, timeCell } from '../lib/format';
   import {
-    HISTORY_SPLIT_DEFAULT,
+    historySplitDefault,
     TOGGLEABLE_COLUMNS,
     ariaRowCount,
     isTypingTarget,
@@ -155,6 +155,10 @@
     }
     return indexMap.get(id) ?? -1;
   }
+
+  // First-run list/detail split, from the window width once at mount (a
+  // stored ratio still wins): a laptop-width window gives the list more room.
+  const splitDefault = historySplitDefault(typeof innerWidth === 'number' ? innerWidth : 0);
 
   // Digits of the largest `#` cell: sizes the # column (a class, not a style).
   const idxDigits = $derived(Math.min(5, String(visibleRows.length).length));
@@ -432,6 +436,10 @@
     if (row?.dataset.id) {
       focusedId = row.dataset.id;
       evacuated = false;
+    } else if (e.target !== listEl) {
+      // Focus moved on to other list chrome (select-all, a header, Load more):
+      // the parked row no longer owns it.
+      evacuated = false;
     }
   }
 
@@ -461,6 +469,11 @@
   // scrollTop (the only layout read), park focus if its row is leaving, move
   // the window when it changed, and fetch the next page near the loaded end.
   let framePending = false;
+  // The scrollTop this component last wrote itself (a reset to the top, an
+  // anchor restore). The scroll event it causes moves the window but is not
+  // the user scrolling, so it never auto-loads (spec §3.1.6: no auto-load on
+  // a filter apply, a search, a sort or a live event).
+  let programmaticTop: number | null = null;
   function onScroll(): void {
     if (framePending) return;
     framePending = true;
@@ -471,9 +484,17 @@
     framePending = false;
     const el = listEl;
     if (!el) return;
-    const w = windowAt(el.scrollTop);
+    const st = el.scrollTop;
+    // Kept while frames still sit where it was written (two live flushes in
+    // successive frames deliver their scroll events a frame late); the first
+    // frame anywhere else is the user moving, and clears it.
+    const ours = programmaticTop !== null && Math.abs(st - programmaticTop) <= 1;
+    if (!ours) programmaticTop = null;
+    const w = windowAt(st);
     evacuateIfLeaving(w);
     applyWindow(w);
+    // A failed page is retried with Load more, not by every scroll frame.
+    if (ours || history.error) return;
     const s = { hasMore: history.hasMore, loading: history.loading, searching, capped: history.capped };
     if (shouldAutoLoad(w, visibleRows.length, s)) void history.loadMore();
   }
@@ -566,12 +587,16 @@
       evacuateIfLeaving(w);
       applyWindow(w);
       if (el && top !== st) {
+        programmaticTop = top;
         el.scrollTop = top;
         // The pads already have their new heights; re-apply once the rows are
         // in the DOM in case the browser clamped against the old height.
         pendingTop = top;
         void tick().then(() => {
-          if (listEl && pendingTop !== null && Math.abs(listEl.scrollTop - pendingTop) > 1) listEl.scrollTop = pendingTop;
+          if (listEl && pendingTop !== null && Math.abs(listEl.scrollTop - pendingTop) > 1) {
+            programmaticTop = pendingTop;
+            listEl.scrollTop = pendingTop;
+          }
           pendingTop = null;
         });
       }
@@ -949,7 +974,7 @@
     />
   {:else}
   <div class="layout">
-    <Splitter direction="row" storageKey="history-detail" initial={HISTORY_SPLIT_DEFAULT} min={[320, 360]} label="Resize history and detail">
+    <Splitter direction="row" storageKey="history-detail" initial={splitDefault} min={[320, 360]} label="Resize history and detail">
       {#snippet a()}
         <div class="list" data-testid="history-list" tabindex="-1" bind:this={listEl}>
           <table
@@ -1225,6 +1250,9 @@
     height: 100%;
     min-width: 0;
     overflow: auto;
+    /* The list anchors its own scroll position by row id; the browser's
+       scroll anchoring would adjust it a second time on every window move. */
+    overflow-anchor: none;
     container-type: inline-size;
   }
   /* A narrow list (the default split on a laptop) gives Host and Path room:
@@ -1235,7 +1263,7 @@
       display: none;
     }
     td.tags .chips {
-      max-width: calc(5rem - 8px);
+      max-width: calc(3.75rem - 8px);
     }
     /* One chip and a "+N" count; the full list stays in the cell's `title`. */
     .chips :global(.chip:nth-child(n + 2)) {
@@ -1248,7 +1276,7 @@
   /* Fixed layout: the column widths come from the <col> elements, never from
      whichever rows the window happens to render (auto layout would make every
      column jump as an OPTIONS badge or a long date scrolls in, and measure the
-     whole table to do it). Host takes 35% of what the fixed columns leave and
+     whole table to do it). Host takes 40% of what the fixed columns leave and
      Path the rest, both ellipsized with the full text in `title`, so the table
      fits the default 45/55 split without a horizontal scroll. A hidden
      column's width is zeroed so Host and Path share its room. */
@@ -1259,8 +1287,8 @@
     --w-idx: calc(5ch + 8px);
     --w-time: calc(15ch + 20px);
     --w-method: 4rem;
-    --w-status: 3rem;
-    --w-len: 3.5rem;
+    --w-status: 3.5rem;
+    --w-len: 3.75rem;
     --w-state: 4.75rem;
     --w-tags: 7rem;
     width: 100%;
@@ -1285,7 +1313,7 @@
   @container (max-width: 720px) {
     table {
       --w-time: calc(8ch + 16px);
-      --w-tags: 5rem;
+      --w-tags: 3.75rem;
     }
   }
   table.no-time {
@@ -1332,10 +1360,10 @@
   }
   .c-host {
     width: max(
-      2.375rem,
+      2.75rem,
       calc(
         (100cqw - var(--w-sel) - var(--w-idx) - var(--w-time) - var(--w-method) - var(--w-status) - var(--w-len) -
-            var(--w-state) - var(--w-tags)) * 0.35
+            var(--w-state) - var(--w-tags)) * 0.4
       )
     );
   }
@@ -1366,12 +1394,17 @@
     padding: 0;
   }
   /* The sort arrow takes room only on the sorted column. */
-  .arrow {
-    display: inline-block;
-    font-size: var(--fs-xs);
+  /* A sortable header keeps room on its right for the sort arrow, which sits
+     in that padding: sorting never widens or clips the label. */
+  thead th[aria-sort] {
+    padding-right: 10px;
   }
-  .arrow:not(:empty) {
-    margin-left: 2px;
+  .arrow {
+    position: absolute;
+    right: 1px;
+    top: 50%;
+    transform: translateY(-50%);
+    font-size: var(--fs-xs);
   }
   th.sel input,
   td.sel input {

@@ -32,6 +32,8 @@ interface Harness {
   afters: (string | null)[];
   pageErrors: string[];
   sockets: WebSocketRoute[];
+  /** Answer the next `after=` page requests with a 500 while this is > 0. */
+  failPages: number;
 }
 
 /**
@@ -39,16 +41,24 @@ interface Harness {
  * large `pageSize` makes a few big pages); `next_cursor` is the page's last id.
  */
 async function serve(page: Page, all: Row[], pageSize: number): Promise<Harness> {
-  const h: Harness = { afters: [], pageErrors: [], sockets: [] };
+  const h: Harness = { afters: [], pageErrors: [], sockets: [], failPages: 0 };
   page.on('pageerror', (e) => h.pageErrors.push(e.message));
   await mockApp(page);
   h.sockets = await mockEvents(page);
   await page.route(/\/api\/v1\/exchanges(\?.*)?$/, (r) => {
-    const after = new URL(r.request().url()).searchParams.get('after');
+    const url = new URL(r.request().url());
+    const after = url.searchParams.get('after');
     h.afters.push(after);
-    const from = after === null ? 0 : all.findIndex((x) => x.id === after) + 1;
-    const items = all.slice(from, from + pageSize);
-    const more = from + pageSize < all.length;
+    if (after !== null && h.failPages > 0) {
+      h.failPages--;
+      return r.fulfill({ status: 500, json: { error: { code: 'internal', message: 'page failed' } } });
+    }
+    // The server-side host_contains filter, so a filter apply has its own pages.
+    const contains = url.searchParams.get('host_contains');
+    const rows = contains ? all.filter((x) => x.host.includes(contains)) : all;
+    const from = after === null ? 0 : rows.findIndex((x) => x.id === after) + 1;
+    const items = rows.slice(from, from + pageSize);
+    const more = from + pageSize < rows.length;
     return r.fulfill({ status: 200, json: { items, next_cursor: more ? items[items.length - 1].id : null } });
   });
   return h;
@@ -366,5 +376,97 @@ test('every rendered row has the same height, even with a 300-char host and 10 t
     el.style.getPropertyValue('--vt-after'),
   ]);
   for (const p of props) expect(p).toMatch(/^\d+(\.\d+)?px$/);
+  expect(h.pageErrors).toEqual([]);
+});
+
+// ---- Auto-load is a user-scroll convenience only (spec §3.1.6) ----------------
+
+test('a filter apply after scrolling resets to the top and fetches only the new first page', async ({ page }) => {
+  const all = gen(N);
+  const h = await serve(page, all, 100);
+  await open(page, 100);
+  await scrollListTo(page, 1e9);
+  await expect(page.getByTestId('history-count')).toContainText('200 loaded');
+  await scrollListTo(page, 40 * (await rowH(page)));
+  const before = h.afters.length;
+  await page.getByTestId('filter-host-contains').fill('h3');
+  await page.getByTestId('filter-apply').click();
+  await expect(page.getByTestId('history-count')).toContainText('100 loaded');
+  await frames(page);
+  await page.waitForTimeout(300);
+  // Exactly one request since: the filter's first page; no follow-up `after=`.
+  expect(h.afters.slice(before)).toEqual([null]);
+  expect(await list(page).evaluate((el) => el.scrollTop)).toBe(0);
+  expect(h.pageErrors).toEqual([]);
+});
+
+test('live rows that move the anchor do not fetch a page', async ({ page }) => {
+  const all = gen(N);
+  const h = await serve(page, all, 100);
+  await open(page, 100);
+  await expect.poll(() => h.sockets.length).toBeGreaterThan(0);
+  // The user's own scroll near the end may page once; let it settle.
+  await scrollListTo(page, 300);
+  await expect(page.getByTestId('history-count')).toContainText('200 loaded');
+  await frames(page);
+  const before = h.afters.length;
+  const top = await list(page).evaluate((el) => el.scrollTop);
+  const ws = h.sockets[h.sockets.length - 1];
+  for (let i = 0; i < 3; i++) ws.send(JSON.stringify({ type: 'received', id: `live${i}`, seq: i + 1 }));
+  await expect(page.getByTestId('history-count')).toContainText('203 loaded');
+  await frames(page);
+  await page.waitForTimeout(300);
+  // The anchor restore moved scrollTop by three rows, programmatically.
+  expect(await list(page).evaluate((el) => el.scrollTop)).toBeGreaterThan(top);
+  expect(h.afters.slice(before)).toEqual([]);
+  expect(h.pageErrors).toEqual([]);
+});
+
+test('a failed page is not retried by scrolling; Load more retries it', async ({ page }) => {
+  const all = gen(N);
+  const h = await serve(page, all, 100);
+  h.failPages = 1;
+  await open(page, 100);
+  await scrollListTo(page, 1e9);
+  await expect(page.getByTestId('history-error')).toBeVisible();
+  expect(h.afters.filter((a) => a !== null)).toHaveLength(1);
+  const max = await list(page).evaluate((el) => el.scrollHeight - el.clientHeight);
+  for (const y of [max - 200, max - 100, max, max - 50, max]) await scrollListTo(page, y);
+  await page.waitForTimeout(300);
+  expect(h.afters.filter((a) => a !== null)).toHaveLength(1);
+  await page.getByTestId('load-more').click();
+  await expect(page.getByTestId('history-count')).toContainText('200 loaded');
+  expect(h.afters.filter((a) => a !== null)).toEqual([all[99].id, all[99].id]);
+  expect(h.pageErrors).toEqual([]);
+});
+
+test('search and sort start again at the top; Shift+Tab onto the list reveals the roving row', async ({ page }) => {
+  const all = gen(N);
+  const h = await serve(page, all, N);
+  await open(page, N);
+  const rh = await rowH(page);
+  await scrollListTo(page, 2_000 * rh);
+  await page.getByTestId('history-search').fill('h3');
+  await expect(page.getByTestId('history-count')).toContainText('of 5000 loaded match');
+  await frames(page);
+  expect(await list(page).evaluate((el) => el.scrollTop)).toBe(0);
+  await page.getByTestId('history-search').fill('');
+  await scrollListTo(page, 2_000 * rh);
+  await list(page).locator('thead th button', { hasText: /^Host/ }).click();
+  await frames(page);
+  expect(await list(page).evaluate((el) => el.scrollTop)).toBe(0);
+  await list(page).locator('thead th button', { hasText: /^Time/ }).click();
+  await list(page).locator('thead th button', { hasText: /^Time/ }).click();
+  await expect(list(page).locator('thead th[aria-sort="descending"]')).toHaveCount(1);
+
+  // Roving row 0, scrolled far away: the list is the single tab stop.
+  await page.locator(`tr[data-testid="history-row"][data-id="${all[0].id}"]`).focus();
+  await scrollListTo(page, 2_000 * rh);
+  await expect.poll(() => activeTestId(page)).toBe('history-list');
+  await page.getByTestId('select-all').focus();
+  await expect(list(page)).toHaveAttribute('tabindex', '0');
+  await page.keyboard.press('Shift+Tab');
+  await expect.poll(() => focusedRowId(page)).toBe(all[0].id);
+  expect(await rowInView(page, all[0].id)).toBe(true);
   expect(h.pageErrors).toEqual([]);
 });

@@ -4,6 +4,18 @@
 
 /** First-run list/detail split (share given to the list); a persisted ratio wins. */
 export const HISTORY_SPLIT_DEFAULT = 0.45;
+/** First-run split below `HISTORY_SPLIT_WIDE_MIN` px of window: the list gets more room. */
+export const HISTORY_SPLIT_NARROW = 0.55;
+export const HISTORY_SPLIT_WIDE_MIN = 1400;
+
+/**
+ * The first-run split for a window `width` px wide. On a laptop-width window
+ * the fixed History columns leave Host and Path too little room at 45%, so
+ * the list starts at 55% (the detail pane keeps well over its minimum).
+ */
+export function historySplitDefault(width: number): number {
+  return width > 0 && width < HISTORY_SPLIT_WIDE_MIN ? HISTORY_SPLIT_NARROW : HISTORY_SPLIT_DEFAULT;
+}
 
 /**
  * Index of the row to focus after moving `delta` rows from `current` in a list
