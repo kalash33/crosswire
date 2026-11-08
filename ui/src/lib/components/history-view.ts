@@ -6,7 +6,7 @@
 export const HISTORY_SPLIT_DEFAULT = 0.45;
 /** First-run split below `HISTORY_SPLIT_WIDE_MIN` px of window: the list gets more room. */
 export const HISTORY_SPLIT_NARROW = 0.55;
-export const HISTORY_SPLIT_WIDE_MIN = 1400;
+const HISTORY_SPLIT_WIDE_MIN = 1400;
 
 /**
  * The first-run split for a window `width` px wide. On a laptop-width window
@@ -117,7 +117,8 @@ export function saveColumns(visible: readonly ColumnKey[]): void {
 
 /**
  * True when keystrokes on `target` are text entry (inputs, textareas, selects,
- * contenteditable such as CodeMirror). Plain-key shortcuts (`/`) never fire there.
+ * contenteditable such as CodeMirror). Guards plain keys such as Esc in the
+ * detail pane; keymap shortcuts like `/` apply their own typing guard.
  */
 export function isTypingTarget(target: EventTarget | null): boolean {
   if (!(target instanceof Element)) return false;

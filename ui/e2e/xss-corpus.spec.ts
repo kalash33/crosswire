@@ -862,7 +862,7 @@ test('V1: corpus rows scrolled through the virtualised list stay one-line text',
     });
 
   const byId = new Map(rows.map((r) => [r.id, r]));
-  let payloadRowsSeen = 0;
+  const payloadIdsSeen = new Set<string>();
   const check = async () => {
     const { bad, seen } = await inspect();
     expect(bad).toEqual([]);
@@ -872,7 +872,7 @@ test('V1: corpus rows scrolled through the virtualised list stay one-line text',
       expect(s.host, s.id).toBe(want.host);
       expect(s.path, s.id).toBe(want.path);
       expect(s.tags, s.id).toEqual(want.tags);
-      if (want.tags.length > 0) payloadRowsSeen++;
+      if (want.tags.length > 0) payloadIdsSeen.add(s.id);
     }
   };
 
@@ -888,8 +888,8 @@ test('V1: corpus rows scrolled through the virtualised list stay one-line text',
     }, y);
     await check();
   }
-  // Every one of the 50 payload rows went through the window (twice).
-  expect(payloadRowsSeen).toBeGreaterThanOrEqual(100);
+  // Every one of the 50 payload rows went through the window.
+  expect(payloadIdsSeen.size).toBe(50);
   expect(errors).toEqual([]);
   await assertInert(page, violations, startUrl);
 });

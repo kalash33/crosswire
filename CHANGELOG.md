@@ -24,14 +24,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   loads as you scroll near the end (Load more is kept); the client holds at
   most 50,000 rows and then says so, with a note to narrow the filter.
   `Home`/`End` jump to the first/last loaded row and `PageUp`/`PageDown` move
-  a screenful.
+  a screenful. On a first run in a window under 1400 px wide the list starts
+  at 55% of the width (45% otherwise; a saved split still wins), and Host
+  takes 40% of the width left for Host and Path.
 - **Web UI, shortcuts**: shortcuts have a scope (Everywhere, History,
   Repeater, Intercept, Message viewer); a chord only conflicts with one in an
   overlapping scope, and the innermost focused scope wins. Settings and the
   `?` sheet group shortcuts by scope, and the sheet adds the fixed "History
   list" keys. Find (`Ctrl+F`) is now a remappable message-viewer action that
   shares its chord with Intercept's Forward; `/` is the remappable "Focus the
-  History search".
+  History search". Plain-key shortcuts (such as `?` and `/`) are ignored
+  while a menu or dialog is open.
 
 ### Fixed
 

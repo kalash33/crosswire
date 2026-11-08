@@ -305,7 +305,8 @@ passive sampling.
 |---|---|---|---|---|---|
 | 100,000 | 117 ms | 100 ms | 61 / 474 | 122 ms | 3,900 / 48,344 |
 | 1,000,000 | 117 ms | 100 ms | 64 / 459 | 124 ms | 3,800 / 47,068 |
-| 0.1.1 virtualised, 100k and 1M | TBD (T5) | TBD (T5) | TBD (T5) | TBD (T5) | TBD (T5) |
+| 100,000, 0.1.1 virtualised (asserting gate) | 16.8 ms | 16.8 ms | 0 / ~602 | 10–27 ms | 37 (bound 50) / 895 |
+| 1,000,000, 0.1.1 virtualised | not yet measured | — | — | — | — |
 
 (The earlier forced-layout harness read 283 ms max frame; passive sampling
 roughly halves it but the target is still missed by ~3.6x.)
