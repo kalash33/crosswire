@@ -1279,18 +1279,20 @@
      column jump as an OPTIONS badge or a long date scrolls in, and measure the
      whole table to do it). Host takes 40% of what the fixed columns leave and
      Path the rest, both ellipsized with the full text in `title`, so the table
-     fits the default 45/55 split without a horizontal scroll. A hidden
+     fits the first-run split without a horizontal scroll. A hidden
      column's width is zeroed so Host and Path share its room. */
   table {
     /* Each fits its worst case (the cap's `50000`, a date and clock with the
-       uncommitted dot, OPTIONS, `committed`, a header with its sort arrow). */
+       uncommitted dot, OPTIONS, `committed`, a header with its sort arrow)
+       in a wide UI font too: Linux resolves --font-ui to DejaVu Sans, whose
+       labels and badges run 15-25% wider than the macOS system font. */
     --w-sel: 1.375rem;
     --w-idx: calc(5ch + 8px);
     --w-time: calc(15ch + 20px);
-    --w-method: 4rem;
-    --w-status: 3.5rem;
-    --w-len: 3.75rem;
-    --w-state: 4.75rem;
+    --w-method: calc(8ch + 8px);
+    --w-status: calc(7ch + 8px);
+    --w-len: calc(7.5ch + 8px);
+    --w-state: calc(10.5ch + 8px);
     --w-tags: 7rem;
     width: 100%;
     table-layout: fixed;
@@ -1369,11 +1371,14 @@
     );
   }
   /* .c-path: no width, it takes the rest. */
+  /* Header labels at the badge size: at 12px a wide font's bold `Method`,
+     `Status` and `Length` need wider columns than their cells ever do. */
   thead th {
     position: sticky;
     top: 0;
     z-index: 1;
     background: var(--bg-elev);
+    font-size: var(--fs-xs);
     font-weight: 600;
     color: var(--fg-muted);
   }

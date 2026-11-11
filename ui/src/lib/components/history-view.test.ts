@@ -18,11 +18,12 @@ import {
 } from './history-view';
 
 describe('historySplitDefault', () => {
-  it('gives the list 55% below 1400 px of window and 45% from there up', () => {
+  it('gives the list 55% below 1600 px of window and 45% from there up', () => {
     expect(historySplitDefault(1280)).toBe(HISTORY_SPLIT_NARROW);
-    expect(historySplitDefault(1399)).toBe(0.55);
-    expect(historySplitDefault(1400)).toBe(HISTORY_SPLIT_DEFAULT);
-    expect(historySplitDefault(1440)).toBe(0.45);
+    expect(historySplitDefault(1440)).toBe(0.55);
+    expect(historySplitDefault(1599)).toBe(0.55);
+    expect(historySplitDefault(1600)).toBe(HISTORY_SPLIT_DEFAULT);
+    expect(historySplitDefault(1920)).toBe(0.45);
     // Unknown width (no window): the plain default.
     expect(historySplitDefault(0)).toBe(0.45);
   });

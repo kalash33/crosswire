@@ -31,14 +31,16 @@ Variable-height or wrapping rows (rows are single-line, §3.1.3); a canvas or We
   | `c-sel` | `2rem` | checkbox |
   | `c-idx` | `6ch` (tabular numerals) | `50000` (the row cap, §3.1.7) |
   | `c-time` | `15ch` wide / `8.5ch` under `@container (max-width: 720px)` | `Oct 31 13:52:30` with the uncommitted dot; narrow: clock only |
-  | `c-method` | `6rem` | `OPTIONS` badge |
-  | `c-status` | `3.5rem` | `503` badge |
-  | `c-len` | `5.5rem` | `1.0 MB` |
-  | `c-state` | `6.5rem` | `committed` badge |
+  | `c-method` | `8ch + 8px` | `OPTIONS` badge; the `Method` header with its sort arrow |
+  | `c-status` | `7ch + 8px` | `503` badge; the `Status` header with its sort arrow |
+  | `c-len` | `7.5ch + 8px` | `1.0 MB`; the `Length` header with its sort arrow |
+  | `c-state` | `10.5ch + 8px` | `committed` badge |
   | `c-tags` | `7rem` (narrow `6rem`) | one chip + `+N` |
   | `c-host` / `c-path` | `40%` / `60%` of the rest (was 35/65: at 1440×900 that left Host under 60 px; 40% keeps Host ≥ 60 px there, as `discoverability.spec.ts` now asserts) | ellipsis, full text in `title` (unchanged) |
 
   The exact `rem`/`ch` values are tuned by the implementer until `discoverability.spec.ts` "History fits the default split" passes at 1440×900 and 1280×720 unchanged; that spec is the acceptance for widths, not this table.
+
+  **Wide UI fonts (0.1.1 fix).** `--font-ui` resolves to DejaVu Sans on stock Linux, whose bold header labels and `committed` badge run 15-25% wider than the macOS system font; the first widths clipped `Method`, `Status`, `Length` and `committed` there. The fixed columns are therefore sized for DejaVu Sans (with 2-4 px to spare), header labels use `--fs-xs` (11 px), and the "fits" spec also runs under DejaVu Sans and Verdana wherever the font is installed. `ch` barely tracks the label width (the `0` is 7.55 px in the macOS system font and 7.63 px in DejaVu Sans at 12 px), so the `ch` units scale the columns with zoom and font size, not with the family. The wider columns cost Host about 10 px, which at a 45% list split left Host under 60 px at 1440×900, so the first-run split gives the list 55% below **1600 px** of window width (was 1400 px) and 45% from there up (`historySplitDefault` in `history-view.ts`); a saved split still wins.
 - **Sticky header:** unchanged CSS (`thead th { position: sticky; top: 0 }`); the pads live inside `tbody`, so the header never scrolls away. The header height `headH` and footer height `footH` are measured once with the row height (§3.1.2) and used for reveal math.
 
 #### 3.1.2 Row height: fixed, measured once
