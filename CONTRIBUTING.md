@@ -28,7 +28,7 @@ just fuzz-smoke  # 60 s per fuzz target (nightly + cargo-fuzz)
 just bench       # build the criterion bench
 ```
 
-Rust stable; the MSRV is 1.88, declared in `Cargo.toml` (`rust-version`) and checked by the `msrv` CI job (`cargo check --workspace --locked --all-features` on 1.88). Dependencies in the lockfile (`rcgen`, `time`) already require 1.88. CI runs on Linux and macOS.
+Rust stable; the MSRV is 1.89, declared in `Cargo.toml` (`rust-version`) and checked by the `msrv` CI job (`cargo check --workspace --locked --all-features` on 1.89). `rusqlite` 0.41, the first release that bundles a SQLite fixed for CVE-2026-119375, requires 1.89. CI runs on Linux and macOS.
 
 ## Pull requests
 
