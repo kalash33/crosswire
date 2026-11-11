@@ -8,7 +8,7 @@
   import Button from '../ui/Button.svelte';
   import Badge from '../ui/Badge.svelte';
   import CopyDropdown from './CopyDropdown.svelte';
-  import { chordLabel } from '../copy-actions.svelte';
+  import { chordLabel } from '../keymap-hints.svelte';
   import type { RowActions } from './row-actions';
   import type { Row } from '../stores/history.svelte';
 

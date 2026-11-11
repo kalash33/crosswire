@@ -4,12 +4,91 @@ import Splitter from '../ui/Splitter.svelte';
 import {
   COLUMNS_KEY,
   HISTORY_SPLIT_DEFAULT,
+  HISTORY_SPLIT_NARROW,
   TOGGLEABLE_COLUMNS,
+  historySplitDefault,
+  ariaRowCount,
   isTypingTarget,
+  keyTarget,
   loadColumns,
+  loadMoreLabel,
   nextIndex,
+  pageStep,
   saveColumns,
 } from './history-view';
+
+describe('historySplitDefault', () => {
+  it('gives the list 55% below 1600 px of window and 45% from there up', () => {
+    expect(historySplitDefault(1280)).toBe(HISTORY_SPLIT_NARROW);
+    expect(historySplitDefault(1440)).toBe(0.55);
+    expect(historySplitDefault(1599)).toBe(0.55);
+    expect(historySplitDefault(1600)).toBe(HISTORY_SPLIT_DEFAULT);
+    expect(historySplitDefault(1920)).toBe(0.45);
+    // Unknown width (no window): the plain default.
+    expect(historySplitDefault(0)).toBe(0.45);
+  });
+});
+
+describe('pageStep', () => {
+  it('is one row short of a viewport, never below one', () => {
+    expect(pageStep(30)).toBe(29);
+    expect(pageStep(2)).toBe(1);
+    expect(pageStep(1)).toBe(1);
+    expect(pageStep(0)).toBe(1);
+  });
+});
+
+describe('keyTarget', () => {
+  // [key, current, len, visible] -> target index (null: not a navigation key)
+  const table: [string, number, number, number, number | null][] = [
+    ['j', 3, 10, 5, 4],
+    ['ArrowDown', 3, 10, 5, 4],
+    ['k', 3, 10, 5, 2],
+    ['ArrowUp', 3, 10, 5, 2],
+    ['j', 9, 10, 5, 9],
+    ['k', 0, 10, 5, 0],
+    ['Home', 7, 10, 5, 0],
+    ['End', 2, 10, 5, 9],
+    ['Home', -1, 10, 5, 0],
+    ['End', -1, 10, 5, 9],
+    ['PageDown', 0, 100, 30, 29],
+    ['PageUp', 50, 100, 30, 21],
+    ['PageDown', 90, 100, 30, 99],
+    ['PageUp', 10, 100, 30, 0],
+    ['j', -1, 10, 5, 0],
+    ['k', -1, 10, 5, 9],
+    ['Home', 0, 0, 5, -1],
+    ['End', 0, 0, 5, -1],
+    ['Enter', 3, 10, 5, null],
+    [' ', 3, 10, 5, null],
+    ['J', 3, 10, 5, null],
+    ['Tab', 3, 10, 5, null],
+  ];
+  for (const [key, cur, len, vis, want] of table) {
+    it(`${JSON.stringify(key)} from ${cur} of ${len} (visible ${vis}) -> ${want}`, () => {
+      expect(keyTarget(key, cur, len, vis)).toBe(want);
+    });
+  }
+});
+
+describe('loadMoreLabel', () => {
+  it('shows End before Limit reached when nothing is left', () => {
+    expect(loadMoreLabel({ loading: false, hasMore: true, capped: false })).toBe('Load more');
+    expect(loadMoreLabel({ loading: true, hasMore: true, capped: false })).toBe('Loading…');
+    expect(loadMoreLabel({ loading: false, hasMore: false, capped: false })).toBe('End');
+    expect(loadMoreLabel({ loading: false, hasMore: false, capped: true })).toBe('End');
+    expect(loadMoreLabel({ loading: false, hasMore: true, capped: true })).toBe('Limit reached');
+  });
+});
+
+describe('ariaRowCount', () => {
+  it('is -1 while the total is unknown, else rows plus the header', () => {
+    expect(ariaRowCount(100, true, false)).toBe(-1);
+    expect(ariaRowCount(100, false, false)).toBe(101);
+    expect(ariaRowCount(50_000, true, true)).toBe(50_001);
+    expect(ariaRowCount(0, false, false)).toBe(1);
+  });
+});
 
 describe('nextIndex', () => {
   it('moves by delta and clamps at both ends', () => {

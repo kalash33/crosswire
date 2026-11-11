@@ -3,7 +3,8 @@
 
 import type { MenuItem } from '../ui/Menu.svelte';
 import type { UrlSource } from '../copy-url';
-import { chordLabel, copyItems } from '../copy-actions.svelte';
+import { copyItems } from '../copy-actions.svelte';
+import { chordLabel } from '../keymap-hints.svelte';
 
 export interface RowActions {
   open: () => void;

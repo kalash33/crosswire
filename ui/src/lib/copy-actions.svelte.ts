@@ -8,7 +8,7 @@ import { apiGet } from './api/client';
 import { curl, raw } from './api/copy';
 import { bytesToLatin1 } from './editor/encoding';
 import { canCopyUrl, connFacts, urlFor, type UrlSource } from './copy-url';
-import { keymap, type Action } from './keymap';
+import { chordLabel } from './keymap-hints.svelte';
 import { toasts } from './ui/toasts.svelte';
 import type { MenuItem } from './ui/Menu.svelte';
 import type { ExchangeDto } from './stores/history.svelte';
@@ -67,16 +67,6 @@ export async function copyUrl(id: string, row: UrlSource): Promise<void> {
   } catch (e) {
     done(failText(e), false);
   }
-}
-
-/** Display form of an action's chord, e.g. "Ctrl+Shift+C". */
-export function chordLabel(action: Action): string | undefined {
-  const c = keymap.chordFor(action);
-  if (!c) return undefined;
-  return c
-    .split('+')
-    .map((p) => (p.length === 1 ? p.toUpperCase() : p[0].toUpperCase() + p.slice(1)))
-    .join('+');
 }
 
 /**

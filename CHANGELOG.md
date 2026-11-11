@@ -7,6 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **UI performance gate** (§13): `just ui-perf` now asserts at 100k rows
+  against a real `serve` on a seeded synthetic project: no frame over 32 ms in
+  a 10 s wheel scroll, a filter applied in under 300 ms, at most
+  2 × visible + overscan History rows in the DOM, and pages auto-loaded while
+  scrolling. It runs on every push and pull request in its own ubuntu CI job,
+  with one retry for shared-runner noise; the 1M-row run stays maintainer-only
+  and report-only.
+
+### Changed
+
+- **Web UI, History**: the list is virtualised. Only the rows on screen plus a
+  small overscan are in the DOM, whatever the number loaded; the next page
+  loads as you scroll near the end (Load more is kept); the client holds at
+  most 50,000 rows and then says so, with a note to narrow the filter.
+  `Home`/`End` jump to the first/last loaded row and `PageUp`/`PageDown` move
+  a screenful. On a first run in a window under 1600 px wide the list starts
+  at 55% of the width (45% otherwise; a saved split still wins), and Host
+  takes 40% of the width left for Host and Path.
+- **Web UI, shortcuts**: shortcuts have a scope (Everywhere, History,
+  Repeater, Intercept, Message viewer); a chord only conflicts with one in an
+  overlapping scope, and the innermost focused scope wins. Settings and the
+  `?` sheet group shortcuts by scope, and the sheet adds the fixed "History
+  list" keys. Find (`Ctrl+F`) is now a remappable message-viewer action that
+  shares its chord with Intercept's Forward; `/` is the remappable "Focus the
+  History search". Plain-key shortcuts (such as `?` and `/`) are ignored
+  while a menu or dialog is open.
+
+### Fixed
+
+- **Web UI**: Load more could append the same page twice; the live-row cap
+  could leave a gap in paged history; some shortcut hints stayed stale after a
+  remap; an action whose chord was taken over by a remap vanished from
+  Settings (it now shows "Not set").
+
+### Note
+
+- On macOS, `Cmd+F` inside a message viewer now opens the browser's find (the
+  keymap never matches Meta); use `Ctrl+F` for the viewer's own find. Whether
+  to alias Meta to Ctrl for viewer shortcuts on macOS is an open question in
+  the V1 design spec
+  (`docs/superpowers/specs/2026-11-02-crosswire-v1-virtual-history-keymap-design.md`,
+  §7).
+
 ## [0.1.0] - 2026-11-03
 
 The first public release.

@@ -92,6 +92,35 @@ jobs:
       # crates.io, so h1 packaging stays local-only until core is published.
       - run: just package
 
+  # §13 UI gate, ASSERTED at 100k rows (max frame <= 32 ms, filter < 300 ms,
+  # DOM rows <= 2 x visible + OVERSCAN, auto-load ran): a release serve on a
+  # seeded synthetic project, driven by Playwright (`just ui-perf`). Its own
+  # job so it runs beside `check` instead of lengthening it, on a runner doing
+  # nothing else while frames are sampled. The perf-scroll config retries the
+  # measurement once in CI (shared-runner noise) on the same serve and session;
+  # a retried pass is reported as flaky in the log. The 1M run stays
+  # maintainer-only and report-only.
+  ui-perf:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch head
+        with:
+          toolchain: stable
+      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - run: npm ci --ignore-scripts
+        working-directory: ui
+      - run: npx playwright install --with-deps chromium
+        working-directory: ui
+      - run: just ui-perf
+
   # The declared rust-version (Cargo.toml) must build with the lockfile.
   msrv:
     if: github.event_name != 'schedule'

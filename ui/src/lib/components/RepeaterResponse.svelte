@@ -12,7 +12,7 @@
   import { ApiError } from '../api/errors';
   import EmptyState from '../ui/EmptyState.svelte';
   import Kbd from '../ui/Kbd.svelte';
-  import { chordLabel } from '../copy-actions.svelte';
+  import { chordLabel } from '../keymap-hints.svelte';
 
   // The response side of one repeater tab: empty state before the first send,
   // then a status line and the message viewer (Pretty / Raw / Headers / Hex). Everything shown is
