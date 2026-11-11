@@ -607,3 +607,41 @@ fn missing_pack_does_not_touch_other_packs() {
         }
     }
 }
+
+/// `blobs.offset` is a `u64` in Rust and an `INTEGER` (i64) in SQLite. The
+/// write side cannot exceed `i64::MAX`: an offset is the length of a pack,
+/// which rotates at 256 MiB (`PACK_LIMIT`, plus one record of at most
+/// `MAX_FRAME`), so `PackWriter::append` never produces one past 2^29.
+/// The read side is reachable through a damaged or hostile project: a stored
+/// negative offset is what a `u64` above `i64::MAX` would wrap to. It must be
+/// refused, never reinterpreted as a huge `u64` (rusqlite's checked `u64`
+/// conversions, the `fallible_uint` feature from 0.38 on).
+#[test]
+fn offset_above_i64_max_is_refused() {
+    let (_t, mut p) = setup();
+    let mut store = BodyStore::new(PackWriter::open(&mut p).unwrap());
+    let body = noise(20 * 1024, 7);
+    let a = put_one(&mut p, &mut store, &body);
+    p.writer_mut()
+        .execute("UPDATE blobs SET offset = -1", [])
+        .unwrap();
+
+    // The dedupe path reads the offset back as a u64.
+    let tx = p.writer_mut().transaction().unwrap();
+    let b = Ulid::new();
+    add_exchange(&tx, b);
+    match store.put(&tx, b, BodySide::Resp, &body) {
+        Err(StoreError::Sqlite(rusqlite::Error::IntegralValueOutOfRange(1, -1))) => {}
+        other => panic!("an out-of-range stored offset must not wrap: {other:?}"),
+    }
+    drop(tx);
+
+    // The read path refuses it as corrupt.
+    let msg = corrupt_msg(BodyStore::get(
+        &p.reader().unwrap(),
+        p.dir(),
+        a,
+        BodySide::Resp,
+    ));
+    assert!(msg.contains("out of range"), "{msg}");
+}
