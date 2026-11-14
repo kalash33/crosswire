@@ -1,1 +1,3 @@
 corpus/h1/cases/** binary
+crates/crosswire-store/tests/fixtures/**/*.db binary
+crates/crosswire-store/tests/fixtures/**/*.pack binary
