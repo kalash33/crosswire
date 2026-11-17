@@ -20,6 +20,10 @@ In scope: anything a hostile HTTP peer, a hostile project file or import, or a m
 
 Out of scope: findings in the *targets* you test with Crosswire, and intentional behaviour such as the ability to send malformed HTTP (that is the tool's purpose).
 
+## Upstream trust store
+
+Crosswire verifies upstream TLS (Repeater and the proxy's upstream connections) against the Mozilla root list in the `webpki-roots` crate, compiled into the binary, not against the operating system's store. Changes to that list arrive as `webpki-roots` patch updates through Dependabot, which follow Mozilla's root additions and removals. After an upgrade, a site whose root was removed can therefore fail certificate verification. The `crates/crosswire-client/tests/roots.rs` anchor count changes in the same commit as such an update, after the upstream diff has been read.
+
 ## Verifying releases
 
 Each release archive (`crosswire-server-<target>.tar.xz`) carries a GitHub build-provenance attestation; the installer script and checksum files do not. Verify a download with:
