@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, type Snippet } from 'svelte';
-  import { keymap } from '../keymap';
+  import { keymap, routeScopeFor } from '../keymap';
   import { router } from '../router.svelte';
   import { intercept } from '../stores/intercept.svelte';
   import { events } from '../stores/events.svelte';
@@ -38,7 +38,7 @@
     // While the cheat sheet is open the page behind it is inert: no global
     // chord (Ctrl+I, Ctrl+Shift+D, …) may act on it.
     const on = (e: KeyboardEvent) => {
-      if (!shortcutsOpen) keymap.dispatch(e);
+      if (!shortcutsOpen) keymap.dispatch(e, routeScopeFor(router.path));
     };
     window.addEventListener('keydown', on);
     // Every route gets the live socket (status dot, counts, intercept queue).

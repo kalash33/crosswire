@@ -248,17 +248,27 @@ test('column picker hides Tags and Time and the choice survives a reload', async
   await check();
 });
 
-test('an older row shows "MMM D"; the first-run split is about 45/55', async ({ page }) => {
+test('an older row shows "MMM D"; the first-run split is 55/45 on a laptop', async ({ page }) => {
   await mockApi(page);
   await open(page);
   expect(await page.evaluate(() => localStorage.getItem('crosswire.split.history-detail'))).toBeNull();
   await expect(rowById(page, ID[4]).locator('td.time')).toHaveText(/^\s*[A-Z][a-z]{2} \d{1,2} \d{2}:\d{2}/);
   await expect(rowById(page, ID[0]).locator('td.time')).toHaveText(/^\s*\d{2}:\d{2}/);
-  const list = await page.getByTestId('history-list').boundingBox();
-  const detail = await page.getByTestId('history-detail').boundingBox();
-  const share = list!.width / (list!.width + detail!.width);
-  expect(share).toBeGreaterThan(0.42);
-  expect(share).toBeLessThan(0.48);
+  const share = async () => {
+    const list = await page.getByTestId('history-list').boundingBox();
+    const detail = await page.getByTestId('history-detail').boundingBox();
+    return list!.width / (list!.width + detail!.width);
+  };
+  // 1440 px is under the 1600 px wide-window threshold: the list gets ~55%.
+  expect(await share()).toBeGreaterThan(0.52);
+  expect(await share()).toBeLessThan(0.58);
+  // A first run in a wide window gives the list ~45%.
+  await page.setViewportSize({ width: 1700, height: 900 });
+  await page.reload();
+  await expect(rowsLoc(page)).toHaveCount(ROWS.length);
+  expect(await page.evaluate(() => localStorage.getItem('crosswire.split.history-detail'))).toBeNull();
+  expect(await share()).toBeGreaterThan(0.42);
+  expect(await share()).toBeLessThan(0.48);
 });
 
 test('a regex-like search query is literal text and raises no error', async ({ page }) => {

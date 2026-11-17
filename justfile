@@ -26,9 +26,10 @@ first-capture-ui:
 
 # UI frame-time / filter-latency trace (§13) against a real `serve` on a seeded
 # synthetic project. CROSSWIRE_UI_PERF_ROWS sets the size (default 100000; the
-# maintainer run is 1000000 and takes minutes to seed). REPORT-ONLY (gross
-# floors only; the 32 ms / 300 ms targets are a known gap). Needs
-# Playwright's chromium (`npx playwright install chromium`).
+# maintainer run is 1000000 and takes minutes to seed). Asserting at <= 100k
+# rows (max frame <= 32 ms, filter < 300 ms, bounded DOM rows, auto-load ran),
+# report-only above; CROSSWIRE_UI_PERF_ASSERT=0|1 overrides. Runs in CI on
+# ubuntu. Needs Playwright's chromium (`npx playwright install chromium`).
 ui-perf:
     scripts/ui-perf.sh
 
@@ -132,10 +133,11 @@ bench:
 #
 # Also runs the proxy gates ASSERTING (CROSSWIRE_PERF_ASSERT=1, --release):
 # added-latency p50 < 2 ms and MITM throughput >= 5000 req/s. The store ingest
-# and UI frame/filter gates run REPORT-ONLY (known gaps vs the spec §13
-# targets, tracked in the pre-0.1.0 backlog); read their SUMMARY lines against
-# bench/README.md. The UI step needs Playwright's chromium and defaults to
-# 100k rows (CROSSWIRE_UI_PERF_ROWS=1000000 for the full size).
+# gate runs REPORT-ONLY (a known gap vs the spec §13 target, ADR-0006). The UI
+# frame/filter step is asserting at <= 100k rows and report-only above; it
+# needs Playwright's chromium and defaults to 100k rows
+# (CROSSWIRE_UI_PERF_ROWS=1000000 for the full, report-only size). Read the
+# SUMMARY lines against bench/README.md.
 perf:
     scripts/perf-gate.sh 1000000 50 500 500
     CROSSWIRE_PERF_ASSERT=1 cargo test --locked --release -p crosswire-proxy --test perf_added_latency -- --nocapture

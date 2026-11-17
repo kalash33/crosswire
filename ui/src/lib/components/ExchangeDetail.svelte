@@ -22,7 +22,8 @@
   import { history } from '../stores/history.svelte';
   import { decoder } from '../stores/decoder.svelte';
   import { router } from '../router.svelte';
-  import { chordLabel, copyStatus } from '../copy-actions.svelte';
+  import { copyStatus } from '../copy-actions.svelte';
+  import { chordLabel } from '../keymap-hints.svelte';
   import { selectionBytes } from '../decode/selection';
   import { bytesToLatin1 } from '../editor/encoding';
   import { parseHeadLines, type HeaderLine } from '../http/headers';

@@ -1,13 +1,21 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  ACTION_LABELS,
+  ACTION_SCOPES,
   ACTIONS,
+  coActive,
   createKeymap,
   DEFAULT_BINDINGS,
   chordFromEvent,
-  findHint,
   formatChord,
   normalizeChord,
+  PARENTS,
   recordChord,
+  routeScopeFor,
+  SCOPE_LABELS,
+  SCOPES,
+  scopeChain,
+  type Scope,
 } from './keymap';
 
 function key(init: KeyboardEventInit): KeyboardEvent {
@@ -29,6 +37,8 @@ describe('keymap defaults (Burp-consistent)', () => {
         'tab-prev',
         'toggle-intercept',
         'show-shortcuts',
+        'focus-search',
+        'find',
       ].sort(),
     );
     expect(DEFAULT_BINDINGS).toEqual({
@@ -43,7 +53,11 @@ describe('keymap defaults (Burp-consistent)', () => {
       'copy-as-curl': 'ctrl+shift+c',
       'copy-raw': 'ctrl+shift+s',
       'show-shortcuts': '?',
+      'focus-search': '/',
+      find: 'ctrl+f',
     });
+    expect(ACTION_LABELS['focus-search']).toBe('Focus the History search');
+    expect(ACTION_LABELS.find).toBe('Find in the message');
   });
 
   it('resolves events to chords', () => {
@@ -137,7 +151,7 @@ describe('keymap bindings()', () => {
     const rows = km.bindings();
     expect(rows.map((r) => r.action).sort()).toEqual([...ACTIONS].sort());
     for (const r of rows) {
-      expect(r.chord.length).toBeGreaterThan(0);
+      expect(r.chord?.length).toBeGreaterThan(0);
       expect(r.label.trim().length).toBeGreaterThan(0);
       expect(r.chord).toBe(DEFAULT_BINDINGS[r.action]);
     }
@@ -154,10 +168,6 @@ describe('keymap bindings()', () => {
     expect(formatChord('ctrl+space')).toBe('Ctrl+Space');
     expect(formatChord('?')).toBe('?');
     expect(formatChord('ctrl+shift+]')).toBe('Ctrl+Shift+]');
-  });
-
-  it("names the viewer's find chord with its scope", () => {
-    expect(findHint()).toBe('Ctrl+F in the viewer');
   });
 });
 
@@ -369,5 +379,391 @@ describe('recordChord', () => {
   });
   it('refuses Ctrl+T', () => {
     expect(recordChord(key({ key: 't', code: 'KeyT', ctrlKey: true }), 'drop', km).kind).toBe('refused');
+  });
+});
+
+// ---- V1: scoped keymap ------------------------------------------------------
+
+const ctrlF = () => key({ key: 'f', code: 'KeyF', ctrlKey: true });
+
+/** A `data-keyscope` element appended to `parent` (document.body by default). */
+function scopeEl(scope: string, parent: Element = document.body): HTMLElement {
+  const el = document.createElement('div');
+  el.setAttribute('data-keyscope', scope);
+  parent.append(el);
+  return el;
+}
+
+/** Dispatch `ev` from `target` (so it carries a real target) through `km`. */
+function fire(
+  km: ReturnType<typeof createKeymap>,
+  target: Element,
+  ev: KeyboardEvent,
+  route?: Scope | null,
+): KeyboardEvent {
+  target.addEventListener('keydown', (e) => km.dispatch(e as KeyboardEvent, route), { once: true });
+  target.dispatchEvent(ev);
+  return ev;
+}
+
+describe('keymap scopes', () => {
+  afterEach(() => {
+    document.body.replaceChildren();
+  });
+
+  it('lists the scopes in display order with labels', () => {
+    expect([...SCOPES]).toEqual(['global', 'history', 'repeater', 'intercept', 'viewer']);
+    expect(SCOPE_LABELS).toEqual({
+      global: 'Everywhere',
+      history: 'History',
+      repeater: 'Repeater',
+      intercept: 'Intercept',
+      viewer: 'Message viewer',
+    });
+    expect(PARENTS.viewer).toEqual(['history', 'repeater', 'global']);
+  });
+
+  it('gives every action a scope', () => {
+    expect(ACTION_SCOPES).toEqual({
+      'send-to-repeater': 'global',
+      'toggle-intercept': 'global',
+      'decode-selection': 'global',
+      'copy-as-curl': 'global',
+      'copy-raw': 'global',
+      'show-shortcuts': 'global',
+      'focus-search': 'history',
+      send: 'repeater',
+      'tab-next': 'repeater',
+      'tab-prev': 'repeater',
+      forward: 'intercept',
+      drop: 'intercept',
+      find: 'viewer',
+    });
+    for (const a of ACTIONS) expect(SCOPES).toContain(ACTION_SCOPES[a]);
+  });
+
+  it('coActive: nested and global scopes overlap, sibling views do not', () => {
+    expect(coActive('viewer', 'history')).toBe(true);
+    expect(coActive('history', 'viewer')).toBe(true);
+    expect(coActive('viewer', 'repeater')).toBe(true);
+    expect(coActive('viewer', 'intercept')).toBe(false);
+    expect(coActive('intercept', 'viewer')).toBe(false);
+    expect(coActive('history', 'repeater')).toBe(false);
+    expect(coActive('history', 'intercept')).toBe(false);
+    expect(coActive('repeater', 'intercept')).toBe(false);
+    for (const s of SCOPES) {
+      expect(coActive('global', s)).toBe(true);
+      expect(coActive(s, 'global')).toBe(true);
+      expect(coActive(s, s)).toBe(true);
+    }
+  });
+
+  it('the defaults have no co-active clash (every pair enumerated)', () => {
+    const clashes: string[] = [];
+    for (const a of ACTIONS) {
+      for (const b of ACTIONS) {
+        if (a < b && DEFAULT_BINDINGS[a] === DEFAULT_BINDINGS[b] && coActive(ACTION_SCOPES[a], ACTION_SCOPES[b])) {
+          clashes.push(`${a} / ${b}`);
+        }
+      }
+    }
+    expect(clashes).toEqual([]);
+  });
+
+  it('maps router paths to route scopes', () => {
+    expect(routeScopeFor('/')).toBe('history');
+    expect(routeScopeFor('/repeater')).toBe('repeater');
+    expect(routeScopeFor('/intercept')).toBe('intercept');
+    expect(routeScopeFor('/settings')).toBeNull();
+    expect(routeScopeFor('/decoder')).toBeNull();
+  });
+
+  it('scopeChain: DOM scopes innermost first, then the route, then global', () => {
+    const history = scopeEl('history');
+    const viewer = scopeEl('viewer', history);
+    const inner = document.createElement('button');
+    viewer.append(inner);
+    expect(scopeChain(inner, 'history')).toEqual(['viewer', 'history', 'global']);
+    expect(scopeChain(inner, null)).toEqual(['viewer', 'history', 'global']);
+    expect(scopeChain(document.body, 'intercept')).toEqual(['intercept', 'global']);
+    expect(scopeChain(document.body, null)).toEqual(['global']);
+    expect(scopeChain(null, 'repeater')).toEqual(['repeater', 'global']);
+    // Unknown scope names are ignored.
+    const bogus = scopeEl('nonsense');
+    expect(scopeChain(bogus, null)).toEqual(['global']);
+  });
+});
+
+describe('keymap scoped dispatch', () => {
+  afterEach(() => {
+    document.body.replaceChildren();
+  });
+
+  it('Find (viewer, bound to viewer A) and Forward (intercept) share Ctrl+F', () => {
+    const km = createKeymap();
+    const viewerA = scopeEl('viewer', scopeEl('history'));
+    const find = vi.fn();
+    const forward = vi.fn();
+    km.register('find', find, { el: viewerA });
+    km.register('forward', forward);
+
+    const inA = fire(km, viewerA, ctrlF(), 'history');
+    expect(find).toHaveBeenCalledTimes(1);
+    expect(forward).not.toHaveBeenCalled();
+    expect(inA.defaultPrevented).toBe(true);
+
+    const outside = fire(km, document.body, ctrlF(), 'intercept');
+    expect(forward).toHaveBeenCalledTimes(1);
+    expect(find).toHaveBeenCalledTimes(1);
+    expect(outside.defaultPrevented).toBe(true);
+  });
+
+  it('picks the element-bound handler whose element contains the target', () => {
+    const km = createKeymap();
+    const history = scopeEl('history');
+    const a = scopeEl('viewer', history);
+    const b = scopeEl('viewer', history);
+    const inB = document.createElement('span');
+    b.append(inB);
+    const ha = vi.fn();
+    const hb = vi.fn();
+    km.register('find', ha, { el: a });
+    const offB = km.register('find', hb, { el: b });
+    fire(km, inB, ctrlF(), 'history');
+    expect(hb).toHaveBeenCalledTimes(1);
+    expect(ha).not.toHaveBeenCalled();
+    fire(km, a, ctrlF(), 'history');
+    expect(ha).toHaveBeenCalledTimes(1);
+    // Unregistering B leaves no handler for B's subtree: the key falls through.
+    offB();
+    const ev = fire(km, inB, ctrlF(), 'history');
+    expect(hb).toHaveBeenCalledTimes(1);
+    expect(ev.defaultPrevented).toBe(false);
+  });
+
+  it('a declining handler (returns false) stops dispatch without preventDefault', () => {
+    localStorage.setItem('scoped.decline', JSON.stringify({ forward: 'ctrl+alt+f', 'toggle-intercept': 'ctrl+f' }));
+    const km = createKeymap(DEFAULT_BINDINGS, { storageKey: 'scoped.decline' });
+    localStorage.clear();
+    const viewer = scopeEl('viewer', scopeEl('history'));
+    const find = vi.fn(() => false);
+    const toggle = vi.fn();
+    km.register('find', find, { el: viewer });
+    km.register('toggle-intercept', toggle);
+    const ev = fire(km, viewer, ctrlF(), 'history');
+    expect(find).toHaveBeenCalledTimes(1);
+    expect(toggle).not.toHaveBeenCalled();
+    expect(ev.defaultPrevented).toBe(false);
+  });
+
+  it('a scope with no handler for the chord passes it outwards', () => {
+    const km = createKeymap();
+    km.remap('send-to-repeater', 'ctrl+e');
+    const viewer = scopeEl('viewer', scopeEl('history'));
+    const s = vi.fn();
+    km.register('send-to-repeater', s);
+    fire(km, viewer, key({ key: 'e', code: 'KeyE', ctrlKey: true }), 'history');
+    expect(s).toHaveBeenCalledTimes(1);
+  });
+
+  it('ignores plain-key chords inside a menu or dialog, not Ctrl chords', () => {
+    const km = createKeymap();
+    const show = vi.fn();
+    const send = vi.fn();
+    km.register('show-shortcuts', show);
+    km.register('send-to-repeater', send);
+    for (const role of ['menu', 'dialog']) {
+      const box = document.createElement('div');
+      box.setAttribute('role', role);
+      const item = document.createElement('button');
+      box.append(item);
+      document.body.append(box);
+      const ev = fire(km, item, key({ key: '?', code: 'Slash', shiftKey: true }), 'history');
+      expect(ev.defaultPrevented).toBe(false);
+      fire(km, item, key({ key: 'r', code: 'KeyR', ctrlKey: true }), 'history');
+    }
+    expect(show).not.toHaveBeenCalled();
+    expect(send).toHaveBeenCalledTimes(2);
+  });
+
+  it('without a route scope, every U2 action still dispatches (pre-migration callers)', () => {
+    const km = createKeymap();
+    const forward = vi.fn();
+    const send = vi.fn();
+    km.register('forward', forward);
+    km.register('send', send);
+    fire(km, document.body, ctrlF());
+    fire(km, document.body, key({ key: ' ', code: 'Space', ctrlKey: true }));
+    expect(forward).toHaveBeenCalledTimes(1);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it('with an explicit null route, view-scoped actions do not fire', () => {
+    const km = createKeymap();
+    const forward = vi.fn();
+    km.register('forward', forward);
+    const ev = fire(km, document.body, ctrlF(), null);
+    expect(forward).not.toHaveBeenCalled();
+    expect(ev.defaultPrevented).toBe(false);
+  });
+});
+
+describe('keymap per-scope conflicts', () => {
+  it('validateChord accepts a chord held only in a disjoint scope', () => {
+    const km = createKeymap();
+    expect(km.validateChord('ctrl+f', 'find').ok).toBe(true);
+    km.remap('find', 'ctrl+shift+f');
+    // Back onto Forward's chord: disjoint from the viewer, so accepted.
+    expect(km.validateChord('ctrl+f', 'find').ok).toBe(true);
+    // Repeater's send onto Intercept's drop: disjoint.
+    expect(km.validateChord('ctrl+d', 'send').ok).toBe(true);
+  });
+
+  it('validateChord refuses a co-active holder, naming it and its scope', () => {
+    const km = createKeymap();
+    const r = km.validateChord('ctrl+r', 'copy-raw');
+    expect(r).toEqual({ ok: false, reason: 'Ctrl+R is already used by "Send to Repeater" (Everywhere).' });
+    // A global chord is co-active with every scope; the first holder in
+    // ACTIONS order is named.
+    const f = km.validateChord('ctrl+f', 'copy-raw');
+    expect(f).toEqual({
+      ok: false,
+      reason: 'Ctrl+F is already used by "Forward the held request (Intercept)" (Intercept).',
+    });
+    const v = km.validateChord('/', 'find');
+    expect(v.ok).toBe(false);
+    if (!v.ok) expect(v.reason).toBe('/ is already used by "Focus the History search" (History).');
+  });
+
+  it('remap steals only from co-active holders', () => {
+    const km = createKeymap();
+    km.remap('send', 'ctrl+d'); // repeater vs intercept: both keep it
+    expect(km.chordFor('send')).toBe('ctrl+d');
+    expect(km.chordFor('drop')).toBe('ctrl+d');
+    km.remap('copy-raw', 'ctrl+f'); // global: takes it from Forward AND Find
+    expect(km.chordFor('copy-raw')).toBe('ctrl+f');
+    expect(km.chordFor('forward')).toBeUndefined();
+    expect(km.chordFor('find')).toBeUndefined();
+    const rows = km.bindings();
+    expect(rows.map((r) => r.action)).toEqual([...ACTIONS]);
+    expect(rows.find((r) => r.action === 'forward')).toEqual({
+      action: 'forward',
+      chord: null,
+      label: 'Forward the held request (Intercept)',
+      scope: 'intercept',
+    });
+    expect(rows.find((r) => r.action === 'find')?.chord).toBeNull();
+  });
+
+  it('reset cascades only over co-active holders', () => {
+    const km = createKeymap();
+    km.remap('find', 'ctrl+shift+f');
+    km.remap('drop', 'ctrl+alt+d');
+    km.remap('send', 'ctrl+alt+d'); // disjoint from drop: both hold it
+    km.reset('find');
+    expect(km.chordFor('find')).toBe('ctrl+f');
+    expect(km.chordFor('forward')).toBe('ctrl+f');
+    km.reset('drop');
+    expect(km.chordFor('drop')).toBe('ctrl+d');
+    expect(km.chordFor('send')).toBe('ctrl+alt+d');
+    km.reset();
+    expect(km.bindings().map((b) => [b.action, b.chord])).toEqual(ACTIONS.map((a) => [a, DEFAULT_BINDINGS[a]]));
+  });
+
+  it('reset of an action already at its default leaves a shadowed override alone', () => {
+    localStorage.setItem(
+      'test.keymap.reset-guard',
+      JSON.stringify({ forward: 'ctrl+alt+f', 'toggle-intercept': 'ctrl+f' }),
+    );
+    const km = createKeymap(DEFAULT_BINDINGS, { storageKey: 'test.keymap.reset-guard' });
+    expect(km.shadows('find')).toEqual(['toggle-intercept']);
+    km.reset('find');
+    expect(km.chordFor('find')).toBe('ctrl+f');
+    expect(km.chordFor('toggle-intercept')).toBe('ctrl+f');
+    expect(km.isOverridden('toggle-intercept')).toBe(true);
+    localStorage.removeItem('test.keymap.reset-guard');
+  });
+
+  it('shadows() is empty for the defaults', () => {
+    const km = createKeymap();
+    for (const a of ACTIONS) expect(km.shadows(a)).toEqual([]);
+  });
+});
+
+describe('keymap U2 storage migration', () => {
+  const KEY = 'test.keymap.u2';
+  afterEach(() => {
+    localStorage.clear();
+    document.body.replaceChildren();
+  });
+
+  it('loads {forward: ctrl+alt+f, toggle-intercept: ctrl+f} verbatim; Find shadows the toggle in the viewer', () => {
+    localStorage.setItem(KEY, JSON.stringify({ forward: 'ctrl+alt+f', 'toggle-intercept': 'ctrl+f' }));
+    const km = createKeymap(DEFAULT_BINDINGS, { storageKey: KEY });
+    expect(km.chordFor('forward')).toBe('ctrl+alt+f');
+    expect(km.chordFor('toggle-intercept')).toBe('ctrl+f');
+    expect(km.chordFor('find')).toBe('ctrl+f');
+    expect(km.shadows('find')).toEqual(['toggle-intercept']);
+    expect(km.shadows('toggle-intercept')).toEqual([]);
+    // Nothing is rewritten on load.
+    expect(JSON.parse(localStorage.getItem(KEY) ?? '{}')).toEqual({
+      forward: 'ctrl+alt+f',
+      'toggle-intercept': 'ctrl+f',
+    });
+
+    const viewer = scopeEl('viewer', scopeEl('history'));
+    const find = vi.fn();
+    const toggle = vi.fn();
+    km.register('find', find, { el: viewer });
+    km.register('toggle-intercept', toggle);
+    fire(km, viewer, ctrlF(), 'history');
+    expect(find).toHaveBeenCalledTimes(1);
+    expect(toggle).not.toHaveBeenCalled();
+    fire(km, document.body, ctrlF(), 'history');
+    expect(toggle).toHaveBeenCalledTimes(1);
+    expect(find).toHaveBeenCalledTimes(1);
+  });
+
+  it('loads {copy-raw: "/"}; focus-search shadows it inside History', () => {
+    localStorage.setItem(KEY, JSON.stringify({ 'copy-raw': '/' }));
+    const km = createKeymap(DEFAULT_BINDINGS, { storageKey: KEY });
+    expect(km.chordFor('copy-raw')).toBe('/');
+    expect(km.chordFor('focus-search')).toBe('/');
+    expect(km.shadows('focus-search')).toEqual(['copy-raw']);
+
+    const history = scopeEl('history');
+    const search = vi.fn();
+    const copy = vi.fn();
+    km.register('focus-search', search);
+    km.register('copy-raw', copy);
+    const slash = () => key({ key: '/', code: 'Slash' });
+    fire(km, history, slash(), 'history');
+    expect(search).toHaveBeenCalledTimes(1);
+    expect(copy).not.toHaveBeenCalled();
+    fire(km, document.body, slash(), 'repeater');
+    expect(copy).toHaveBeenCalledTimes(1);
+  });
+
+  it('still drops a co-active clash with a U2 default (copy-raw onto Drop)', () => {
+    localStorage.setItem(KEY, JSON.stringify({ 'copy-raw': 'ctrl+d' }));
+    const km = createKeymap(DEFAULT_BINDINGS, { storageKey: KEY });
+    expect(km.chordFor('copy-raw')).toBe('ctrl+shift+s');
+    expect(km.chordFor('drop')).toBe('ctrl+d');
+  });
+
+  it('keeps an override that only clashes in a disjoint scope', () => {
+    localStorage.setItem(KEY, JSON.stringify({ send: 'ctrl+d' }));
+    const km = createKeymap(DEFAULT_BINDINGS, { storageKey: KEY });
+    expect(km.chordFor('send')).toBe('ctrl+d');
+    expect(km.chordFor('drop')).toBe('ctrl+d');
+    expect(km.shadows('send')).toEqual([]);
+  });
+
+  it('a V1 find override round-trips', () => {
+    const a = createKeymap(DEFAULT_BINDINGS, { storageKey: KEY });
+    a.remap('find', 'ctrl+shift+f');
+    const b = createKeymap(DEFAULT_BINDINGS, { storageKey: KEY });
+    expect(b.chordFor('find')).toBe('ctrl+shift+f');
+    expect(b.isOverridden('find')).toBe(true);
   });
 });

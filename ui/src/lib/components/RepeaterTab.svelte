@@ -13,7 +13,7 @@
   import { assistedChips, type AssistedToggles } from '../editor/assisted';
   import { bytesToLatin1, latin1ToBytes } from '../editor/encoding';
   import { toasts } from '../ui/toasts.svelte';
-  import { chordLabel } from '../copy-actions.svelte';
+  import { chordLabel } from '../keymap-hints.svelte';
   import Button from '../ui/Button.svelte';
   import Segmented from '../ui/Segmented.svelte';
   import Splitter from '../ui/Splitter.svelte';

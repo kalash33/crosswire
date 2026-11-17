@@ -1,11 +1,10 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
   import { router, routes } from '../router.svelte';
   import { intercept } from '../stores/intercept.svelte';
   import { events } from '../stores/events.svelte';
   import { connection } from '../stores/connection.svelte';
   import { appearance } from '../stores/appearance.svelte';
-  import { keymap, formatChord } from '../keymap';
+  import { chordLabel } from '../keymap-hints.svelte';
   import IconButton from '../ui/IconButton.svelte';
   import Icon from '../ui/Icon.svelte';
   import ProjectChip from './ProjectChip.svelte';
@@ -14,13 +13,8 @@
   let { onShortcuts }: { onShortcuts: () => void } = $props();
 
   const title = $derived(routes.find((r) => r.path === router.path)?.label ?? '');
-  // The TopBar never unmounts, so its hint follows remaps live.
-  let keymapVersion = $state(0);
-  onMount(() => keymap.subscribe(() => keymapVersion++));
-  const toggleChord = $derived.by(() => {
-    void keymapVersion;
-    return formatChord(keymap.chordFor('toggle-intercept') ?? '');
-  });
+  // The hint is reactive (keymap-hints), so it follows remaps live.
+  const toggleChord = $derived(chordLabel('toggle-intercept'));
   const on = $derived(intercept.loaded && intercept.enabled);
 
   // Health names the project; the StatusBar loads it too (one shared fetch).

@@ -245,14 +245,20 @@ test('side by side, the detail-tab ids are scoped per message', async ({ page })
   await expect(page.getByTestId('detail-req-headers')).toBeVisible();
 });
 
-// Product item 1: at the default 45/55 split, every History column is readable
+// Product item 1: at the first-run split, every History column is readable
 // without a horizontal scroll. Host and Path may ellipsize (their full text is
 // in `title`); the fixed-width columns and every header label must not clip.
-for (const vp of [
-  { width: 1440, height: 900 },
-  { width: 1280, height: 720 },
-]) {
-  test(`History fits the default split at ${vp.width}x${vp.height}`, async ({ page }) => {
+// Each case also runs with a wide UI font: DejaVu Sans is what --font-ui
+// resolves to on stock Linux (CI's Ubuntu runner), Verdana is a macOS/Windows
+// stand-in of similar width. A font that is not installed skips its case.
+const fitCases = [null, 'DejaVu Sans', 'Verdana'].flatMap((font) =>
+  [
+    { width: 1440, height: 900 },
+    { width: 1280, height: 720 },
+  ].map((vp) => ({ font, vp })),
+);
+for (const { font, vp } of fitCases) {
+  test(`History fits the default split at ${vp.width}x${vp.height}${font ? ` in ${font}` : ''}`, async ({ page }) => {
     await page.setViewportSize(vp);
     await page.addInitScript(() => {
       if (!sessionStorage.getItem('cleared')) {
@@ -274,9 +280,21 @@ for (const vp of [
       }),
     });
     await page.goto('/');
+    if (font) {
+      // Installed only if text set in it measures differently from the
+      // generic fallback (document.fonts.check is true for any unknown family).
+      const installed = await page.evaluate((f) => {
+        const ctx = document.createElement('canvas').getContext('2d')!;
+        const w = (family: string) => ((ctx.font = `32px ${family}`), ctx.measureText('mmmmmmmmmmlli').width);
+        return w(`"${f}", monospace`) !== w('monospace');
+      }, font);
+      test.skip(!installed, `${font} is not installed`);
+      await page.addStyleTag({ content: `:root { --font-ui: "${font}", sans-serif; }` });
+    }
     await openRow(page);
     if (process.env.HISTORY_SHOT_DIR) {
-      await page.screenshot({ path: `${process.env.HISTORY_SHOT_DIR}/history-${vp.width}x${vp.height}.png` });
+      const tag = font ? `-${font.replace(/ /g, '')}` : '';
+      await page.screenshot({ path: `${process.env.HISTORY_SHOT_DIR}/history-${vp.width}x${vp.height}${tag}.png` });
     }
     const list = page.getByTestId('history-list');
     const fit = await list.evaluate((el) => ({ sw: el.scrollWidth, cw: el.clientWidth }));
@@ -299,5 +317,22 @@ for (const vp of [
       return bad;
     });
     expect(clipped).toEqual([]);
+    // Host and Path stay usable at the first-run split, not just unclipped.
+    const widths = await list.evaluate((el) => {
+      const r = el.querySelector('tr[data-testid="history-row"]')!;
+      return {
+        host: r.querySelector('td.host')!.getBoundingClientRect().width,
+        path: r.querySelector('td.path')!.getBoundingClientRect().width,
+      };
+    });
+    expect(widths.host).toBeGreaterThanOrEqual(60);
+    expect(widths.path).toBeGreaterThanOrEqual(90);
+    // A sorted header keeps its whole label (the arrow sits in its padding).
+    for (const col of ['Status', 'Length', 'Method', 'Host', 'Path']) {
+      await list.locator('thead th button', { hasText: new RegExp(`^${col}`) }).click();
+      const th = list.locator('thead th[aria-sort="ascending"]');
+      await expect(th).toContainText(col);
+      expect(await th.evaluate((el) => el.scrollWidth <= el.clientWidth), `sorted ${col}`).toBe(true);
+    }
   });
 }

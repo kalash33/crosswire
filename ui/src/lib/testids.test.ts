@@ -26,6 +26,18 @@ const PRE_CHANGE: Record<string, string[]> = {
     'import-apply', 'import-discard', 'import-preview', 'import-run', 'import-text',
     'preview-rule', 'scope-import',
   ],
+  // V1: the virtualised list must keep every History selector the specs pin,
+  // plus the spacer rows and the cap note it adds.
+  'routes/History.svelte': [
+    'history-view', 'history-list', 'history-row', 'select-all', 'load-more', 'column-picker',
+    'column-menu', 'history-count', 'history-search', 'history-empty', 'history-detail',
+    'uncommitted-marker', 'history-filters', 'history-error', 'history-send-error',
+    'scope-action-error', 'filter-toggle', 'filter-count', 'filter-clear-quick', 'filter-host',
+    'filter-host-contains', 'filter-method', 'filter-status-min', 'filter-status-max',
+    'filter-tag', 'filter-state', 'filter-scope-state', 'filter-apply', 'filter-clear',
+    'bulk-bar', 'bulk-tag-input', 'bulk-tag-apply', 'bulk-add-hosts',
+    'history-pad-top', 'history-pad-bottom', 'history-cap-note',
+  ],
 };
 
 describe('data-testid preservation', () => {

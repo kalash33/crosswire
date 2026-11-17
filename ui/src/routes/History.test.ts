@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import History from './History.svelte';
+import { keymap } from '../lib/keymap';
 
 const XSS = '<img src=x onerror=alert(1)>';
 const SCRIPT = '"><script>alert(1)</script>';
@@ -105,16 +106,27 @@ describe('History view', () => {
   });
 
   it('/ focuses the search box, but not while typing in a field', async () => {
-    const t = await render();
-    const first = rows(t)[0];
-    first.focus();
-    first.dispatchEvent(new KeyboardEvent('keydown', { key: '/', bubbles: true, cancelable: true }));
-    expect(document.activeElement).toBe(search(t));
+    // `/` is the keymap's focus-search action; the Shell owns the one keydown
+    // dispatch. Dispatch with no route scope (null), so the History scope can
+    // only come from the view's own data-keyscope root.
+    const onKey = (e: KeyboardEvent) => keymap.dispatch(e, null);
+    window.addEventListener('keydown', onKey);
+    try {
+      const t = await render();
+      const first = rows(t)[0];
+      first.focus();
+      const slash = new KeyboardEvent('keydown', { key: '/', code: 'Slash', bubbles: true, cancelable: true });
+      first.dispatchEvent(slash);
+      expect(document.activeElement).toBe(search(t));
+      expect(slash.defaultPrevented).toBe(true);
 
-    // Typing '/' in the search box itself must stay text.
-    const ev = new KeyboardEvent('keydown', { key: '/', bubbles: true, cancelable: true });
-    search(t).dispatchEvent(ev);
-    expect(ev.defaultPrevented).toBe(false);
+      // Typing '/' in the search box itself must stay text.
+      const ev = new KeyboardEvent('keydown', { key: '/', code: 'Slash', bubbles: true, cancelable: true });
+      search(t).dispatchEvent(ev);
+      expect(ev.defaultPrevented).toBe(false);
+    } finally {
+      window.removeEventListener('keydown', onKey);
+    }
   });
 
   it('j/k and arrows move a roving focus; Enter opens; Space checks', async () => {

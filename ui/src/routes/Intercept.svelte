@@ -11,7 +11,7 @@
   import Button from '../lib/ui/Button.svelte';
   import Toolbar from '../lib/ui/Toolbar.svelte';
   import { toasts } from '../lib/ui/toasts.svelte';
-  import { chordLabel } from '../lib/copy-actions.svelte';
+  import { chordLabel } from '../lib/keymap-hints.svelte';
   import { bytesToLatin1 } from '../lib/editor/encoding';
 
   // The store records a failure in `intercept.error` instead of throwing, so
@@ -127,7 +127,7 @@
   }
 </script>
 
-<div class="intercept" data-testid="intercept-view">
+<div class="intercept" data-testid="intercept-view" data-keyscope="intercept">
   <header class="top">
     <label class="switch">
       <input
