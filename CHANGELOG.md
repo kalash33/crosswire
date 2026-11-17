@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1](https://github.com/kalash33/crosswire/compare/v0.1.0...v0.1.1) - 2026-11-17
+
 ### Added
 
 - **UI performance gate** (§13): `just ui-perf` now asserts at 100k rows
