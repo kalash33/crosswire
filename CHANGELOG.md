@@ -35,6 +35,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   shares its chord with Intercept's Forward; `/` is the remappable "Focus the
   History search". Plain-key shortcuts (such as `?` and `/`) are ignored
   while a menu or dialog is open.
+- The minimum supported Rust version is now 1.89 (was 1.88), required by
+  `rusqlite` 0.41.
 
 ### Fixed
 
@@ -42,6 +44,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   could leave a gap in paged history; some shortcut hints stayed stale after a
   remap; an action whose chord was taken over by a remap vanished from
   Settings (it now shows "Not set").
+
+### Security
+
+- **Bundled SQLite 3.54.1** (crosswire-store): `rusqlite` 0.32 → 0.41
+  (`libsqlite3-sys` 0.30.1 → 0.39.1, SQLite 3.46.0 → 3.54.1) for
+  CVE-2026-119375 / RUSTSEC-2026-0459. SQLite before 3.54.0 could return
+  uninitialised page-cache memory when a database was opened next to a `-wal`
+  file with a different page size, which a hostile project directory can
+  supply. This raises the MSRV to 1.89. The project format is unchanged:
+  0.1.0 projects open without migration (pinned by a committed 0.1.0 fixture).
+- `rustix` 1.1.5 → 1.1.6 for RUSTSEC-2026-0486 (unsound xattr functions).
 
 ### Note
 

@@ -4,7 +4,7 @@
 
 [![CI](https://github.com/kalash33/crosswire/actions/workflows/ci.yml/badge.svg)](https://github.com/kalash33/crosswire/actions/workflows/ci.yml)
 [![License: Apache-2.0 OR MIT](https://img.shields.io/badge/license-Apache--2.0%20OR%20MIT-blue.svg)](#licence)
-[![MSRV 1.88](https://img.shields.io/badge/MSRV-1.88-orange.svg)](Cargo.toml)
+[![MSRV 1.89](https://img.shields.io/badge/MSRV-1.89-orange.svg)](Cargo.toml)
 [![Release](https://img.shields.io/github/v/release/kalash33/crosswire?include_prereleases)](https://github.com/kalash33/crosswire/releases)
 
 Crosswire is an open-source web application security testing proxy for
@@ -58,7 +58,7 @@ provenance is covered by the attestations below).
    gh attestation verify crosswire-server-<target>.tar.xz --repo kalash33/crosswire
    ```
 
-4. **From source** (needs Rust 1.88 or newer only; the web UI is already
+4. **From source** (needs Rust 1.89 or newer only; the web UI is already
    embedded, so Node is not required):
 
    ```
@@ -266,7 +266,7 @@ Commands live in the `justfile`:
 | `just serve --project ./demo` | `crosswire serve` on a demo project |
 
 CI runs lint, tests, feature checks, docs, packaging and the browser session on
-Ubuntu and macOS, plus an MSRV 1.88 check and `cargo deny`. Design decisions
+Ubuntu and macOS, plus an MSRV 1.89 check and `cargo deny`. Design decisions
 are recorded in [docs/adr/](docs/adr/); the on-disk project format in
 [docs/format.md](docs/format.md); the tests behind each security gate in
 [docs/security-gates.md](docs/security-gates.md); the velocity log in

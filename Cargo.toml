@@ -7,7 +7,7 @@ resolver = "2"
 version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0 OR MIT"
-rust-version = "1.88"
+rust-version = "1.89"
 repository = "https://github.com/kalash33/crosswire"
 
 [workspace.lints.rust]
@@ -21,7 +21,7 @@ tokio-rustls = { version = "0.26", default-features = false, features = ["ring",
 webpki-roots = "0.26"
 rustls-pki-types = "1"
 rcgen = { version = "0.14", default-features = false, features = ["ring", "pem", "x509-parser"] }
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.41", features = ["bundled", "fallible_uint"] }
 zstd = "0.14"
 sha2 = "0.10"
 ulid = "1"
