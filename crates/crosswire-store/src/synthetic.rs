@@ -30,7 +30,7 @@ use crate::Store;
 use crosswire_h1::{Parser, ParserConfig, Progress, ResponseContext};
 use crosswire_model::{Body, ConnectionInfo, Exchange, ExchangeState, Message, ScopeState};
 use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use rusqlite::Connection;
 use ulid::Ulid;
 

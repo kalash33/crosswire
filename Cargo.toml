@@ -45,7 +45,7 @@ utoipa = { version = "6", features = ["axum_extras", "ulid"] }
 utoipa-axum = "0.3"
 regex = "1"
 ipnet = "2"
-rand = "0.9"
+rand = "0.10"
 subtle = "2"
 http = "1"
 url = "2"
