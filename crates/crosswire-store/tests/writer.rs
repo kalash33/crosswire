@@ -515,7 +515,7 @@ fn bad_journal_file_is_quarantined() {
     let tmp = tempfile::tempdir().unwrap();
     let (dir, store) = new_store(&tmp, cfg());
     let mut ev = store.subscribe();
-    let lost = Ulid::new();
+    let lost = Ulid::generate();
     let name = format!("{lost}.json");
     std::fs::write(dir.join("journal").join(&name), b"not json").unwrap();
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -549,7 +549,7 @@ fn fifo_in_journal_is_quarantined_without_blocking_open() {
     let tmp = tempfile::tempdir().unwrap();
     let (dir, store) = new_store(&tmp, cfg());
     store.close().unwrap();
-    let lost = Ulid::new();
+    let lost = Ulid::generate();
     let path = dir.join("journal").join(format!("{lost}.json"));
     let ok = std::process::Command::new("mkfifo")
         .arg(&path)
@@ -1030,7 +1030,7 @@ fn open_report_lists_what_open_did() {
     let p = Project::create(&dir).unwrap();
     let good = exchange(b"good", b"good");
     plant_journal(&dir, &good);
-    let bad = format!("{}.json", Ulid::new());
+    let bad = format!("{}.json", Ulid::generate());
     std::fs::write(dir.join("journal").join(&bad), b"{ broken").unwrap();
     let store = Store::open(p, cfg()).unwrap();
     let report = store.open_report();

@@ -69,7 +69,7 @@ fn main() {
                 message(pattern(i, 1, BODY_LEN)),
             );
             // The id is minted just before the submit, as a proxy would.
-            let mut ex = Exchange::with_id(Ulid::new(), req);
+            let mut ex = Exchange::with_id(Ulid::generate(), req);
             ex.set_response(resp);
             ex.set_notes(i.to_string());
             let id = ex.id();

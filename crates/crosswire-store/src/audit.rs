@@ -43,7 +43,7 @@ impl AuditLog {
             .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
         let mut line = serde_json::to_string(&serde_json::json!({
             "ts": ts,
-            "ulid": Ulid::new().to_string(),
+            "ulid": Ulid::generate().to_string(),
             "actor": actor,
             "action": action,
             "target": target,

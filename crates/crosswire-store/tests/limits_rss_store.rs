@@ -187,7 +187,7 @@ fn pack_decompression_flat_rss() {
     let tmp = tempfile::tempdir().unwrap();
     let mut p = Project::create(&tmp.path().join("p")).unwrap();
     let _bodies = BodyStore::new(PackWriter::open(&mut p).unwrap());
-    let id = Ulid::new();
+    let id = Ulid::generate();
     plant_bomb(&mut p, 16 * 1024 * 1024 * 1024, id);
     let conn = p.reader().unwrap();
     with_flat_rss(32, || {

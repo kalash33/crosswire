@@ -35,7 +35,7 @@ fn add_exchange(tx: &rusqlite::Transaction, ulid: Ulid) {
 }
 
 fn put_one(p: &mut Project, store: &mut BodyStore, raw: &[u8]) -> Ulid {
-    let id = Ulid::new();
+    let id = Ulid::generate();
     let tx = p.writer_mut().transaction().unwrap();
     add_exchange(&tx, id);
     store.put(&tx, id, BodySide::Resp, raw).unwrap();
@@ -199,7 +199,7 @@ fn plant(p: &mut Project, raw_declared: &[u8], hash_of: &[u8], ulid: Ulid) {
 fn decompression_bomb_refused() {
     let (_t, mut p) = setup();
     let _store = BodyStore::new(PackWriter::open(&mut p).unwrap());
-    let id = Ulid::new();
+    let id = Ulid::generate();
     // 65 MiB of zeros: tiny frame, content size over the 64 MiB cap.
     let big = vec![0u8; 65 * 1024 * 1024];
     plant(&mut p, &big, &big, id);
@@ -217,7 +217,7 @@ fn high_ratio_frame_under_the_size_cap_reads_back() {
     // No ratio limit on packs: memory is bounded by the 64 MiB declared size.
     let (_t, mut p) = setup();
     let _store = BodyStore::new(PackWriter::open(&mut p).unwrap());
-    let id = Ulid::new();
+    let id = Ulid::generate();
     let big = vec![0u8; 8 * 1024 * 1024];
     plant(&mut p, &big, &big, id);
     let got = BodyStore::get(&p.reader().unwrap(), p.dir(), id, BodySide::Resp)
@@ -230,7 +230,7 @@ fn high_ratio_frame_under_the_size_cap_reads_back() {
 fn frame_without_content_size_refused() {
     let (_t, mut p) = setup();
     let _store = BodyStore::new(PackWriter::open(&mut p).unwrap());
-    let id = Ulid::new();
+    let id = Ulid::generate();
     let raw = noise(20 * 1024, 6);
     // Stream-compress: the frame header omits the content size.
     let mut enc = zstd::Encoder::new(Vec::new(), 3).unwrap();
@@ -273,7 +273,7 @@ fn torn_tail_recovery() {
     let bodies: Vec<Vec<u8>> = (0..4)
         .map(|i| noise(20 * 1024 + i, 10 + i as u64))
         .collect();
-    let ids: Vec<Ulid> = (0..4).map(|_| Ulid::new()).collect();
+    let ids: Vec<Ulid> = (0..4).map(|_| Ulid::generate()).collect();
 
     // Three committed bodies, fsynced, committed_len advanced.
     let tx = p.writer_mut().transaction().unwrap();
@@ -628,7 +628,7 @@ fn offset_above_i64_max_is_refused() {
 
     // The dedupe path reads the offset back as a u64.
     let tx = p.writer_mut().transaction().unwrap();
-    let b = Ulid::new();
+    let b = Ulid::generate();
     add_exchange(&tx, b);
     match store.put(&tx, b, BodySide::Resp, &body) {
         Err(StoreError::Sqlite(rusqlite::Error::IntegralValueOutOfRange(1, -1))) => {}

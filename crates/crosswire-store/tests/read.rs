@@ -179,7 +179,7 @@ fn get_rehydrates_bodies() {
     }
     assert_eq!(store.get_body(id, BodySide::Req).unwrap().unwrap(), small);
     assert_eq!(store.get_body(id, BodySide::Resp).unwrap().unwrap(), big);
-    assert!(store.get(Ulid::new()).unwrap().is_none());
+    assert!(store.get(Ulid::generate()).unwrap().is_none());
 }
 
 #[test]

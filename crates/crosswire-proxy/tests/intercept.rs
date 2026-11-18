@@ -268,7 +268,7 @@ async fn held_bytes_exposes_original_head_and_body() {
     );
 
     // An unknown id yields nothing.
-    assert!(r.intercept.held_bytes(Ulid::new()).is_none());
+    assert!(r.intercept.held_bytes(Ulid::generate()).is_none());
 
     r.intercept.forward(id, None).unwrap();
     let _ = read_until_close(&mut c).await;

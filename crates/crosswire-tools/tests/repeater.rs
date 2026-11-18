@@ -67,7 +67,7 @@ fn harness(transport: Arc<Transport>, scope: Compiled, strict: bool) -> Harness 
 
 fn req(host: &str, port: u16, raw: &[u8]) -> SendRequest {
     SendRequest {
-        tab: Ulid::new(),
+        tab: Ulid::generate(),
         source: None,
         host: host.to_string(),
         port,
@@ -97,7 +97,7 @@ async fn raw_mode_sends_bytes_untouched() {
     .into_bytes();
     raw.extend_from_slice(&body);
 
-    let source = Ulid::new();
+    let source = Ulid::generate();
     let mut r = req("127.0.0.1", server.port(), &raw);
     r.source = Some(source);
     let tab = r.tab;

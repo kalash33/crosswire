@@ -46,7 +46,7 @@ impl Marker {
     #[cfg(feature = "std")]
     #[must_use]
     pub fn new(kind: MarkerKind, detail: impl Into<String>) -> Marker {
-        Marker::with_id(Ulid::new(), kind, detail)
+        Marker::with_id(Ulid::generate(), kind, detail)
     }
 
     /// Creates a marker with the given id (for `no_std` callers and tests).

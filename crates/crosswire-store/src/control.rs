@@ -137,7 +137,7 @@ impl Control {
         let secret = format!("cwt_{}", URL_SAFE_NO_PAD.encode(raw));
         let hash: [u8; 32] = Sha256::digest(raw).into();
 
-        let id = Ulid::new();
+        let id = Ulid::generate();
         let created_at = now_ms();
         let scopes = scopes.to_vec();
         let scopes_json = serde_json::to_string(&scopes)?;
