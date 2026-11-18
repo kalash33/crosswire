@@ -328,6 +328,33 @@ mod tests {
         assert_eq!(CaptureResult::empty().relay.sha256, sha(b""));
     }
 
+    /// Lowercase hex, written out here so the check does not go through
+    /// `sha2`.
+    fn hex(bytes: &[u8]) -> String {
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    /// The relay digest is FIPS 180-4 SHA-256 (spec G5): the empty-string
+    /// and `abc` vectors from FIPS 180-4 / NIST CSRC examples, compared as
+    /// hex literals so a `sha2` upgrade cannot move both sides at once.
+    #[test]
+    fn relay_sha256_matches_kat() {
+        assert_eq!(
+            hex(&CaptureResult::empty().relay.sha256),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+        let budget = Arc::new(Budget::new(KIB * KIB));
+        let mut c = CaptureBuf::new(KIB, &budget);
+        c.push(b"ab");
+        c.push(b"c");
+        let r = c.finish();
+        assert_eq!(r.relay.len, 3);
+        assert_eq!(
+            hex(&r.relay.sha256),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
+
     #[test]
     fn whole_body_under_the_cap_is_not_truncated() {
         let budget = Arc::new(Budget::new(KIB * KIB));

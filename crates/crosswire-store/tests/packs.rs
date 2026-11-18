@@ -645,3 +645,41 @@ fn offset_above_i64_max_is_refused() {
     ));
     assert!(msg.contains("out of range"), "{msg}");
 }
+
+/// Lowercase hex, written out here so the check does not go through `sha2`.
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// `blobs.hash` is the FIPS 180-4 SHA-256 of the raw body (spec G5). Bodies
+/// over 16 KiB go to a pack, so this stores 20 KiB of `0x61` (`a`) and
+/// compares the stored key with a digest computed outside Rust, once, with
+/// `head -c 20480 /dev/zero | tr '\0' a | shasum -a 256`. A `sha2` upgrade
+/// that changed a digest would orphan every pack blob of an existing project.
+#[test]
+fn blob_hash_is_fips_sha256() {
+    const WANT: &str = "6fce34365dc8c8a013cba32ea322f4b3e7ddef3a0a27f3b28f165c8deb70b0c3";
+    let (_t, mut p) = setup();
+    let mut store = BodyStore::new(PackWriter::open(&mut p).unwrap());
+    let body = vec![0x61u8; 20 * 1024];
+    let a = put_one(&mut p, &mut store, &body);
+    let c = p.writer_mut();
+    let blob: Vec<u8> = c
+        .query_row("SELECT hash FROM blobs", [], |r| r.get(0))
+        .unwrap();
+    let body_ref: Vec<u8> = c
+        .query_row(
+            "SELECT blob_hash FROM bodies WHERE ulid = ?1",
+            [a.to_string()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(hex(&blob), WANT);
+    assert_eq!(hex(&body_ref), WANT);
+    assert_eq!(
+        BodyStore::get(&p.reader().unwrap(), p.dir(), a, BodySide::Resp)
+            .unwrap()
+            .unwrap(),
+        body
+    );
+}
