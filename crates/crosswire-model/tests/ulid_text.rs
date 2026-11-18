@@ -5,7 +5,8 @@
 //! test pins the encoding so a `ulid` upgrade cannot change it unnoticed. It
 //! uses only `from_parts`, `from_string`, `nil`, `ULID_LEN` and `Display`,
 //! none of which needs ulid's `std` feature, so it compiles unchanged on
-//! ulid 1 and 3 and under `--no-default-features`.
+//! ulid 1 and 3 and under `--no-default-features`. The last test checks
+//! that model ids refuse the non-canonical text the crate itself accepts.
 use ulid::Ulid;
 
 /// The timestamp of the ULID specification's example id.
@@ -63,4 +64,19 @@ fn ulid_order_is_timestamp_first() {
     let early = Ulid::from_parts(T, MAX_RANDOM);
     assert!(late > early);
     assert!(late.to_string() > early.to_string());
+}
+
+#[test]
+fn model_ids_refuse_non_canonical_text() {
+    // The crate-level alias pinned above must not reach model ids: an id
+    // is accepted only when it is the text of the ULID it parses to
+    // (case-insensitively).
+    let parse = |id: &str| {
+        serde_json::from_str::<crosswire_model::Event>(&format!(
+            "{{\"type\":\"received\",\"id\":\"{id}\"}}"
+        ))
+    };
+    assert!(parse("80000000000000000000000000").is_err());
+    assert!(parse("00000000000000000000000000").is_ok());
+    assert!(parse("01aryz6s410000000000000000").is_ok());
 }

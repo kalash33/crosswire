@@ -149,8 +149,15 @@ fn list(project: &Path) -> Result<(), CliError> {
 }
 
 /// Parses a token id, mapping a bad value to a config error.
+///
+/// Only canonical text is accepted (either case): the ulid crate drops the
+/// bits past 128 when the first character is above `7`.
 fn parse_id(id: &str) -> Result<Ulid, CliError> {
-    Ulid::from_string(id).map_err(|e| CliError::Config(format!("invalid token id {id:?}: {e}")))
+    let parsed = Ulid::from_string(id)
+        .map_err(|e| CliError::Config(format!("invalid token id {id:?}: {e}")))?;
+    Some(parsed)
+        .filter(|p| p.to_string().eq_ignore_ascii_case(id))
+        .ok_or_else(|| CliError::Config(format!("invalid token id {id:?}: not a canonical ULID")))
 }
 
 fn revoke(project: &Path, id: &str) -> Result<(), CliError> {
@@ -221,4 +228,32 @@ fn rotate(project: &Path, id: &str) -> Result<(), CliError> {
             .map_err(|e| CliError::runtime("writing stdout", e))
     })();
     result.and(close(store))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_id;
+    use crate::error::CliError;
+    use ulid::Ulid;
+
+    #[test]
+    fn parse_id_accepts_canonical_text_in_either_case() {
+        assert_eq!(
+            parse_id("00000000000000000000000000").ok(),
+            Some(Ulid::nil())
+        );
+        assert_eq!(
+            parse_id("01aryz6s410000000000000000").ok(),
+            Some(Ulid::from_parts(1_469_918_176_385, 0))
+        );
+    }
+
+    #[test]
+    fn parse_id_rejects_overflow_aliases() {
+        // Parses as the nil id in the ulid crate, but is not its text.
+        assert!(matches!(
+            parse_id("80000000000000000000000000"),
+            Err(CliError::Config(_))
+        ));
+    }
 }
