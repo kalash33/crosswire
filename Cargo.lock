@@ -477,7 +477,7 @@ name = "crosswire-api"
 version = "0.1.1"
 dependencies = [
  "axum",
- "base64 0.22.1",
+ "base64 0.23.1",
  "bytes",
  "crosswire-ca",
  "crosswire-client",
@@ -576,7 +576,7 @@ dependencies = [
 name = "crosswire-proxy"
 version = "0.1.1"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "bytes",
  "crosswire-ca",
  "crosswire-client",
@@ -637,7 +637,7 @@ name = "crosswire-server"
 version = "0.1.1"
 dependencies = [
  "axum",
- "base64 0.22.1",
+ "base64 0.23.1",
  "clap",
  "crosswire-api",
  "crosswire-ca",
@@ -670,7 +670,7 @@ dependencies = [
 name = "crosswire-store"
 version = "0.1.1"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "bytes",
  "criterion",
  "crosswire-core",
