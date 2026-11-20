@@ -74,7 +74,7 @@ New tests land in **Task 0** and pass on today's dependencies, so a failure afte
   - Existing: RFC 4231 vectors in `preview_token.rs`, and G1's pinned hashes.
 - **G6. The ULID text form is frozen** (D8). New `crates/crosswire-model/tests/ulid_text.rs`:
   - `Ulid::from_parts(1_469_918_176_385, 0).to_string() == "01ARYZ6S410000000000000000"`, and `from_parts(…, u128::MAX >> 48)` formats to a pinned string (computed on ulid 1).
-  - `from_string` accepts lowercase and refuses `I`, `L`, `O`, `U`, 25 and 27 characters, and a first character above `7`.
+  - `from_string` accepts lowercase and refuses `I`, `L`, `O`, `U`, 25 and 27 characters, and 25- and 27-character input. It does NOT refuse a first character above `7`: both ulid 1.2.1 and 3.0.0 drop the overflow bits, so `80000000000000000000000000` parses as the nil id (pinned as is in `ulid_text.rs`). Crosswire's own boundaries reject such aliases (`fix(api): reject non-canonical ULID text`).
   - `Ulid::nil().to_string() == "00000000000000000000000000"` and `ulid::ULID_LEN == 26`.
   - `from_parts(t + 1, 0) > from_parts(t, u128::MAX >> 48)` (keyset ordering, `docs/format.md`).
   - It uses only `from_parts`/`from_string`/`nil`, none of which needs ulid's `std` feature, so it compiles unchanged on ulid 1 and 3.
