@@ -492,11 +492,11 @@ impl Writer {
             if items.is_empty() && gap.is_none() && self.markers.is_empty() {
                 return removed;
             }
-            match self.try_commit(&items, gap) {
+            match stage!(Batch, self.try_commit(&items, gap)) {
                 Ok(done) => {
                     self.backoff = None;
                     self.failing = false;
-                    return removed + self.after_commit(items, done);
+                    return removed + stage!(AfterCommit, self.after_commit(items, done));
                 }
                 Err(err) => {
                     // The pack writer may have appended past what the database
@@ -643,21 +643,27 @@ impl Writer {
             return Err(CommitError::Db(StoreError::Closed));
         };
         // (1) BEGIN IMMEDIATE.
-        let tx = project
-            .writer_mut()
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let tx = stage!(
+            SqlBatch,
+            project
+                .writer_mut()
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+        )?;
         // (2) A pending gap: from the earliest lost id to now; then the
         // markers submitted through the sink (a repeated id is skipped).
         let mut markers = Vec::new();
         if let Some(from) = gap {
-            markers.push(insert_gap(
-                &tx,
-                Some(from),
-                "exchanges were dropped: the queue and journal were full or unwritable",
+            markers.push(stage!(
+                SqlBatch,
+                insert_gap(
+                    &tx,
+                    Some(from),
+                    "exchanges were dropped: the queue and journal were full or unwritable",
+                )
             )?);
         }
         for (marker, _) in submitted.iter() {
-            if insert_marker(&tx, marker, true)? > 0 {
+            if stage!(SqlBatch, insert_marker(&tx, marker, true))? > 0 {
                 markers.push(marker.clone());
             }
         }
@@ -666,14 +672,16 @@ impl Writer {
         let mut ids = Vec::with_capacity(items.len());
         for (i, item) in items.iter().enumerate() {
             let id = item.ex.id();
-            let exists = tx
-                .query_row(
+            let exists = stage!(
+                Exists,
+                tx.query_row(
                     "SELECT 1 FROM exchanges WHERE ulid = ?1",
                     [id.to_string()],
                     |_| Ok(()),
                 )
-                .optional()?
-                .is_some();
+                .optional()
+            )?
+            .is_some();
             // (3) Bodies and the row; a replayed or repeated id is already stored.
             if !exists {
                 #[cfg(test)]
@@ -705,21 +713,27 @@ impl Writer {
         // (4) Advance last_committed_ulid (ULID order; never backwards) and
         // record the watermark gap markers start from after a crash.
         if let Some(max) = ids.iter().max() {
-            tx.execute(
-                "UPDATE meta SET value = ?1 WHERE key = 'last_committed_ulid' AND value < ?1",
-                [max.to_string()],
+            stage!(
+                SqlBatch,
+                tx.execute(
+                    "UPDATE meta SET value = ?1 WHERE key = 'last_committed_ulid' AND value < ?1",
+                    [max.to_string()],
+                )
             )?;
         }
-        tx.execute(
-            "INSERT INTO meta (key, value) VALUES ('last_commit_watermark', ?1) \
-             ON CONFLICT (key) DO UPDATE SET value = excluded.value",
-            [watermark.to_string()],
+        stage!(
+            SqlBatch,
+            tx.execute(
+                "INSERT INTO meta (key, value) VALUES ('last_commit_watermark', ?1) \
+                 ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+                [watermark.to_string()],
+            )
         )?;
         if !touched.is_empty() {
             // (5) The pack bytes are durable before anything references them.
-            bodies.fsync()?;
+            stage!(Fsync, bodies.fsync())?;
             for (pack, len) in &touched {
-                Project::set_pack_committed_len(&tx, *pack, *len)?;
+                stage!(SqlBatch, Project::set_pack_committed_len(&tx, *pack, *len))?;
             }
         }
         #[cfg(test)]
@@ -732,7 +746,7 @@ impl Writer {
             )));
         }
         // (6) COMMIT.
-        tx.commit()?;
+        stage!(Commit, tx.commit())?;
         Ok(Committed { ids, markers })
     }
 
@@ -875,7 +889,7 @@ fn insert_exchange(
     touched: &mut BTreeMap<u32, u64>,
 ) -> Result<(), StoreError> {
     let id = ex.id();
-    let mut json = serde_json::to_value(ex)?;
+    let mut json = stage!(Json, serde_json::to_value(ex))?;
     // A stored exchange is `committed`, unless its producer marked it
     // `error` (a relay that failed part way): that state is kept, so the
     // `state` filter and `Counts.error` find it.
@@ -884,7 +898,12 @@ fn insert_exchange(
     } else {
         ExchangeState::Committed
     };
-    set_field(&mut json, "/state", serde_json::to_value(state)?)?;
+    stage!(
+        Json,
+        serde_json::to_value(state)
+            .map_err(StoreError::from)
+            .and_then(|v| set_field(&mut json, "/state", v))
+    )?;
     let sides = [
         (BodySide::Req, Some(ex.request()), "/request/body"),
         (BodySide::Resp, ex.response(), "/response/body"),
@@ -900,7 +919,7 @@ fn insert_exchange(
             continue;
         };
         let hash: [u8; 32] = match bodies.put(tx, id, side, bytes)? {
-            BodyLocator::Inline { .. } => Sha256::digest(bytes).into(),
+            BodyLocator::Inline { .. } => stage!(ShaInline, Sha256::digest(bytes).into()),
             BodyLocator::Pack { blob, deduped } => {
                 if !deduped {
                     let end = touched.entry(bodies.pack_id()).or_insert(0);
@@ -911,14 +930,18 @@ fn insert_exchange(
         };
         // The JSON keeps a reference; the bytes live in `bodies` and packs.
         // The capture bookkeeping travels with it.
-        let blob = serde_json::to_value(Body::Blob {
-            hash,
-            len: bytes.len() as u64,
-            truncated_at: *truncated_at,
-            capture_dropped: *capture_dropped,
-            relay: *relay,
-        })?;
-        set_field(&mut json, key, blob)?;
+        stage!(
+            Json,
+            serde_json::to_value(Body::Blob {
+                hash,
+                len: bytes.len() as u64,
+                truncated_at: *truncated_at,
+                capture_dropped: *capture_dropped,
+                relay: *relay,
+            })
+            .map_err(StoreError::from)
+            .and_then(|blob| set_field(&mut json, key, blob))
+        )?;
     }
     let (method, path) = request_line(ex.request());
     let host = request_host(ex.request());
@@ -931,33 +954,40 @@ fn insert_exchange(
         serde_json::to_string(ex.tags())?
     };
     let created = i64::try_from(id.timestamp_ms()).unwrap_or(i64::MAX);
-    tx.execute(
-        "INSERT INTO exchanges (ulid, namespace, state, scope_state, created_at, json, \
+    let json = stage!(Json, serde_json::to_string(&json))?;
+    stage!(
+        SqlExchange,
+        tx.execute(
+            "INSERT INTO exchanges (ulid, namespace, state, scope_state, created_at, json, \
          req_method, req_host, req_path, resp_status, resp_len, tags, notes) \
          VALUES (?1, ?2, ?13, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
-        rusqlite::params![
-            id.to_string(),
-            wire_name(&ex.namespace().kind()),
-            wire_name(&ex.scope_state()),
-            created,
-            serde_json::to_string(&json)?,
-            method,
-            host,
-            path,
-            status,
-            resp_len,
-            tags,
-            ex.notes(),
-            wire_name(&state),
-        ],
+            rusqlite::params![
+                id.to_string(),
+                wire_name(&ex.namespace().kind()),
+                wire_name(&ex.scope_state()),
+                created,
+                json,
+                method,
+                host,
+                path,
+                status,
+                resp_len,
+                tags,
+                ex.notes(),
+                wire_name(&state),
+            ],
+        )
     )?;
     // Normalized tag index, kept in lockstep with the `tags` JSON column in the
     // same transaction so the `tag = ?` history query sees every new exchange.
     // `OR IGNORE` tolerates a tag repeated within one exchange's tag list.
     for tag in ex.tags() {
-        tx.execute(
-            "INSERT OR IGNORE INTO exchange_tags (ulid, tag) VALUES (?1, ?2)",
-            rusqlite::params![id.to_string(), tag],
+        stage!(
+            SqlExchange,
+            tx.execute(
+                "INSERT OR IGNORE INTO exchange_tags (ulid, tag) VALUES (?1, ?2)",
+                rusqlite::params![id.to_string(), tag],
+            )
         )?;
     }
     Ok(())

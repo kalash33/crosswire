@@ -35,6 +35,10 @@ crosswire-h1 = { path = "../crosswire-h1", optional = true }
 [features]
 # The deterministic bulk generator for the history benchmarks (`generate`).
 synthetic = ["dep:crosswire-h1"]
+# Per-stage writer timers (src/stages.rs) read by tests/perf_ingest.rs. Pure
+# instrumentation: no behaviour change, and without it `stage!` expands to the
+# wrapped expression alone. Never enabled by the crosswire binary.
+stage-timing = []
 
 [dev-dependencies]
 tempfile = { workspace = true }

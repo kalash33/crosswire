@@ -190,6 +190,16 @@ impl Store {
         })
     }
 
+    /// The writer stage timers so far. They are process-wide (every store's
+    /// writer adds to them), so take one snapshot before a run and use
+    /// [`crate::StageSnapshot::since`] after it. Feature `stage-timing` only.
+    #[cfg(feature = "stage-timing")]
+    #[doc(hidden)]
+    #[must_use]
+    pub fn stage_times(&self) -> crate::StageSnapshot {
+        crate::stages::snapshot()
+    }
+
     /// What [`Store::open`] did: sweep, replay, unclean-restart marker, and
     /// the events sent before anyone could subscribe.
     #[must_use]

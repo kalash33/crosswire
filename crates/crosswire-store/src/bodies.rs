@@ -77,24 +77,32 @@ impl BodyStore {
         let sql_len =
             i64::try_from(len).map_err(|_| StoreError::Corrupt("body too large".into()))?;
         if raw.len() <= INLINE_MAX {
-            tx.execute(
-                "INSERT INTO bodies (ulid, side, inline, len) VALUES (?1, ?2, ?3, ?4)",
-                rusqlite::params![key, side.as_str(), raw, sql_len],
+            stage!(
+                SqlBodies,
+                tx.execute(
+                    "INSERT INTO bodies (ulid, side, inline, len) VALUES (?1, ?2, ?3, ?4)",
+                    rusqlite::params![key, side.as_str(), raw, sql_len],
+                )
             )?;
             return Ok(BodyLocator::Inline { len });
         }
-        let hash: [u8; 32] = Sha256::digest(raw).into();
-        let existing: Option<(u32, u64, u64)> = tx
-            .query_row(
+        let hash: [u8; 32] = stage!(ShaPut, Sha256::digest(raw).into());
+        let existing: Option<(u32, u64, u64)> = stage!(
+            SqlBodies,
+            tx.query_row(
                 "SELECT pack_id, offset, len FROM blobs WHERE hash = ?1",
                 [hash.as_slice()],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
-            .optional()?;
+            .optional()
+        )?;
         let (blob, deduped) = if let Some((pack_id, offset, rec_len)) = existing {
-            tx.execute(
-                "UPDATE blobs SET refcount = refcount + 1 WHERE hash = ?1",
-                [hash.as_slice()],
+            stage!(
+                SqlBodies,
+                tx.execute(
+                    "UPDATE blobs SET refcount = refcount + 1 WHERE hash = ?1",
+                    [hash.as_slice()],
+                )
             )?;
             let blob = BlobRef {
                 hash,
@@ -106,20 +114,26 @@ impl BodyStore {
             (blob, true)
         } else {
             let blob = self.packs.append(tx, raw)?;
-            tx.execute(
-                "INSERT INTO blobs (hash, pack_id, offset, len) VALUES (?1, ?2, ?3, ?4)",
-                rusqlite::params![
-                    hash.as_slice(),
-                    blob.pack_id,
-                    blob.offset,
-                    blob.record_len()
-                ],
+            stage!(
+                SqlBodies,
+                tx.execute(
+                    "INSERT INTO blobs (hash, pack_id, offset, len) VALUES (?1, ?2, ?3, ?4)",
+                    rusqlite::params![
+                        hash.as_slice(),
+                        blob.pack_id,
+                        blob.offset,
+                        blob.record_len()
+                    ],
+                )
             )?;
             (blob, false)
         };
-        tx.execute(
-            "INSERT INTO bodies (ulid, side, blob_hash, len) VALUES (?1, ?2, ?3, ?4)",
-            rusqlite::params![key, side.as_str(), hash.as_slice(), sql_len],
+        stage!(
+            SqlBodies,
+            tx.execute(
+                "INSERT INTO bodies (ulid, side, blob_hash, len) VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![key, side.as_str(), hash.as_slice(), sql_len],
+            )
         )?;
         Ok(BodyLocator::Pack { blob, deduped })
     }

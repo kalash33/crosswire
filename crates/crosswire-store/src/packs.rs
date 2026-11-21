@@ -118,29 +118,35 @@ impl PackWriter {
                 "body exceeds the 64 MiB storage limit",
             )));
         }
-        let frame = zstd::bulk::compress(raw, LEVEL)?;
+        let frame = stage!(Zstd, zstd::bulk::compress(raw, LEVEL))?;
         let len = u32::try_from(frame.len()).map_err(|_| {
             StoreError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 "frame too large",
             ))
         })?;
-        let hash: [u8; 32] = Sha256::digest(raw).into();
+        let hash: [u8; 32] = stage!(ShaAppend, Sha256::digest(raw).into());
         let record_len = HEADER_LEN + u64::from(len);
         if self.offset > 0 && self.offset + record_len > self.limit {
             self.rotate(tx)?;
         }
-        let mut rec = Vec::with_capacity(frame.len() + HEADER_LEN as usize);
-        rec.extend_from_slice(MAGIC);
-        rec.extend_from_slice(&len.to_le_bytes());
-        rec.extend_from_slice(&hash);
-        rec.extend_from_slice(&frame);
+        let rec = stage!(PackWrite, {
+            let mut rec = Vec::with_capacity(frame.len() + HEADER_LEN as usize);
+            rec.extend_from_slice(MAGIC);
+            rec.extend_from_slice(&len.to_le_bytes());
+            rec.extend_from_slice(&hash);
+            rec.extend_from_slice(&frame);
+            rec
+        });
         // A rolled-back rotation must not leave records in a pack without a row.
-        tx.execute(
-            "INSERT OR IGNORE INTO packs (id, committed_len) VALUES (?1, 0)",
-            [self.id],
+        stage!(
+            SqlBodies,
+            tx.execute(
+                "INSERT OR IGNORE INTO packs (id, committed_len) VALUES (?1, 0)",
+                [self.id],
+            )
         )?;
-        if let Err(e) = self.write_record(&rec) {
+        if let Err(e) = stage!(PackWrite, self.write_record(&rec)) {
             // Drop the torn bytes so the next record lands at `self.offset`.
             let undone = self
                 .file
