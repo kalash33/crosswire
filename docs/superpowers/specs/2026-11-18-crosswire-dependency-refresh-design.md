@@ -23,7 +23,7 @@ PR #33 (`b5f8b3d`, commits `da0b7bc`, `87905f1`, `8b07824`) shipped, for CVE-202
 |---|---|---|---|---|
 | ulid | 1.2.1 | 3.0.0 | none | model, store, proxy, api, tools, server, recorder-tests (33 `Ulid::new()` sites in 15 files) |
 | sha2 | 0.10.9 | 0.11.1 | 1.88 | ca, store, proxy, api, tools, server(dev) |
-| webpki-roots | 0.26.11 (shim over 1.0.10) | 1.0.12 | 1.71 | client, proxy(dev) |
+| webpki-roots | 0.26.11 (shim over 1.0.10) | 1.0.12 available; 1.0.10 locked (Dependabot takes patches) | 1.71 | client, proxy(dev) |
 | rand | 0.9.5 | 0.10.4 | 1.85 | api, store, server |
 | tower-http | 0.6.11 | 0.7.1 | 1.65 | api (`TraceLayer` only, `app.rs:239`) |
 | base64 | 0.22.1 | 0.23.1 | 1.71 | api, proxy, store, server |
@@ -39,7 +39,7 @@ PR #33 (`b5f8b3d`, commits `da0b7bc`, `87905f1`, `8b07824`) shipped, for CVE-202
   - `Ulid::new()` → `Ulid::generate()`, 33 sites in 15 files.
   - rand: `use rand::{Rng, SeedableRng}` → `use rand::{RngExt, SeedableRng}` in `crates/crosswire-store/src/synthetic.rs:33` and `tests/perf_ingest.rs:33`; `use rand::RngCore` → `use rand::Rng` in `crates/crosswire-server/src/ui.rs:27` (`fill_bytes` on `rand::rng()`).
   - sha2, webpki-roots, tower-http, base64, dirs, criterion and rusqlite 0.43 needed none.
-- Trial lockfile delta: `sha2 0.10.9` and `webpki-roots 0.26.11` leave the graph; `ulid 3.0.0`, `alloca`, `page_size` and `winapi*` (criterion 0.8) are added; `libsqlite3-sys 0.39.1 → 0.40.0`; `hermit-abi` and `is-terminal` leave. `cargo tree -e features -i base64@0.23.1` shows no `simd-unsafe`.
+- Trial lockfile delta: `sha2 0.10.9` and `webpki-roots 0.26.11` leave the graph; `ulid 3.0.0`, `alloca`, `page_size` and `winapi*` (criterion 0.8) are added; `libsqlite3-sys 0.39.1 → 0.40.0` (trial only; not taken, Task 9 was skipped); `hermit-abi` and `is-terminal` leave. `cargo tree -e features -i base64@0.23.1` shows no `simd-unsafe`.
 - Duplicates left after the refresh (allowed): `ulid 1.2.1` only inside the `utoipa-gen` proc-macro (its `ulid` feature needs `ulid ^1`); `base64 0.22` through axum; `rand 0.9` through tungstenite; `digest`/`block-buffer`/`crypto-common 0.10` through `sha1` (axum ws).
 - Proofs that already exist: `opens_0_1_0_project` (it pins every exchange's ULID text, JSON SHA-256 and body SHA-256 written by 0.1.0, including the relay capture inside the stored JSON); `offset_above_i64_max_is_refused`; `preview_token.rs:286,295` (HMAC-SHA-256 RFC 4231 vectors); `crosswire-model/tests/fixtures/exchange.v2.json`; `crosswire-api/tests/openapi.rs::openapi_snapshot_is_current`; the store EXPLAIN-QUERY-PLAN tests. **Missing:** a plain SHA-256 known-answer test (`capture.rs` unit tests compare against `sha2` itself), a ULID text test against its parts, and any check on the root store.
 
@@ -74,7 +74,7 @@ New tests land in **Task 0** and pass on today's dependencies, so a failure afte
   - Existing: RFC 4231 vectors in `preview_token.rs`, and G1's pinned hashes.
 - **G6. The ULID text form is frozen** (D8). New `crates/crosswire-model/tests/ulid_text.rs`:
   - `Ulid::from_parts(1_469_918_176_385, 0).to_string() == "01ARYZ6S410000000000000000"`, and `from_parts(…, u128::MAX >> 48)` formats to a pinned string (computed on ulid 1).
-  - `from_string` accepts lowercase and refuses `I`, `L`, `O`, `U`, 25 and 27 characters, and 25- and 27-character input. It does NOT refuse a first character above `7`: both ulid 1.2.1 and 3.0.0 drop the overflow bits, so `80000000000000000000000000` parses as the nil id (pinned as is in `ulid_text.rs`). Crosswire's own boundaries reject such aliases (`fix(api): reject non-canonical ULID text`).
+  - `from_string` accepts lowercase and refuses `I`, `L`, `O`, `U`, and 25- and 27-character input. It does NOT refuse a first character above `7`: both ulid 1.2.1 and 3.0.0 drop the overflow bits, so `80000000000000000000000000` parses as the nil id (pinned as is in `ulid_text.rs`). Crosswire's own boundaries reject such aliases (`fix(api): reject non-canonical ULID text`).
   - `Ulid::nil().to_string() == "00000000000000000000000000"` and `ulid::ULID_LEN == 26`.
   - `from_parts(t + 1, 0) > from_parts(t, u128::MAX >> 48)` (keyset ordering, `docs/format.md`).
   - It uses only `from_parts`/`from_string`/`nil`, none of which needs ulid's `std` feature, so it compiles unchanged on ulid 1 and 3.
