@@ -456,7 +456,7 @@ impl Handler for Intercept {
                 }
                 (r.overflow, r.on_timeout)
             };
-            let id = Ulid::new();
+            let id = Ulid::generate();
             let (tx, rx) = oneshot::channel();
             let held = Held {
                 id,

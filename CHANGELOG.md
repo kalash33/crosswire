@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Dependency refresh (minor and major upgrades that Dependabot does not take):
+  - `ulid` 1.2.1 → 3.0.0 (`Ulid::new()` is now `Ulid::generate()`; the text
+    form is unchanged).
+  - `sha2` 0.10.9 → 0.11.1.
+  - `rand` 0.9.5 → 0.10.4.
+  - `tower-http` 0.6.11 → 0.7.1.
+  - `base64` 0.22.1 → 0.23.1, with `default-features = false` and `std`.
+  - `dirs` 6.0.0 → 7.0.0.
+  - `webpki-roots` 0.26.11 → 1 (locked 1.0.10, the same 120 trust anchors).
+  - `criterion` (dev) 0.5.1 → 0.8.2.
+  - `rust-embed` 8.13.0 → 8.14.0 and `rustls-pki-types` 1.15.1 → 1.16.0
+    (lockfile only).
+  - Bundled SQLite stays 3.54.1 (`rusqlite` stays 0.41). No project-format
+    or API-shape change, and ids are still written the same way; 0.1.0 and
+    0.1.1 projects open unchanged.
+
+### Security
+
+- The API, the journal reader and the `token` CLI now reject non-canonical
+  ULID text. The `ulid` crate accepts a 26-character id whose first character
+  is above `7` by dropping the overflow bits, so one id had several spellings
+  (`80000000000000000000000000` parsed as the nil id). No consumer could be
+  exploited through this (storage keys and audit rows use the re-encoded id),
+  so this is hardening. Lowercase ids are still accepted.
+- `base64` 0.23 is taken with its default `simd-unsafe` engines off. Crosswire
+  decodes no bulk base64 on a hot path, so the SIMD engines would add `unsafe`
+  code it never calls.
+- Root-certificate store changes now arrive as `webpki-roots` patch updates
+  through Dependabot; see [Upstream trust store](SECURITY.md#upstream-trust-store).
+
 ## [0.1.1](https://github.com/kalash33/crosswire/compare/v0.1.0...v0.1.1) - 2026-11-17
 
 ### Added

@@ -26,7 +26,15 @@ impl Visitor<'_> for IdVisitor {
     }
 
     fn visit_str<E: Error>(self, v: &str) -> Result<Ulid, E> {
-        Ulid::from_string(v).map_err(E::custom)
+        let id = Ulid::from_string(v).map_err(E::custom)?;
+        // The ulid crate drops the bits past 128 when the first character
+        // is above `7`, so accept only the id's own text (either case).
+        let mut buf = [0u8; ulid::ULID_LEN];
+        if id.array_to_str(&mut buf).eq_ignore_ascii_case(v) {
+            Ok(id)
+        } else {
+            Err(E::custom("not a canonical ULID"))
+        }
     }
 }
 

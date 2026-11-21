@@ -30,7 +30,7 @@ use crosswire_model::{
 };
 use crosswire_store::{Project, Store, StoreConfig};
 use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};

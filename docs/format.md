@@ -41,6 +41,7 @@ excluded from exports and outside the record contract.
 - The project is opened with `SQLITE_DBCONFIG_DEFENSIVE` on and `trusted_schema = OFF`, so a hostile project file cannot run SQL functions from its schema or write to shadow tables.
 - One writer connection (the store's writer thread) and any number of read-only connections (`query_only = ON`, `busy_timeout = 5000`, `cache_size = -16384` (16 MiB), `mmap_size = 268435456` (256 MiB)). There is also at most one *control* connection per [`Control`](#control-tables-0002_sidecarsql) handle: a second write connection, hardened and configured like the writer's (WAL, `synchronous = NORMAL`, `busy_timeout = 5000`), used only for the small, rare writes to the `settings`, `tokens` and `drafts` tables and for patching an exchange's `tags`/`notes`. It never writes bodies or packs, so it never contends with the writer for long; the 5 s busy timeout lets it wait out a batch commit.
 - Migrations are in `crates/crosswire-store/migrations/` and run in one transaction that also sets `user_version`.
+- The format does not depend on the bundled SQLite version. A project written by a newer build is not promised to open in an older one.
 
 #### Migrations
 

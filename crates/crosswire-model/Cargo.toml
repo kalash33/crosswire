@@ -16,7 +16,7 @@ crosswire-core = { path = "../crosswire-core", default-features = false, feature
 crosswire-h1 = { path = "../crosswire-h1", default-features = false, features = ["serde"] }
 bytes = { version = "1", default-features = false }
 serde = { workspace = true }
-ulid = { version = "1", default-features = false }
+ulid = { version = "3", default-features = false }
 
 [features]
 default = ["std"]

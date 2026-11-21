@@ -126,7 +126,7 @@ fn token_create_list_revoke_lookup() {
     assert!(control.token_revoke(rec.id).unwrap());
     assert!(control.token_lookup(&hash).unwrap().is_none());
     assert!(!control.token_revoke(rec.id).unwrap());
-    assert!(!control.token_revoke(Ulid::new()).unwrap());
+    assert!(!control.token_revoke(Ulid::generate()).unwrap());
 
     // Still listed, now with revoked_at set.
     let list = control.token_list().unwrap();
@@ -158,7 +158,7 @@ fn drafts_round_trip() {
     let tmp = tempfile::tempdir().unwrap();
     let store = open(&tmp);
     let control = store.control().unwrap();
-    let tab = Ulid::new();
+    let tab = Ulid::generate();
     assert!(control.draft_get(tab).unwrap().is_none());
     control.draft_put(tab, r#"{"method":"GET"}"#).unwrap();
     assert_eq!(
@@ -170,7 +170,7 @@ fn drafts_round_trip() {
         control.draft_get(tab).unwrap().as_deref(),
         Some(r#"{"method":"POST"}"#)
     );
-    let tab2 = Ulid::new();
+    let tab2 = Ulid::generate();
     control.draft_put(tab2, "{}").unwrap();
     assert_eq!(control.draft_list().unwrap().len(), 2);
     assert!(control.draft_delete(tab).unwrap());
@@ -226,8 +226,8 @@ fn set_tags_and_notes_update_row_and_json() {
     assert_eq!(ex.notes(), "looks juicy");
 
     // A missing exchange returns false, not an error.
-    assert!(!control.exchange_set_notes(Ulid::new(), "x").unwrap());
-    assert!(!control.exchange_set_tags(Ulid::new(), &[]).unwrap());
+    assert!(!control.exchange_set_notes(Ulid::generate(), "x").unwrap());
+    assert!(!control.exchange_set_tags(Ulid::generate(), &[]).unwrap());
 
     // Clearing tags back to empty keeps the filter and get() consistent.
     assert!(control.exchange_set_tags(id, &[]).unwrap());

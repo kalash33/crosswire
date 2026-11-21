@@ -131,7 +131,7 @@ impl Exchange {
     #[cfg(feature = "std")]
     #[must_use]
     pub fn new(request: Message) -> Exchange {
-        Exchange::with_id(Ulid::new(), request)
+        Exchange::with_id(Ulid::generate(), request)
     }
 
     /// As [`Exchange::new`] with a caller-supplied id (for `no_std` callers,

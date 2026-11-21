@@ -196,7 +196,7 @@ mod tests {
     #[test]
     fn mint_then_verify_ok() {
         let key = fixed_key();
-        let ulid = Ulid::new();
+        let ulid = Ulid::generate();
         let now = SystemTime::now();
         let token = mint(&key, ulid, &body_hash(), now, Duration::from_secs(60));
         assert_eq!(verify(&key, ulid, &body_hash(), &token, now), Ok(()));
@@ -205,8 +205,8 @@ mod tests {
     #[test]
     fn verify_rejects_wrong_exchange() {
         let key = fixed_key();
-        let a = Ulid::new();
-        let b = Ulid::new();
+        let a = Ulid::generate();
+        let b = Ulid::generate();
         assert_ne!(a, b);
         let now = SystemTime::now();
         let token = mint(&key, a, &body_hash(), now, Duration::from_secs(60));
@@ -219,7 +219,7 @@ mod tests {
     #[test]
     fn verify_rejects_changed_body_hash() {
         let key = fixed_key();
-        let ulid = Ulid::new();
+        let ulid = Ulid::generate();
         let now = SystemTime::now();
         let token = mint(&key, ulid, &body_hash(), now, Duration::from_secs(60));
         let mut other = body_hash();
@@ -233,7 +233,7 @@ mod tests {
     #[test]
     fn verify_rejects_expired() {
         let key = fixed_key();
-        let ulid = Ulid::new();
+        let ulid = Ulid::generate();
         let minted_at = UNIX_EPOCH + Duration::from_secs(1_000);
         let token = mint(&key, ulid, &body_hash(), minted_at, Duration::from_secs(60));
         // The token expired at 1_060; check well after that.
@@ -249,7 +249,7 @@ mod tests {
     #[test]
     fn verify_rejects_tampered() {
         let key = fixed_key();
-        let ulid = Ulid::new();
+        let ulid = Ulid::generate();
         let now = SystemTime::now();
         let token = mint(&key, ulid, &body_hash(), now, Duration::from_secs(60));
         // Flip a byte in the base64url payload (the final MAC region).
@@ -265,7 +265,7 @@ mod tests {
 
     #[test]
     fn wrong_key_rejected() {
-        let ulid = Ulid::new();
+        let ulid = Ulid::generate();
         let now = SystemTime::now();
         let token = mint(
             &fixed_key(),

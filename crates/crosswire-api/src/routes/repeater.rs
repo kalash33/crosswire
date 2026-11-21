@@ -193,7 +193,7 @@ pub async fn send_request(
         }
     };
     let req = SendRequest {
-        tab: Ulid::new(),
+        tab: Ulid::generate(),
         source,
         host: body.host,
         port: body.port,

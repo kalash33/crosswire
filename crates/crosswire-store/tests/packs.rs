@@ -35,7 +35,7 @@ fn add_exchange(tx: &rusqlite::Transaction, ulid: Ulid) {
 }
 
 fn put_one(p: &mut Project, store: &mut BodyStore, raw: &[u8]) -> Ulid {
-    let id = Ulid::new();
+    let id = Ulid::generate();
     let tx = p.writer_mut().transaction().unwrap();
     add_exchange(&tx, id);
     store.put(&tx, id, BodySide::Resp, raw).unwrap();
@@ -199,7 +199,7 @@ fn plant(p: &mut Project, raw_declared: &[u8], hash_of: &[u8], ulid: Ulid) {
 fn decompression_bomb_refused() {
     let (_t, mut p) = setup();
     let _store = BodyStore::new(PackWriter::open(&mut p).unwrap());
-    let id = Ulid::new();
+    let id = Ulid::generate();
     // 65 MiB of zeros: tiny frame, content size over the 64 MiB cap.
     let big = vec![0u8; 65 * 1024 * 1024];
     plant(&mut p, &big, &big, id);
@@ -217,7 +217,7 @@ fn high_ratio_frame_under_the_size_cap_reads_back() {
     // No ratio limit on packs: memory is bounded by the 64 MiB declared size.
     let (_t, mut p) = setup();
     let _store = BodyStore::new(PackWriter::open(&mut p).unwrap());
-    let id = Ulid::new();
+    let id = Ulid::generate();
     let big = vec![0u8; 8 * 1024 * 1024];
     plant(&mut p, &big, &big, id);
     let got = BodyStore::get(&p.reader().unwrap(), p.dir(), id, BodySide::Resp)
@@ -230,7 +230,7 @@ fn high_ratio_frame_under_the_size_cap_reads_back() {
 fn frame_without_content_size_refused() {
     let (_t, mut p) = setup();
     let _store = BodyStore::new(PackWriter::open(&mut p).unwrap());
-    let id = Ulid::new();
+    let id = Ulid::generate();
     let raw = noise(20 * 1024, 6);
     // Stream-compress: the frame header omits the content size.
     let mut enc = zstd::Encoder::new(Vec::new(), 3).unwrap();
@@ -273,7 +273,7 @@ fn torn_tail_recovery() {
     let bodies: Vec<Vec<u8>> = (0..4)
         .map(|i| noise(20 * 1024 + i, 10 + i as u64))
         .collect();
-    let ids: Vec<Ulid> = (0..4).map(|_| Ulid::new()).collect();
+    let ids: Vec<Ulid> = (0..4).map(|_| Ulid::generate()).collect();
 
     // Three committed bodies, fsynced, committed_len advanced.
     let tx = p.writer_mut().transaction().unwrap();
@@ -628,7 +628,7 @@ fn offset_above_i64_max_is_refused() {
 
     // The dedupe path reads the offset back as a u64.
     let tx = p.writer_mut().transaction().unwrap();
-    let b = Ulid::new();
+    let b = Ulid::generate();
     add_exchange(&tx, b);
     match store.put(&tx, b, BodySide::Resp, &body) {
         Err(StoreError::Sqlite(rusqlite::Error::IntegralValueOutOfRange(1, -1))) => {}
@@ -644,4 +644,42 @@ fn offset_above_i64_max_is_refused() {
         BodySide::Resp,
     ));
     assert!(msg.contains("out of range"), "{msg}");
+}
+
+/// Lowercase hex, written out here so the check does not go through `sha2`.
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// `blobs.hash` is the FIPS 180-4 SHA-256 of the raw body (spec G5). Bodies
+/// over 16 KiB go to a pack, so this stores 20 KiB of `0x61` (`a`) and
+/// compares the stored key with a digest computed outside Rust, once, with
+/// `head -c 20480 /dev/zero | tr '\0' a | shasum -a 256`. A `sha2` upgrade
+/// that changed a digest would orphan every pack blob of an existing project.
+#[test]
+fn blob_hash_is_fips_sha256() {
+    const WANT: &str = "6fce34365dc8c8a013cba32ea322f4b3e7ddef3a0a27f3b28f165c8deb70b0c3";
+    let (_t, mut p) = setup();
+    let mut store = BodyStore::new(PackWriter::open(&mut p).unwrap());
+    let body = vec![0x61u8; 20 * 1024];
+    let a = put_one(&mut p, &mut store, &body);
+    let c = p.writer_mut();
+    let blob: Vec<u8> = c
+        .query_row("SELECT hash FROM blobs", [], |r| r.get(0))
+        .unwrap();
+    let body_ref: Vec<u8> = c
+        .query_row(
+            "SELECT blob_hash FROM bodies WHERE ulid = ?1",
+            [a.to_string()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(hex(&blob), WANT);
+    assert_eq!(hex(&body_ref), WANT);
+    assert_eq!(
+        BodyStore::get(&p.reader().unwrap(), p.dir(), a, BodySide::Resp)
+            .unwrap()
+            .unwrap(),
+        body
+    );
 }

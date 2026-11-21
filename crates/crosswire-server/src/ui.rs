@@ -24,7 +24,7 @@ use axum::http::{header, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use base64::Engine as _;
 use crosswire_api::ApiError;
-use rand::RngCore;
+use rand::Rng;
 use rust_embed::RustEmbed;
 
 /// The embedded UI bundle (the committed copy of `ui/dist/`).
