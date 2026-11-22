@@ -38,8 +38,9 @@
 //! median of the runs must reach 2,000/s and every run 1,800/s (the §13 target;
 //! the M2 measures a median of about 3,300/s, see `bench/README.md`). Take it on
 //! the reference machine (AC power, Low Power Mode off, cool). Without the env
-//! var only a gross-regression floor (release builds), the body mix and the run
-//! validity are asserted, so a slower host does not flake.
+//! var only a gross-regression floor of 1,600/s (release builds, about 80% of the
+//! target), the body mix and the run validity are asserted: a plain release run
+//! on a slower host than the reference machine can fail the floor.
 //!
 //! Two probes print report-only lines in release builds: `SUMMARY sha256`
 //! (SHA-256 MB/s, and whether the aarch64 SHA2 instructions appear to be in

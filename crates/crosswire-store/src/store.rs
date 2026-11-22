@@ -27,7 +27,7 @@ pub struct StoreConfig {
     /// Most exchanges per batch (1,000).
     pub batch_max: usize,
     /// Queued bytes (as counted against `queue_bytes_max`) at which a batch
-    /// closes early, before `batch_interval` or `batch_max` (16 MiB). It only
+    /// closes early, before `batch_interval` or `batch_max` (32 MiB). It only
     /// ever makes a batch smaller, so the loss window stays within
     /// `batch_interval` / `batch_max`; it lets the writer start on byte-heavy
     /// traffic instead of waiting out the timer while the queue is full.

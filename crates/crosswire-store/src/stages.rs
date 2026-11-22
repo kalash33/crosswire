@@ -44,7 +44,7 @@ mod timing {
     pub enum Stage {
         /// (a) `SELECT 1 FROM exchanges WHERE ulid = ?`.
         Exists,
-        /// (b) Building the row JSON: `to_value(ex)` (bodies base64-encoded),
+        /// (b) Building the row JSON: `to_value(ex)` (0.1.1 base64-encoded the bodies here; 0.1.2 no longer does),
         /// the `state`/`blob` swaps and `to_string`.
         Json,
         /// (d) SHA-256 of a pack body in `BodyStore::put` (the dedup key).

@@ -133,8 +133,8 @@ bench:
 #
 # Also runs the proxy gates ASSERTING (CROSSWIRE_PERF_ASSERT=1, --release):
 # added-latency p50 < 2 ms and MITM throughput >= 5000 req/s. The store ingest
-# line here is a single 3 s report-only run; the §13 ingest gate (met in 0.1.2,
-# ADR-0007) is the 3 x 10 s invocation in bench/README.md. The UI
+# line here is the asserting §13 gate (3 x 10 s, met in 0.1.2, ADR-0007; see
+# bench/README.md); run it on the reference machine only. The UI
 # frame/filter step is asserting at <= 100k rows and report-only above; it
 # needs Playwright's chromium and defaults to 100k rows
 # (CROSSWIRE_UI_PERF_ROWS=1000000 for the full, report-only size). Read the
