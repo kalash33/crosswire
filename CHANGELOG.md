@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2](https://github.com/kalash33/crosswire/compare/v0.1.1...v0.1.2) - 2026-11-22
+
+### Fixed
+
+- *(api)* reject non-canonical ULID text
+
+### Internal
+
+- *(deps)* upgrade rand to 0.10
+
 ### Changed
 
 - Dependency refresh (minor and major upgrades that Dependabot does not take):
