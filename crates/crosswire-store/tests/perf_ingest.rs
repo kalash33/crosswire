@@ -34,11 +34,12 @@
 //! `STAGES` table of the writer's time per stage (spec §3.3); the asserted
 //! numbers always come from a build without the feature.
 //!
-//! REPORT-ONLY for now: the rate is printed, not yet asserted against
-//! 2,000/s (the M2 measures a median of about 3,300/s at the §13 mix; see
-//! `bench/README.md`). Only a gross-regression floor (release builds), the body
-//! mix and the run validity are asserted. `CROSSWIRE_PERF_ASSERT` changes
-//! nothing here yet.
+//! ASSERTING under `CROSSWIRE_PERF_ASSERT=1` in release on the s13 mix: the
+//! median of the runs must reach 2,000/s and every run 1,800/s (the §13 target;
+//! the M2 measures a median of about 3,300/s, see `bench/README.md`). Take it on
+//! the reference machine (AC power, Low Power Mode off, cool). Without the env
+//! var only a gross-regression floor (release builds), the body mix and the run
+//! validity are asserted, so a slower host does not flake.
 //!
 //! Two probes print report-only lines in release builds: `SUMMARY sha256`
 //! (SHA-256 MB/s, and whether the aarch64 SHA2 instructions appear to be in
@@ -82,11 +83,20 @@ const IN_FLIGHT: u64 = 9000;
 /// flight; the default queue holds 64 MiB, and past that `submit` spills to a
 /// fsynced journal file, which is a different (slow) path than the one measured.
 const IN_FLIGHT_BYTES: u64 = 56 * MIB as u64;
-/// A gross-regression guard, NOT the §13 2,000/s target. It was set ~2.3x
-/// below the 0.1.0 measurement (~700/s on the M2); the rate there is now about
-/// 3,300/s (see `bench/README.md`), so this floor only catches a collapse and
-/// does not flake on slower hosts.
-const GROSS_FLOOR_RATE: f64 = 300.0;
+/// A gross-regression guard, NOT the §13 2,000/s target: half the 0.1.2 median
+/// on the M2 (about 3,300/s, see `bench/README.md`), rounded down to a hundred.
+const GROSS_FLOOR_RATE: f64 = 1600.0;
+/// The §13 ingest target, asserted under `CROSSWIRE_PERF_ASSERT=1`.
+const TARGET_MEDIAN_RATE: f64 = 2000.0;
+/// Every single run must reach this under `CROSSWIRE_PERF_ASSERT=1`.
+const TARGET_MIN_RATE: f64 = 1800.0;
+/// SHA-256 must run on the hardware backend on aarch64 (guards a silent
+/// regression to software SHA, which is several times slower).
+const MIN_SHA256_MB_PER_S: f64 = 1000.0;
+
+fn perf_assert() -> bool {
+    std::env::var("CROSSWIRE_PERF_ASSERT").is_ok_and(|v| v == "1")
+}
 
 /// The body-size mix one run draws from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -304,13 +314,25 @@ fn ingest_at_least_2k_per_sec() {
         rates.push(run_once(run, &k));
     }
     let list: Vec<String> = rates.iter().map(|r| format!("{r:.0}")).collect();
-    println!(
-        "SUMMARY ingest-gate mix={} median={:.0} min={:.0} runs={}",
-        k.mix.name(),
+    let (med, min) = (
         median(&rates),
         rates.iter().copied().fold(f64::INFINITY, f64::min),
+    );
+    println!(
+        "SUMMARY ingest-gate mix={} median={med:.0} min={min:.0} runs={}",
+        k.mix.name(),
         list.join("/"),
     );
+    if perf_assert() && !cfg!(debug_assertions) && k.mix == Mix::S13 {
+        assert!(
+            med >= TARGET_MEDIAN_RATE,
+            "median ingest {med:.0}/s is below the {TARGET_MEDIAN_RATE}/s §13 target"
+        );
+        assert!(
+            min >= TARGET_MIN_RATE,
+            "slowest run {min:.0}/s is below the {TARGET_MIN_RATE}/s per-run floor"
+        );
+    }
 }
 
 /// One run on a fresh project; returns the committed rate.
@@ -471,7 +493,7 @@ fn run_once(run: usize, k: &Knobs) -> f64 {
     );
 
     // Debug builds (zstd, SHA-256) are far slower; the floor is meaningful in
-    // release only. The rate itself is never asserted against 2,000/s.
+    // release only. The §13 rate is asserted over all runs by the caller.
     if !cfg!(debug_assertions) {
         assert!(
             rate >= GROSS_FLOOR_RATE,
@@ -578,10 +600,15 @@ fn sha256_backend_throughput() {
     println!();
     println!(
         "SUMMARY sha256 arch={arch} cpu_sha2={cpu_sha2} mb_per_s={mb_per_s:.0} \
-         backend={backend} bytes={} secs={secs:.2} (report-only; hw expected >= 1000 \
-         MB/s on aarch64)",
+         backend={backend} bytes={} secs={secs:.2} (hw expected >= 1000 MB/s on aarch64)",
         u64::from(PASSES) * 64 * MIB as u64,
     );
+    if perf_assert() && cfg!(target_arch = "aarch64") {
+        assert!(
+            mb_per_s >= MIN_SHA256_MB_PER_S,
+            "SHA-256 runs at {mb_per_s:.0} MB/s: the hardware backend is not active"
+        );
+    }
 }
 
 /// What building the row JSON costs per body byte today: `to_value` of an

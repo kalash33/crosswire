@@ -143,7 +143,7 @@ perf:
     scripts/perf-gate.sh 1000000 50 500 500
     CROSSWIRE_PERF_ASSERT=1 cargo test --locked --release -p crosswire-proxy --test perf_added_latency -- --nocapture
     CROSSWIRE_PERF_ASSERT=1 cargo test --locked --release -p crosswire-proxy --test perf_throughput -- --nocapture --test-threads=1
-    cargo test --locked --release -p crosswire-store --test perf_ingest -- --nocapture
+    CROSSWIRE_PERF_ASSERT=1 CROSSWIRE_INGEST_RUNS=3 CROSSWIRE_INGEST_WINDOW_SECS=10 cargo test --locked --release -p crosswire-store --test perf_ingest -- --nocapture --test-threads=1
     scripts/ui-perf.sh
     @echo "Compare the SUMMARY lines above with the committed baselines and ledger: bench/README.md"
 
