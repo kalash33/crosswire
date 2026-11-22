@@ -133,7 +133,8 @@ bench:
 #
 # Also runs the proxy gates ASSERTING (CROSSWIRE_PERF_ASSERT=1, --release):
 # added-latency p50 < 2 ms and MITM throughput >= 5000 req/s. The store ingest
-# gate runs REPORT-ONLY (a known gap vs the spec §13 target, ADR-0006). The UI
+# line here is the asserting §13 gate (3 x 10 s, met in 0.1.2, ADR-0007; see
+# bench/README.md); run it on the reference machine only. The UI
 # frame/filter step is asserting at <= 100k rows and report-only above; it
 # needs Playwright's chromium and defaults to 100k rows
 # (CROSSWIRE_UI_PERF_ROWS=1000000 for the full, report-only size). Read the
@@ -142,7 +143,7 @@ perf:
     scripts/perf-gate.sh 1000000 50 500 500
     CROSSWIRE_PERF_ASSERT=1 cargo test --locked --release -p crosswire-proxy --test perf_added_latency -- --nocapture
     CROSSWIRE_PERF_ASSERT=1 cargo test --locked --release -p crosswire-proxy --test perf_throughput -- --nocapture --test-threads=1
-    cargo test --locked --release -p crosswire-store --test perf_ingest -- --nocapture
+    CROSSWIRE_PERF_ASSERT=1 CROSSWIRE_INGEST_RUNS=3 CROSSWIRE_INGEST_WINDOW_SECS=10 cargo test --locked --release -p crosswire-store --test perf_ingest -- --nocapture --test-threads=1
     scripts/ui-perf.sh
     @echo "Compare the SUMMARY lines above with the committed baselines and ledger: bench/README.md"
 

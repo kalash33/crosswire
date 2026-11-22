@@ -750,8 +750,11 @@ impl Message {
         self
     }
 
-    /// Replaces the body (used by redaction, which scrubs inline body bytes).
-    pub(crate) fn with_body(mut self, body: Body) -> Message {
+    /// Replaces the body. Redaction uses it to scrub inline body bytes, and
+    /// the store to swap an inline body for its [`Body::Blob`] reference
+    /// before it serialises the stored row.
+    #[must_use]
+    pub fn with_body(mut self, body: Body) -> Message {
         self.body = body;
         self
     }

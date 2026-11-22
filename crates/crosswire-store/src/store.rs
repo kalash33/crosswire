@@ -26,6 +26,12 @@ pub struct StoreConfig {
     pub batch_interval: Duration,
     /// Most exchanges per batch (1,000).
     pub batch_max: usize,
+    /// Queued bytes (as counted against `queue_bytes_max`) at which a batch
+    /// closes early, before `batch_interval` or `batch_max` (32 MiB). It only
+    /// ever makes a batch smaller, so the loss window stays within
+    /// `batch_interval` / `batch_max`; it lets the writer start on byte-heavy
+    /// traffic instead of waiting out the timer while the queue is full.
+    pub batch_bytes_max: usize,
     /// Most exchanges waiting in the queue (10,000).
     pub queue_max: usize,
     /// Most bytes waiting in the queue (64 MiB); an exchange costs its
@@ -88,6 +94,7 @@ impl Default for StoreConfig {
         StoreConfig {
             batch_interval: Duration::from_millis(250),
             batch_max: 1000,
+            batch_bytes_max: 32 * MIB,
             queue_max: 10_000,
             queue_bytes_max: 64 * MIB,
             checkpoint_interval: Duration::from_secs(30),
@@ -188,6 +195,16 @@ impl Store {
             report,
             readers: Mutex::new(Vec::new()),
         })
+    }
+
+    /// The writer stage timers so far. They are process-wide (every store's
+    /// writer adds to them), so take one snapshot before a run and use
+    /// [`crate::StageSnapshot::since`] after it. Feature `stage-timing` only.
+    #[cfg(feature = "stage-timing")]
+    #[doc(hidden)]
+    #[must_use]
+    pub fn stage_times(&self) -> crate::StageSnapshot {
+        crate::stages::snapshot()
     }
 
     /// What [`Store::open`] did: sweep, replay, unclean-restart marker, and

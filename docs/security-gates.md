@@ -138,15 +138,15 @@ preview token).
 Two of the §13 performance targets were **not met at 0.1.0** and shipped
 **REPORT-ONLY** ([ADR-0006](adr/0006-performance-gates-0-1-0.md)). In 0.1.1 the
 History list is virtualised and the UI frame/filter gate **asserts** at 100k
-rows in CI; ingest stays REPORT-ONLY (it prints a `SUMMARY` line and asserts
-only gross-regression floors). The harness wiring is in
+rows in CI. In 0.1.2 the ingest target is met on the reference machine
+([ADR-0007](adr/0007-ingest-batching-and-hashing.md)). The harness wiring is in
 [bench/README.md](../bench/README.md). Numbers are from the
 reference maintainer machine (MacBook Air M2, 8 GiB, macOS), release builds,
 headless Chromium.
 
 | §13 target | Harness | Measured | Status |
 |---|---|---|---|
-| Ingest >= 2,000 exchanges/s at the 60/30/9/1 body mix | `crosswire-store/tests/perf_ingest.rs` (`just perf`) | about 700/s (about 65 MB/s of bodies) | **REPORT-ONLY, target not met.** Asserts only the body mix and a 300/s floor |
+| Ingest >= 2,000 exchanges/s at the 60/30/9/1 body mix (the 1 % bucket 1-8 MiB uniform) | `crosswire-store/tests/perf_ingest.rs` (`CROSSWIRE_PERF_ASSERT=1 CROSSWIRE_INGEST_RUNS=3 CROSSWIRE_INGEST_WINDOW_SECS=10`, release, `--test-threads=1`) | 0.1.2, 3 x 10 s on a cool machine (AC power, Low Power Mode off): 3023 / 3482 / 3295/s, median 3295, 314-361 MB/s. Before (0.1.1 writer on `sha2` 0.11): median 924/s; 0.1.0: about 700/s | **Met** (gate: median of 3 >= 2,000, every run >= 1,800, M2 only). MB/s, the `typical` mix and the Linux VM are report-only; the body mix, run validity and a 300/s floor always assert |
 | UI: no frame > 32 ms over a 10 s scroll | `ui/e2e/perf-scroll.spec.ts` (`just ui-perf`, `scripts/ui-perf.sh`, seeded by `crosswire-store/examples/seed_project.rs`; CI `ui-perf` job on ubuntu; one retry of the whole measurement on the same serve and session, a retried pass reported as `flaky`) | 0.1.1 virtualised list, 100k rows, 5 local runs: max frame 16.8 ms in all (no frame over 32 ms), p99 16.8 ms; DOM rows 37 against a bound of 50 (2 x 21 visible + 8); 35 auto-loaded pages, 3,600 rows. An earlier round without the settle-before-measure step had one run with a single 33.3 ms frame. Before (0.1.0, not virtualised): max 200 ms | **ASSERTED** at 100k: max frame <= 32 ms, DOM rows <= 2 x visible + OVERSCAN, pages loaded >= 1, rows loaded >= 1,000. 1M stays report-only (maintainer) |
 | UI: filter applied in < 300 ms | same | 10 to 27 ms (5 runs); one 194 ms outlier in an earlier round | **ASSERTED** at 100k (< 300 ms) |
 | Peak anonymous RSS < 500 MB at 1M rows | `crosswire-store/benches/history.rs` via `scripts/perf-gate.sh` | 21 MB | met, asserted at 1M by `just perf` |
@@ -155,6 +155,10 @@ headless Chromium.
 The 0.1.0 frame miss had one cause: the History table was not virtualised, so
 every loaded row stayed in the DOM (about 3.8k rows at 100k). 0.1.1 renders only
 the rows in view plus 8 above and below, and the gate asserts the spec's
-acceptance bound on it (2 x visible + 8). The
-ingest miss is body-volume bound on the single writer thread and is still
-REPORT-ONLY; it is re-specified separately, not by lowering the target quietly.
+acceptance bound on it (2 x visible + 8). The 0.1.0 ingest miss was mostly
+batching, not CPU: at about 106 KB per exchange the 64 MiB queue holds fewer
+exchanges than the 1,000-exchange batch trigger, so batches waited out the
+250 ms timer and the writer sat idle about half the time. 0.1.2 closes a batch
+at 32 MiB of queued bytes, stops building a discarded base64 JSON copy of each
+body and hashes each pack body once, with no format change and the same
+durability; the target was not lowered (ADR-0007).

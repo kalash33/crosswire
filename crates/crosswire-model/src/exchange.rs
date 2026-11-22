@@ -210,6 +210,11 @@ impl Exchange {
         self.response = Some(response);
     }
 
+    /// Replaces the request.
+    pub fn set_request(&mut self, request: Message) {
+        self.request = request;
+    }
+
     /// Sets the timings.
     pub fn set_timing(&mut self, timing: Timing) {
         self.timing = timing;

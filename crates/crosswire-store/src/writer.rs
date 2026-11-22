@@ -323,17 +323,22 @@ impl Writer {
     }
 
     /// Waits up to `batch_interval` for a first message, then collects until
-    /// `batch_max` exchanges or `batch_interval` after the first. Markers
-    /// go to `self.markers` and ride along with the batch.
+    /// `batch_max` exchanges, `batch_bytes_max` queued bytes, or
+    /// `batch_interval` after the first. Markers go to `self.markers` and
+    /// ride along with the batch.
     fn collect(&mut self, rx: &Receiver<Msg>, stop: &mut Option<Stop>) -> Vec<Item> {
         // Clamped so `Instant + interval` cannot overflow.
         let interval = self.cfg.batch_interval.min(Duration::from_secs(86_400));
         let mut batch = Vec::new();
+        let mut bytes = 0usize;
         let mut next = rx.recv_timeout(interval);
         let deadline = Instant::now() + interval;
         loop {
             match next {
-                Ok(Msg::Exchange(ex, size)) => batch.push(Item::queued(*ex, size)),
+                Ok(Msg::Exchange(ex, size)) => {
+                    bytes = bytes.saturating_add(size);
+                    batch.push(Item::queued(*ex, size));
+                }
                 Ok(Msg::Marker(m, size)) => self.markers.push((*m, size)),
                 Ok(Msg::Stop(s)) => {
                     *stop = Some(s);
@@ -345,7 +350,8 @@ impl Writer {
                     break;
                 }
             }
-            if batch.len() >= self.cfg.batch_max.max(1) {
+            if batch.len() >= self.cfg.batch_max.max(1) || bytes >= self.cfg.batch_bytes_max.max(1)
+            {
                 break;
             }
             let now = Instant::now();
@@ -492,11 +498,11 @@ impl Writer {
             if items.is_empty() && gap.is_none() && self.markers.is_empty() {
                 return removed;
             }
-            match self.try_commit(&items, gap) {
+            match stage!(Batch, self.try_commit(&items, gap)) {
                 Ok(done) => {
                     self.backoff = None;
                     self.failing = false;
-                    return removed + self.after_commit(items, done);
+                    return removed + stage!(AfterCommit, self.after_commit(items, done));
                 }
                 Err(err) => {
                     // The pack writer may have appended past what the database
@@ -643,21 +649,27 @@ impl Writer {
             return Err(CommitError::Db(StoreError::Closed));
         };
         // (1) BEGIN IMMEDIATE.
-        let tx = project
-            .writer_mut()
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let tx = stage!(
+            SqlBatch,
+            project
+                .writer_mut()
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+        )?;
         // (2) A pending gap: from the earliest lost id to now; then the
         // markers submitted through the sink (a repeated id is skipped).
         let mut markers = Vec::new();
         if let Some(from) = gap {
-            markers.push(insert_gap(
-                &tx,
-                Some(from),
-                "exchanges were dropped: the queue and journal were full or unwritable",
+            markers.push(stage!(
+                SqlBatch,
+                insert_gap(
+                    &tx,
+                    Some(from),
+                    "exchanges were dropped: the queue and journal were full or unwritable",
+                )
             )?);
         }
         for (marker, _) in submitted.iter() {
-            if insert_marker(&tx, marker, true)? > 0 {
+            if stage!(SqlBatch, insert_marker(&tx, marker, true))? > 0 {
                 markers.push(marker.clone());
             }
         }
@@ -666,14 +678,16 @@ impl Writer {
         let mut ids = Vec::with_capacity(items.len());
         for (i, item) in items.iter().enumerate() {
             let id = item.ex.id();
-            let exists = tx
-                .query_row(
+            let exists = stage!(
+                Exists,
+                tx.query_row(
                     "SELECT 1 FROM exchanges WHERE ulid = ?1",
                     [id.to_string()],
                     |_| Ok(()),
                 )
-                .optional()?
-                .is_some();
+                .optional()
+            )?
+            .is_some();
             // (3) Bodies and the row; a replayed or repeated id is already stored.
             if !exists {
                 #[cfg(test)]
@@ -705,21 +719,27 @@ impl Writer {
         // (4) Advance last_committed_ulid (ULID order; never backwards) and
         // record the watermark gap markers start from after a crash.
         if let Some(max) = ids.iter().max() {
-            tx.execute(
-                "UPDATE meta SET value = ?1 WHERE key = 'last_committed_ulid' AND value < ?1",
-                [max.to_string()],
+            stage!(
+                SqlBatch,
+                tx.execute(
+                    "UPDATE meta SET value = ?1 WHERE key = 'last_committed_ulid' AND value < ?1",
+                    [max.to_string()],
+                )
             )?;
         }
-        tx.execute(
-            "INSERT INTO meta (key, value) VALUES ('last_commit_watermark', ?1) \
-             ON CONFLICT (key) DO UPDATE SET value = excluded.value",
-            [watermark.to_string()],
+        stage!(
+            SqlBatch,
+            tx.execute(
+                "INSERT INTO meta (key, value) VALUES ('last_commit_watermark', ?1) \
+                 ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+                [watermark.to_string()],
+            )
         )?;
         if !touched.is_empty() {
             // (5) The pack bytes are durable before anything references them.
-            bodies.fsync()?;
+            stage!(Fsync, bodies.fsync())?;
             for (pack, len) in &touched {
-                Project::set_pack_committed_len(&tx, *pack, *len)?;
+                stage!(SqlBatch, Project::set_pack_committed_len(&tx, *pack, *len))?;
             }
         }
         #[cfg(test)]
@@ -732,7 +752,7 @@ impl Writer {
             )));
         }
         // (6) COMMIT.
-        tx.commit()?;
+        stage!(Commit, tx.commit())?;
         Ok(Committed { ids, markers })
     }
 
@@ -875,7 +895,6 @@ fn insert_exchange(
     touched: &mut BTreeMap<u32, u64>,
 ) -> Result<(), StoreError> {
     let id = ex.id();
-    let mut json = serde_json::to_value(ex)?;
     // A stored exchange is `committed`, unless its producer marked it
     // `error` (a relay that failed part way): that state is kept, so the
     // `state` filter and `Counts.error` find it.
@@ -884,23 +903,17 @@ fn insert_exchange(
     } else {
         ExchangeState::Committed
     };
-    set_field(&mut json, "/state", serde_json::to_value(state)?)?;
+    let mut hashes: [Option<[u8; 32]>; 2] = [None, None];
     let sides = [
-        (BodySide::Req, Some(ex.request()), "/request/body"),
-        (BodySide::Resp, ex.response(), "/response/body"),
+        (BodySide::Req, Some(ex.request())),
+        (BodySide::Resp, ex.response()),
     ];
-    for (side, msg, key) in sides {
-        let Some(Body::Inline {
-            bytes,
-            truncated_at,
-            capture_dropped,
-            relay,
-        }) = msg.map(Message::body)
-        else {
+    for (slot, (side, msg)) in hashes.iter_mut().zip(sides) {
+        let Some(Body::Inline { bytes, .. }) = msg.map(Message::body) else {
             continue;
         };
         let hash: [u8; 32] = match bodies.put(tx, id, side, bytes)? {
-            BodyLocator::Inline { .. } => Sha256::digest(bytes).into(),
+            BodyLocator::Inline { .. } => stage!(ShaInline, Sha256::digest(bytes).into()),
             BodyLocator::Pack { blob, deduped } => {
                 if !deduped {
                     let end = touched.entry(bodies.pack_id()).or_insert(0);
@@ -909,16 +922,7 @@ fn insert_exchange(
                 blob.hash
             }
         };
-        // The JSON keeps a reference; the bytes live in `bodies` and packs.
-        // The capture bookkeeping travels with it.
-        let blob = serde_json::to_value(Body::Blob {
-            hash,
-            len: bytes.len() as u64,
-            truncated_at: *truncated_at,
-            capture_dropped: *capture_dropped,
-            relay: *relay,
-        })?;
-        set_field(&mut json, key, blob)?;
+        *slot = Some(hash);
     }
     let (method, path) = request_line(ex.request());
     let host = request_host(ex.request());
@@ -931,36 +935,95 @@ fn insert_exchange(
         serde_json::to_string(ex.tags())?
     };
     let created = i64::try_from(id.timestamp_ms()).unwrap_or(i64::MAX);
-    tx.execute(
-        "INSERT INTO exchanges (ulid, namespace, state, scope_state, created_at, json, \
+    let json = stage!(Json, stored_json(ex, state, hashes))?;
+    stage!(
+        SqlExchange,
+        tx.execute(
+            "INSERT INTO exchanges (ulid, namespace, state, scope_state, created_at, json, \
          req_method, req_host, req_path, resp_status, resp_len, tags, notes) \
          VALUES (?1, ?2, ?13, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
-        rusqlite::params![
-            id.to_string(),
-            wire_name(&ex.namespace().kind()),
-            wire_name(&ex.scope_state()),
-            created,
-            serde_json::to_string(&json)?,
-            method,
-            host,
-            path,
-            status,
-            resp_len,
-            tags,
-            ex.notes(),
-            wire_name(&state),
-        ],
+            rusqlite::params![
+                id.to_string(),
+                wire_name(&ex.namespace().kind()),
+                wire_name(&ex.scope_state()),
+                created,
+                json,
+                method,
+                host,
+                path,
+                status,
+                resp_len,
+                tags,
+                ex.notes(),
+                wire_name(&state),
+            ],
+        )
     )?;
     // Normalized tag index, kept in lockstep with the `tags` JSON column in the
     // same transaction so the `tag = ?` history query sees every new exchange.
     // `OR IGNORE` tolerates a tag repeated within one exchange's tag list.
     for tag in ex.tags() {
-        tx.execute(
-            "INSERT OR IGNORE INTO exchange_tags (ulid, tag) VALUES (?1, ?2)",
-            rusqlite::params![id.to_string(), tag],
+        stage!(
+            SqlExchange,
+            tx.execute(
+                "INSERT OR IGNORE INTO exchange_tags (ulid, tag) VALUES (?1, ?2)",
+                rusqlite::params![id.to_string(), tag],
+            )
         )?;
     }
     Ok(())
+}
+
+/// The `exchanges.json` text of `ex`: the exchange with `state`, and each
+/// inline body replaced by a [`Body::Blob`] reference carrying `hashes`
+/// (request, response) and the capture bookkeeping. The bytes live in
+/// `bodies` and packs.
+///
+/// The bodies are swapped on a clone (`Bytes` clones are reference counts)
+/// before serialising, so no body is ever base64-encoded here. The text goes
+/// through `to_value` then `to_string` (sorted object keys), as 0.1.1 did,
+/// so it is byte-identical to what 0.1.1 stored (see `json_reference`).
+fn stored_json(
+    ex: &Exchange,
+    state: ExchangeState,
+    hashes: [Option<[u8; 32]>; 2],
+) -> Result<String, StoreError> {
+    let mut stored = ex.clone();
+    stored.set_state(state);
+    if let Some(blob) = blob_ref(ex.request().body(), hashes[0]) {
+        stored.set_request(ex.request().clone().with_body(blob));
+    }
+    if let Some(resp) = ex.response() {
+        if let Some(blob) = blob_ref(resp.body(), hashes[1]) {
+            stored.set_response(resp.clone().with_body(blob));
+        }
+    }
+    let value = serde_json::to_value(&stored)?;
+    Ok(serde_json::to_string(&value)?)
+}
+
+/// The [`Body::Blob`] that replaces an inline `body` stored under `hash`,
+/// or `None` if the body is not inline (it is serialised as it is).
+fn blob_ref(body: &Body, hash: Option<[u8; 32]>) -> Option<Body> {
+    let (
+        Body::Inline {
+            bytes,
+            truncated_at,
+            capture_dropped,
+            relay,
+        },
+        Some(hash),
+    ) = (body, hash)
+    else {
+        return None;
+    };
+    Some(Body::Blob {
+        hash,
+        len: bytes.len() as u64,
+        truncated_at: *truncated_at,
+        capture_dropped: *capture_dropped,
+        relay: *relay,
+    })
 }
 
 /// A body's length for the `resp_len` column: the relayed length when the
@@ -972,19 +1035,6 @@ fn body_len(body: &Body) -> u64 {
         Body::Blob { len, .. } => *len,
         _ => 0,
     }
-}
-
-/// Replaces the value at `pointer` (which must exist) without indexing panics.
-fn set_field(
-    json: &mut serde_json::Value,
-    pointer: &str,
-    value: serde_json::Value,
-) -> Result<(), StoreError> {
-    let slot = json
-        .pointer_mut(pointer)
-        .ok_or_else(|| StoreError::Corrupt(format!("exchange json has no {pointer}")))?;
-    *slot = value;
-    Ok(())
 }
 
 /// The kebab-case wire name of a unit enum value.
@@ -1066,4 +1116,202 @@ fn status_code(m: &Message) -> Option<i64> {
         .parse::<u16>()
         .ok()
         .map(i64::from)
+}
+
+/// The 0.1.1 row-JSON builder, kept verbatim as the reference the new
+/// [`stored_json`] must match byte for byte.
+#[cfg(test)]
+mod json_reference {
+    use super::{stored_json, Body, ExchangeState, Message, StoreError};
+    use bytes::Bytes;
+    use crosswire_core::Span;
+    use crosswire_model::{
+        Capture, ConnectionInfo, Diff, Exchange, Fidelity, FramingRecord, Head, HeadSpans,
+        HeaderSpanRecord, MessageKind, StartLineSpans, HTTP1_PARSER_VERSION,
+    };
+    use sha2::{Digest, Sha256};
+    use ulid::Ulid;
+
+    /// Replaces the value at `pointer` (which must exist) without indexing panics.
+    fn set_field(
+        json: &mut serde_json::Value,
+        pointer: &str,
+        value: serde_json::Value,
+    ) -> Result<(), StoreError> {
+        let slot = json
+            .pointer_mut(pointer)
+            .ok_or_else(|| StoreError::Corrupt(format!("exchange json has no {pointer}")))?;
+        *slot = value;
+        Ok(())
+    }
+
+    /// 0.1.1's `insert_exchange` JSON steps: `to_value(ex)`, then `/state`,
+    /// then each inline body swapped for its `Blob` reference.
+    fn reference(
+        ex: &Exchange,
+        state: ExchangeState,
+        hashes: [Option<[u8; 32]>; 2],
+    ) -> Result<String, StoreError> {
+        let mut json = serde_json::to_value(ex)?;
+        serde_json::to_value(state)
+            .map_err(StoreError::from)
+            .and_then(|v| set_field(&mut json, "/state", v))?;
+        let sides = [
+            (Some(ex.request()), "/request/body", hashes[0]),
+            (ex.response(), "/response/body", hashes[1]),
+        ];
+        for (msg, key, hash) in sides {
+            let Some(Body::Inline {
+                bytes,
+                truncated_at,
+                capture_dropped,
+                relay,
+            }) = msg.map(Message::body)
+            else {
+                continue;
+            };
+            let hash = hash.expect("an inline body has a hash");
+            serde_json::to_value(Body::Blob {
+                hash,
+                len: bytes.len() as u64,
+                truncated_at: *truncated_at,
+                capture_dropped: *capture_dropped,
+                relay: *relay,
+            })
+            .map_err(StoreError::from)
+            .and_then(|blob| set_field(&mut json, key, blob))?;
+        }
+        Ok(serde_json::to_string(&json)?)
+    }
+
+    fn normalized(body: Body) -> Message {
+        Message::new(
+            MessageKind::Normalized,
+            Fidelity::Normalized,
+            Head::Normalized {
+                map: vec![
+                    ("Host".to_owned(), b"a.test".to_vec()),
+                    ("X-B".to_owned(), b"\x00\xff".to_vec()),
+                ],
+            },
+            FramingRecord::ContentLength { len: 3 },
+            body,
+            ConnectionInfo::new("a.test", 443).with_sni("a.test"),
+        )
+    }
+
+    fn http1(body: Body) -> Message {
+        let head = b"POST /login?x=1 HTTP/1.1\r\nHost: Shop.Example.TEST\r\n\r\n";
+        Message::new(
+            MessageKind::Http1Raw,
+            Fidelity::Raw,
+            Head::Http1Raw {
+                bytes: Bytes::from_static(head),
+                spans: HeadSpans::new(
+                    StartLineSpans::Request {
+                        method: Span::new(0, 4),
+                        target: Span::new(5, 15),
+                        version: Span::new(16, 24),
+                    },
+                    vec![HeaderSpanRecord::new(
+                        Span::new(26, 30),
+                        Span::new(32, 49),
+                        Span::new(26, 49),
+                    )],
+                    FramingRecord::None,
+                ),
+                parser_version: HTTP1_PARSER_VERSION,
+            },
+            FramingRecord::None,
+            body,
+            ConnectionInfo::new("203.0.113.9", 80),
+        )
+    }
+
+    fn inline(n: usize, fill: u8) -> Body {
+        Body::inline(Bytes::from(vec![fill; n]))
+    }
+
+    fn capture(n: u64) -> Capture {
+        Capture {
+            len: n,
+            sha256: [0xab; 32],
+        }
+    }
+
+    /// The corpus: every body shape the writer swaps, and every
+    /// non-body field that rides along.
+    fn corpus() -> Vec<Exchange> {
+        let mut out = Vec::new();
+        let id = |n: u128| Ulid::from(n << 80 | n);
+        // Inline 1 B request, 16 KiB response (inline) and 16 KiB + 1 (pack).
+        let mut ex = Exchange::with_id(id(1), normalized(inline(1, b'a')));
+        ex.set_response(normalized(inline(16 * 1024, b'b')));
+        out.push(ex);
+        let mut ex = Exchange::with_id(id(2), http1(inline(16 * 1024, b'c')));
+        ex.set_response(http1(Body::Inline {
+            bytes: Bytes::from(vec![b'd'; 16 * 1024 + 1]),
+            truncated_at: Some(16 * 1024 + 1),
+            capture_dropped: true,
+            relay: Some(capture(1 << 20)),
+        }));
+        ex.set_state(ExchangeState::Error);
+        ex.add_tag("login");
+        ex.add_tag("x");
+        ex.add_tag("login");
+        ex.set_notes("a \"note\" with \u{e9}");
+        out.push(ex);
+        // Interim responses and diffs; a request with no body.
+        let req = normalized(Body::None).with_diffs(vec![Diff::new(
+            crosswire_core::ChangeOp::Replace,
+            Span::new(0, 3),
+            Bytes::from_static(b"old"),
+            Bytes::from_static(b"new"),
+            crosswire_core::ChangeReason::MatchReplace { rule: "r".into() },
+        )]);
+        let mut ex = Exchange::with_id(id(3), req);
+        ex.set_response(
+            http1(inline(5, b'e'))
+                .with_interim(vec![Bytes::from_static(b"HTTP/1.1 100 Continue\r\n\r\n")]),
+        );
+        out.push(ex);
+        // No response at all.
+        out.push(Exchange::with_id(id(4), http1(inline(70_000, b'f'))));
+        // An already-stored blob body is serialised as it is.
+        let mut ex = Exchange::with_id(
+            id(5),
+            normalized(Body::Blob {
+                hash: [7; 32],
+                len: 9,
+                truncated_at: None,
+                capture_dropped: false,
+                relay: None,
+            }),
+        );
+        ex.set_response(normalized(Body::None));
+        out.push(ex);
+        out
+    }
+
+    fn hashes(ex: &Exchange) -> [Option<[u8; 32]>; 2] {
+        let h = |m: Option<&Message>| match m.map(Message::body) {
+            Some(Body::Inline { bytes, .. }) => Some(Sha256::digest(bytes).into()),
+            _ => None,
+        };
+        [h(Some(ex.request())), h(ex.response())]
+    }
+
+    #[test]
+    fn stored_json_is_byte_identical_to_0_1_1() {
+        for ex in corpus() {
+            for state in [ExchangeState::Committed, ExchangeState::Error] {
+                let h = hashes(&ex);
+                let new = stored_json(&ex, state, h).unwrap();
+                let old = reference(&ex, state, h).unwrap();
+                assert_eq!(new, old, "exchange {}", ex.id());
+                // Not one body byte reached the row.
+                assert!(!new.contains("\"type\":\"inline\""), "{new}");
+            }
+        }
+    }
 }

@@ -1,7 +1,8 @@
 # ADR-0006: Performance gates at 0.1.0
 
-Status: Accepted. The UI frame-time half is closed in 0.1.1 (see Update); the
-ingest half stands.
+Status: Accepted. The UI frame-time half is closed in 0.1.1 and the ingest
+half in 0.1.2 (see the Updates below and
+[ADR-0007](0007-ingest-batching-and-hashing.md)).
 
 ## Context
 
@@ -121,3 +122,24 @@ attempt, and the single retry is the agreed mitigation. Whether that holds on
 CI runners is for the maintainer to judge once CI history exists.
 
 Ingest (commitment 2) is still REPORT-ONLY.
+
+## Update (0.1.2): ingest target met
+
+Commitment 2 is done, by raising the writer's throughput, not by
+re-specifying the target. The 700/s above was measured on `sha2` 0.10 (software
+SHA-256 on aarch64); on `sha2` 0.11 the unchanged 0.1.1 writer measured a
+median of 924/s. The rest of the gap was not CPU: at about 106 KB per
+exchange the 64 MiB queue holds fewer exchanges than the 1,000-exchange batch
+trigger, so every batch waited out the 250 ms timer and the writer sat idle
+about half the time. 0.1.2 stops building a discarded base64 JSON copy of each
+body, hashes each pack body once, and closes a batch at 32 MiB of queued bytes
+(`StoreConfig::batch_bytes_max`). No worker pool, no format change, and the
+ADR-0002 loss window is unchanged.
+
+Measured on the reference machine (AC power, Low Power Mode off, cool machine,
+section 13 mix, 3 x 10 s): 3023, 3482 and 3295 exchanges/s, median 3295,
+314 to 361 MB/s. The gate is median of 3 at least 2,000 and every run at least
+1,800. The section 13 target is unchanged; its text now says the 1 % bucket is
+1 to 8 MiB uniform, which is what the harness always measured. Measurements,
+the decision and the rejected alternatives are in
+[ADR-0007](0007-ingest-batching-and-hashing.md).

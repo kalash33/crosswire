@@ -4,6 +4,10 @@
 //! entry point for recording: it runs the writer thread, hands out the
 //! [`crosswire_model::ExchangeSink`], the event stream and the audit log.
 
+// First, so its `stage!` macro is visible in every module below.
+#[macro_use]
+mod stages;
+
 mod atomic;
 mod audit;
 mod bodies;
@@ -32,6 +36,11 @@ pub use project::Project;
 pub use read::{
     Counts, ExchangeFilter, ExchangeRow, NamespaceCounts, Page, PAGE_LIMIT_MAX, PATH_SCAN_CAP,
 };
+/// Writer stage timers (instrumentation for `perf_ingest`; feature
+/// `stage-timing`, never enabled by the binary).
+#[cfg(feature = "stage-timing")]
+#[doc(hidden)]
+pub use stages::{snapshot as stage_snapshot, Stage, StageSnapshot, StageTimes};
 pub use store::{OpenReport, Store, StoreConfig};
 pub use sweep::{sweep, SweepReport};
 #[cfg(feature = "synthetic")]
