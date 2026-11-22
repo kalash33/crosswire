@@ -1,9 +1,11 @@
 //! §13 ingest measurement: the §13 target is **>= 2,000 exchanges/s** committed
-//! through the REAL writer path at the §13 body mix (currently unmet).
+//! through the REAL writer path at the §13 body mix (met on the M2 in 0.1.2,
+//! ADR-0007).
 //!
 //! Exchanges go through the same `ExchangeSink::submit` the proxy uses: the
 //! bounded queue, then the OS writer thread, which commits batches (default
-//! config: `BEGIN IMMEDIATE`, commit every 250 ms / 1,000 exchanges). The
+//! config: `BEGIN IMMEDIATE`, commit every 250 ms / 1,000 exchanges / 32 MiB
+//! of queued bytes, whichever comes first). The
 //! synthetic bulk insert is deliberately not used.
 //!
 //! The rate counts COMMITTED exchanges only. `Event::Committed` ids are
@@ -32,10 +34,11 @@
 //! `STAGES` table of the writer's time per stage (spec §3.3); the asserted
 //! numbers always come from a build without the feature.
 //!
-//! REPORT-ONLY: the rate is printed, never asserted against 2,000/s (the
-//! measured ~700/s is below target; a maintainer decision is pending). Only a
-//! gross-regression floor (release builds), the body mix and the run validity
-//! are asserted. `CROSSWIRE_PERF_ASSERT` changes nothing here yet.
+//! REPORT-ONLY for now: the rate is printed, not yet asserted against
+//! 2,000/s (the M2 measures a median of about 3,300/s at the §13 mix; see
+//! `bench/README.md`). Only a gross-regression floor (release builds), the body
+//! mix and the run validity are asserted. `CROSSWIRE_PERF_ASSERT` changes
+//! nothing here yet.
 //!
 //! Two probes print report-only lines in release builds: `SUMMARY sha256`
 //! (SHA-256 MB/s, and whether the aarch64 SHA2 instructions appear to be in
@@ -79,11 +82,10 @@ const IN_FLIGHT: u64 = 9000;
 /// flight; the default queue holds 64 MiB, and past that `submit` spills to a
 /// fsynced journal file, which is a different (slow) path than the one measured.
 const IN_FLIGHT_BYTES: u64 = 56 * MIB as u64;
-/// A gross-regression guard, NOT the §13 2,000/s target. The measured rate at
-/// this mix is ~700/s (M2), so the §13 target is currently unmet and the rate
-/// is report-only pending a maintainer decision (see `bench/README.md`). This
-/// floor sits ~2.3x below the measurement so it catches a collapse without
-/// flaking on slower hosts.
+/// A gross-regression guard, NOT the §13 2,000/s target. It was set ~2.3x
+/// below the 0.1.0 measurement (~700/s on the M2); the rate there is now about
+/// 3,300/s (see `bench/README.md`), so this floor only catches a collapse and
+/// does not flake on slower hosts.
 const GROSS_FLOOR_RATE: f64 = 300.0;
 
 /// The body-size mix one run draws from.

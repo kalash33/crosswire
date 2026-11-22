@@ -12,7 +12,7 @@ numbers. The 1M ingest/UI runs are maintainer-only (slow, several GB of disk).
 | Added latency | `crates/crosswire-proxy/tests/perf_added_latency.rs` | p50 delta < 2 ms | ASSERTED (p50); p99 reported (contention-dominated in-process, `oha` is authoritative) | report-only |
 | Throughput | `crates/crosswire-proxy/tests/perf_throughput.rs` | >= 5,000 req/s (+ SNI-tunnel row) | ASSERTED | report-only |
 | History queries / RSS | `crates/crosswire-store/benches/history.rs` via `scripts/perf-gate.sh` (Plan 6) | p95 < 50 ms warm / < 500 ms cold; RSS < 500 MB at 1M | ASSERTED at 1M | asserted at 100k with loose bounds, plus EXPLAIN QUERY PLAN tests |
-| Ingest | `crates/crosswire-store/tests/perf_ingest.rs` | >= 2,000 exchanges/s | REPORT-ONLY: ~700/s, below target (known gap, backlogged); only a 300/s gross floor and the body-mix check assert | not run |
+| Ingest | `crates/crosswire-store/tests/perf_ingest.rs` | >= 2,000 exchanges/s (median of 3 x 10 s; each run >= 1,800) | target met on the M2 (median 3,295/s, min 3,023, 314-361 MB/s; was ~924 before 0.1.2); run with `CROSSWIRE_PERF_ASSERT=1 CROSSWIRE_INGEST_RUNS=3 CROSSWIRE_INGEST_WINDOW_SECS=10`; MB/s and the `typical` mix report-only | not run |
 | UI frame / filter | `ui/e2e/perf-scroll.spec.ts` via `just ui-perf` | frame <= 32 ms, filter < 300 ms, DOM rows <= 2 x visible + 8 | ASSERTED at 100k in CI (own `ui-perf` job, ubuntu, one retry); 1M report-only (maintainer) | not run (the `ui-perf` job asserts instead) |
 
 `oha` (run as a separate process, see the last section) is the authoritative
@@ -187,52 +187,93 @@ The store must sustain **>= 2,000 exchanges/s** committed through the real
 writer path at the §13 body mix, measured by
 `crates/crosswire-store/tests/perf_ingest.rs`. It submits through the same
 `ExchangeSink::submit` the proxy uses (bounded queue, then the OS writer
-thread, default config: `BEGIN IMMEDIATE`, commit every 250 ms / 1,000
-exchanges), not the synthetic bulk insert. Bodies follow the Plan 6 mix
-(60 % < 4 KiB, 30 % 4-64 KiB, 9 % 64 KiB-1 MiB, 1 % 1-8 MiB), unique and
-incompressible; the test asserts the submitted proportions are within
-tolerance. The rate counts **committed** exchanges only: `Event::Committed`
-ids are counted by a subscriber (also used as flow control so the queue never
-overruns into the journal-spill path: at most 9,000 exchanges / 56 MiB in
-flight), the writer is drained, the total is cross-checked against
-`count(*) ... state = 'committed'` in the database, and the rate is committed
-over the wall time from the first submit to the last commit (3 s submit
-window plus the final drain). Always **`--release`**:
+thread, default config: `BEGIN IMMEDIATE`, a batch commits after 250 ms, 1,000
+exchanges or 32 MiB of queued bytes, whichever comes first), not the synthetic
+bulk insert. Bodies follow the §13 mix `s13` (60 % < 4 KiB, 30 % 4-64 KiB,
+9 % 64 KiB-1 MiB, 1 % 1-8 MiB uniform), unique and incompressible; the test
+asserts the submitted proportions are within tolerance. The rate counts
+**committed** exchanges only: `Event::Committed` ids are counted by a
+subscriber (also used as flow control so the queue never overruns into the
+journal-spill path: at most 9,000 exchanges / 56 MiB in flight), the writer is
+drained, the total is cross-checked against `count(*) ... state = 'committed'`
+in the database, and the rate is committed over the wall time from the first
+submit to the last commit (the submit window plus the final drain). Always
+**`--release`**.
+
+The reference run (the only invocation whose numbers count), on the M2, on AC
+power, with **Low Power Mode off** (`pmset -g | grep lowpowermode` prints
+`lowpowermode 0`), nothing else heavy running, and a **cool** machine:
 
 ```sh
-# Report-only (CI smoke): prints the SUMMARY line, never asserts the rate.
-cargo test --release -p crosswire-store --test perf_ingest -- --nocapture
-# CROSSWIRE_PERF_ASSERT=1 changes nothing here: the rate is never asserted
-# against 2,000/s. Only the body mix and a gross-regression floor are asserted.
+CROSSWIRE_PERF_ASSERT=1 CROSSWIRE_INGEST_RUNS=3 CROSSWIRE_INGEST_WINDOW_SECS=10 \
+  cargo test --locked --release -p crosswire-store --test perf_ingest -- --nocapture --test-threads=1
 ```
 
-**Status: REPORT-ONLY** ([ADR-0006](../docs/adr/0006-performance-gates-0-1-0.md)). The measured ingest rate (about 700 exchanges/s,
-about 65 MB/s of body bytes, on the M2 below) is **below the §13 target of
-2,000 exchanges/s**. The test prints the `SUMMARY ingest` line (committed,
-secs, rate, mb_per_s, mix) and asserts only the submitted body mix and a
-generous gross-regression floor of 300 exchanges/s (release builds), which is
-not the §13 target. The gap is tracked in the pre-0.1.0 backlog pending a
-maintainer decision: optimise the writer (parallel hash/compress, blake3, or a
-lower zstd level), OR redefine the §13 ingest metric as MB/s or a lighter mix,
-OR confirm on the reference 4-vCPU Linux VM.
+Knobs (read by the harness only, never by the library):
+`CROSSWIRE_INGEST_RUNS` (default 1; each run on a fresh project, 5 s apart,
+then a `SUMMARY ingest-gate median=… min=… runs=…` line),
+`CROSSWIRE_INGEST_WINDOW_SECS` (default 3), `CROSSWIRE_INGEST_MIX` = `s13`
+(default) | `typical` (70/25/4.5/0.5, the large bucket 1-4 MiB, half the bodies
+compressible text; a proposal, report-only). Adding `--features stage-timing`
+prints a per-stage `STAGES` table of the writer's time; asserted numbers always
+come from a build without the feature. A run whose generator was busy for more
+than 80 % of the window (`gen_busy_pct`) measured the harness, not the writer,
+and **fails as invalid**. Each run prints a `SUMMARY ingest` line (committed,
+secs, rate, mb_per_s, mix, gen_busy_pct). The test always asserts the body mix
+and a gross-regression floor of 300 exchanges/s (release builds). The rate
+assertion against the gate below is switched on under `CROSSWIRE_PERF_ASSERT=1`
+by the gate commit that follows these measurements (plan T4); until then the
+gate is read from the `SUMMARY ingest-gate` line.
+
+**Status: target met on the reference machine** (0.1.2,
+[ADR-0007](../docs/adr/0007-ingest-batching-and-hashing.md), closing the ingest
+half of [ADR-0006](../docs/adr/0006-performance-gates-0-1-0.md)). The gate is
+median of 3 runs >= 2,000/s and every run >= 1,800/s, 10 s windows, `s13` mix,
+M2 only; `mb_per_s` and the `typical` mix are report-only, and so is the
+4-vCPU Linux VM until it has a baseline.
 
 ## Reference machine: MacBook Air (Mac14,2), Apple M2, 8 cores, 8 GiB, macOS
 
-Measured 2026-10-29, release profile, three runs.
+Measured 2026-11, release profile, `s13` mix, 3 x 10 s, the invocation above
+(AC power, Low Power Mode off, cool machine).
 
-| metric | value |
-|---|---|
-| committed exchanges / s | ~700 (698 / 708 / 722) |
-| body bytes ingested | ~65 MB/s |
-| §13 target | 2,000 / s (**not met at this mix on this machine; report-only**) |
+| build | runs (exchanges/s) | median | min | body MB/s | notes |
+|---|---|---|---|---|---|
+| 0.1.0 (`sha2` 0.10, software SHA-256), 2026-10-29 | 698 / 708 / 722 (3 s windows) | ~708 | 698 | ~65 | the ADR-0006 miss |
+| before: 0.1.1 writer on `sha2` 0.11 (`0f144c0`) | 818 / 1016 / 924 | **924** | 818 | 88-108 | `writer_busy_pct` ~50; `typical` median 2459 (2459 / 2676 / 1986), report-only |
+| **after: 0.1.2 writer** | 3023 / 3482 / 3295 | **3295** | 3023 | 314-361 | `gen_busy_pct` 11-12; **target met** (>= 2,000 median, >= 1,800 each run) |
 
-The rate is body-volume bound, not per-exchange bound: the mean exchange at
-this mix carries ~100 KB (the 9 % and 1 % buckets dominate), so 2,000/s would
-need ~200 MB/s through the single writer thread (SHA-256, zstd level 3, pack
-append, `fsync`). The same harness with bodies capped at 65 KiB commits ~2,400
-exchanges/s. The disk is not the limit (300 MB written with a full fsync
-sustains ~350 MB/s here). The authoritative figure is the maintainer run on
-the reference machines.
+Per step (medians of a separate `--features stage-timing` run, same
+invocation; the instrumented build reads a little differently from the plain
+one, e.g. 1048 for the baseline):
+
+| step | stage-timing median | what moved |
+|---|---|---|
+| baseline (`0f144c0`) | 1048 | writer busy ~50 % of the wall time; JSON encode ~30 % and double hashing ~22 % of writer time |
+| stop base64-encoding bodies into discarded JSON (`7299da3`) | 1148 | `json` 30 % -> 2 % of writer time |
+| hash each pack body once (`562d30a`) | 1382 | second SHA-256 pass (`sha_append`) -> 0 |
+| close a batch at 32 MiB of queued bytes (`e7d4221`) | 3104 | writer busy 36-42 % -> 94-97 % |
+
+Why the batch threshold mattered most: at ~106 KB per `s13` exchange, the
+64 MiB queue (and the harness's 56 MiB in-flight cap below it) holds only
+~530-600 exchanges, fewer than the 1,000-exchange batch trigger. Every batch
+therefore waited out the 250 ms timer while the producer was blocked on a full
+queue, and the writer sat idle about half the time, so cutting writer CPU alone
+could not raise the rate. The new `StoreConfig::batch_bytes_max` (default
+32 MiB, half the queue budget) closes a batch early; it was chosen from a sweep
+of 4, 8, 16, 24, 32 and 48 MiB (48 MiB nears the in-flight cap and the idle
+gap returns). It only ever makes a batch smaller, so the 250 ms / 1,000 loss
+window of ADR-0002 still bounds it.
+
+The in-process SHA-256 probe (`SUMMARY sha256`) reads ~2,100 MB/s on the M2:
+`sha2` 0.11 already uses the ARMv8 SHA instructions, so no hardware-SHA change
+was needed. The on-disk format is unchanged (SHA-256 everywhere, zstd level 3,
+stored JSON byte-identical to 0.1.1, the 0.1.0 fixture opens).
+
+**Thermal caveat:** the M2 is fanless. A warm machine measured about 2,400/s
+at the same commit, still above the target but with far less headroom; take
+the gate on a cool machine, on AC power, with Low Power Mode off, or the
+numbers are not comparable with this table.
 
 # UI frame-time and filter-latency trace (spec §13)
 

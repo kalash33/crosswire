@@ -189,7 +189,13 @@ Each item ends with the gate invocation (3 × 10 s, `s13`) and one `--features s
 - `docs/superpowers/specs/2026-10-22-crosswire-design.md` §13: "1 % > 1 MiB" → "1 % 1–8 MiB (uniform)"; add "sustained body MB/s is reported; a lighter typical mix is report-only". The 2k/s figure is unchanged.
 - `justfile`: `perf` passes `CROSSWIRE_PERF_ASSERT=1 CROSSWIRE_INGEST_RUNS=3 CROSSWIRE_INGEST_WINDOW_SECS=10` and `--test-threads=1` on the ingest line; comment updated.
 - `CHANGELOG.md` `[Unreleased]`: `### Changed` (store writer throughput, numbers), `### Added` (`StoreConfig::prepare_threads` if T2).
-- [ ] **Commit** `docs: record the ingest throughput decision in ADR-0007`.
+*As built:* the ADR is `docs/adr/0007-ingest-batching-and-hashing.md` (named for what landed, since T2 was not built). `CHANGELOG.md` is not edited by hand (release-plz generates it from the commits). The `justfile` got a comment fix only; passing the gate env vars on the `perf` ingest line moves to T4 with the assertion. `perf_ingest.rs` got comment-only fixes (stale ~700/s prose); its "REPORT-ONLY for now" header stays until T4 step 1. `docs/format.md` is unchanged (no prepare pool, so no "Write path" sentence).
+- [x] ADR-0007 created; ADR-0006 status line and "Update (0.1.2): ingest target met".
+- [x] Spec drift re-read: an "Outcome" note under the ingest spec's status line.
+- [x] `bench/README.md` ledger row and "Store ingest gate" section (before/after table, per-step table, reproduction command, cool-box caveat).
+- [x] `docs/security-gates.md` ingest row and the paragraph after the table.
+- [x] Product spec §13: "1 % 1–8 MiB (uniform)", MB/s and the typical mix reported only.
+- [x] **Commit** `docs: ingest throughput results and ADR-0007`.
 
 ### Task 4: gate, review and PR (opus)
 - [ ] Step 1: `tests/perf_ingest.rs` flips to asserting under `CROSSWIRE_PERF_ASSERT=1` in release: median ≥ 2,000, every run ≥ 1,800, `gen_busy_pct ≤ 80`, mix=`s13` only; the gross floor (always on in release) rises from 300/s to half the T2/T1 final median rounded down to a hundred; `sha256_backend_throughput` asserts ≥ 1,000 MB/s on `aarch64` under the same env var (guards a silent backend regression). Module docs updated (no longer "REPORT-ONLY"). **Commit** `test(store): assert the §13 ingest rate on the reference machine`.
@@ -207,3 +213,14 @@ Each item ends with the gate invocation (3 × 10 s, `s13`) and one `--features s
 - [ ] Step 4: manual compatibility check (spec §6): open a project written by this branch with the 0.1.1 release binary (`crosswire serve --project <dir>`), list history, open three pack bodies. Note the result in the PR body.
 - [ ] Step 5: whole-branch review (opus) against Review Focus 1–5 and ADR-0002, reading `git diff origin/main...` in full, not just the tests. Fix findings in new commits.
 - [ ] Step 6: push and open the PR. Body: baseline vs final (median/min/MB/s, both mixes, `prepare_threads` 0 vs default if T2), the T2 decision and its numbers, the stage split before/after, the SHA probe, the test-matrix list, the manual 0.1.1 check, and `git log --format=%B origin/main.. | grep -ci -e claude -e co-authored` = 0.
+
+## Outcome
+Measured on the M2 (AC power, Low Power Mode off, cool machine, `s13`, 3 × 10 s, release):
+- **Before** (`0f144c0`, 0.1.1 writer on `sha2` 0.11): 818 / 1016 / 924, median 924, min 818, 88–108 MB/s; `writer_busy_pct` ~50; stage-timing median 1048; `typical` median 2459 (report-only).
+- **After** (T1 head): 3023 / 3482 / 3295, **median 3295, min 3023**, 314–361 MB/s, `gen_busy_pct` 11–12. Gate (median ≥ 2,000, every run ≥ 1,800) **passed**; T1 exit (≥ 2,300 / ≥ 2,000) passed, so **T2 is skipped**.
+- Per step (stage-timing medians): T1.2 no discarded JSON 1148; T1.1 hash once 1382; T1.5 byte-threshold batch close (32 MiB, from a 4/8/16/24/32/48 MiB sweep) 3104.
+- Root cause: at ~106 KB per exchange the 64 MiB queue holds ~530–600 exchanges, under the 1,000 batch trigger, so batches closed on the 250 ms timer and the writer idled ~50 %. JSON encode was ~30 % and double hashing ~22 % of writer time.
+- Not done: T1.0 (probe 2,101 MB/s, hardware SHA already active), T1.3 (`prepare_cached`, no median gain, not committed), T1.4 (not needed), T2 (not needed); BLAKE3 ruled out (SHA-256 pinned in the format).
+- Thermal: a warm machine read ~2,400/s at the same commit; take the gate on a cool box.
+- On-disk format unchanged: `hash_compat.rs` literal digests, the 0.1.0 fixture, `json_reference` byte-identical.
+- Recorded in ADR-0007, the ADR-0006 update, `bench/README.md` and `docs/security-gates.md`. T4 still flips the rate assertion on and raises the gross floor.
