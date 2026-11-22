@@ -265,6 +265,58 @@ fn batch_boundaries() {
 }
 
 #[test]
+fn byte_heavy_batch_closes_before_the_timer() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (_dir, store) = new_store(
+        &tmp,
+        StoreConfig {
+            batch_interval: Duration::from_secs(10),
+            batch_bytes_max: 1024 * 1024,
+            ..StoreConfig::default()
+        },
+    );
+    let mut ev = store.subscribe();
+    let sink = store.sink();
+    // Each costs 512 KiB of body plus the per-exchange overhead in the
+    // queue, so two reach the 1 MiB threshold and the third does not.
+    let exs: Vec<Exchange> = (0..3)
+        .map(|i| exchange(b"", &noise(512 * 1024, i)))
+        .collect();
+    let ids: Vec<Ulid> = exs.iter().map(Exchange::id).collect();
+    let start = Instant::now();
+    for ex in exs {
+        sink.submit(ex).unwrap();
+    }
+    let mut first = None;
+    while start.elapsed() < Duration::from_secs(5) && first.is_none() {
+        match ev.try_recv() {
+            Some(Event::Committed { ids, .. }) => first = Some(ids),
+            Some(_) => {}
+            None => std::thread::sleep(Duration::from_millis(2)),
+        }
+    }
+    let first = first.expect("a byte-full batch commits well before the 10 s interval");
+    assert_eq!(
+        first,
+        ids[..2],
+        "the batch closed at the byte threshold, in order"
+    );
+    let got = wait_committed(&mut ev, &ids[2..], Duration::from_millis(500));
+    assert!(
+        !got.contains(&ids[2]),
+        "the remainder waits for the interval"
+    );
+    store.close().unwrap();
+    let conn = Project::open(&tmp.path().join("p")).unwrap();
+    let n: i64 = conn
+        .reader()
+        .unwrap()
+        .query_row("SELECT count(*) FROM exchanges", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(n, 3, "close commits the remainder");
+}
+
+#[test]
 fn queue_full_spills_to_journal_and_drains() {
     let tmp = tempfile::tempdir().unwrap();
     let pause = Arc::new(Mutex::new(()));

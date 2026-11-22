@@ -323,17 +323,22 @@ impl Writer {
     }
 
     /// Waits up to `batch_interval` for a first message, then collects until
-    /// `batch_max` exchanges or `batch_interval` after the first. Markers
-    /// go to `self.markers` and ride along with the batch.
+    /// `batch_max` exchanges, `batch_bytes_max` queued bytes, or
+    /// `batch_interval` after the first. Markers go to `self.markers` and
+    /// ride along with the batch.
     fn collect(&mut self, rx: &Receiver<Msg>, stop: &mut Option<Stop>) -> Vec<Item> {
         // Clamped so `Instant + interval` cannot overflow.
         let interval = self.cfg.batch_interval.min(Duration::from_secs(86_400));
         let mut batch = Vec::new();
+        let mut bytes = 0usize;
         let mut next = rx.recv_timeout(interval);
         let deadline = Instant::now() + interval;
         loop {
             match next {
-                Ok(Msg::Exchange(ex, size)) => batch.push(Item::queued(*ex, size)),
+                Ok(Msg::Exchange(ex, size)) => {
+                    bytes = bytes.saturating_add(size);
+                    batch.push(Item::queued(*ex, size));
+                }
                 Ok(Msg::Marker(m, size)) => self.markers.push((*m, size)),
                 Ok(Msg::Stop(s)) => {
                     *stop = Some(s);
@@ -345,7 +350,8 @@ impl Writer {
                     break;
                 }
             }
-            if batch.len() >= self.cfg.batch_max.max(1) {
+            if batch.len() >= self.cfg.batch_max.max(1) || bytes >= self.cfg.batch_bytes_max.max(1)
+            {
                 break;
             }
             let now = Instant::now();
@@ -1265,7 +1271,8 @@ mod json_reference {
         )]);
         let mut ex = Exchange::with_id(id(3), req);
         ex.set_response(
-            http1(inline(5, b'e')).with_interim(vec![Bytes::from_static(b"HTTP/1.1 100 Continue\r\n\r\n")]),
+            http1(inline(5, b'e'))
+                .with_interim(vec![Bytes::from_static(b"HTTP/1.1 100 Continue\r\n\r\n")]),
         );
         out.push(ex);
         // No response at all.

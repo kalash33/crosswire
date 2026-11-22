@@ -136,6 +136,13 @@ Each item ends with the gate invocation (3 × 10 s, `s13`) and one `--features s
 - [ ] `--test packs --test hash_compat --test durability`, measure.
 - [ ] **Commit** `perf(store): append pack records without an extra copy`.
 
+#### T1.5 (as built; not in the original plan) Close a batch at a byte threshold
+*Why it was added:* the T0 baseline confirmed the step 4 warning: `writer_busy_pct` ≈ 50 %, batches of ~530–600 exchanges closed by the 250 ms timer because the in-flight byte budget holds fewer than `batch_max` exchanges at ~106 KB each. After T1.2 and T1.1 the writer was busy only 36–42 % of the wall time, so further CPU cuts could not move the rate. The controller added a byte trigger that only ever makes a batch **smaller** (so the ADR-0002 loss window of 250 ms / 1,000 exchanges, `queue_bytes_max` and every fsync are unchanged).
+**Files:** `src/store.rs`: new `StoreConfig::batch_bytes_max` (default 32 MiB, half of `queue_bytes_max`). `src/writer.rs` `collect`: sums each queued exchange's reserved `size` (the same count `queue_bytes_max` uses) and closes the batch once it reaches `batch_bytes_max`, in addition to `batch_max` and the timer. The commit order (pack fsync → `committed_len` → `COMMIT` → events), `finish`, the journal-drain byte budget and the spill path are untouched.
+**Tests:** `tests/writer.rs` `byte_heavy_batch_closes_before_the_timer` (10 s interval, 1 MiB threshold, 3 × 512 KiB: the first `Committed` holds exactly the first two ids, the third waits for the timer, close commits it). `limits_rss_store` (release) unchanged.
+**Measured** (stage-timing, 3 × 10 s, same box; thermal noise between sweeps is ±15 %): 4 MiB 2307 (min 1674), 8 MiB 2474, 16 MiB 2429, 24 MiB 3228 (min 2570), 32 MiB 2642 and 3104 (min 3068), 48 MiB 3108 (writer busy falls to 88 %: the batch approaches the in-flight cap and the gap reappears). 32 MiB = half the queue budget lets the producer fill one half while the writer commits the other; it had the best or tied-best median in both sweeps and the best min.
+- [x] **Commit** `perf(store): close a batch early at a byte threshold`.
+
 **T1 exit (decides T2 for good):** with the gate invocation after the last T1 commit:
 - median ≥ 2,300/s **and** every run ≥ 2,000/s **and** `gen_busy_pct ≤ 80` → **T2 is skipped.** ADR-0007 records that the pool was not needed and why; `prepare_threads` is not added.
 - otherwise → T2.
