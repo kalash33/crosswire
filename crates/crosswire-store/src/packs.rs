@@ -106,6 +106,24 @@ impl PackWriter {
     /// `packs` row through `tx`. If `tx` is rolled back after a rotation, the
     /// caller must drop this writer and reopen it.
     pub fn append(&mut self, tx: &Transaction<'_>, raw: &[u8]) -> Result<BlobRef, StoreError> {
+        let hash: [u8; 32] = stage!(ShaAppend, Sha256::digest(raw).into());
+        self.append_hashed(tx, raw, hash)
+    }
+
+    /// As [`PackWriter::append`], with `hash` = SHA-256 of `raw` already
+    /// computed by the caller (the body store hashes once for dedup and
+    /// reuses the digest here). Debug builds re-hash and assert it.
+    pub(crate) fn append_hashed(
+        &mut self,
+        tx: &Transaction<'_>,
+        raw: &[u8],
+        hash: [u8; 32],
+    ) -> Result<BlobRef, StoreError> {
+        debug_assert_eq!(
+            hash,
+            <[u8; 32]>::from(Sha256::digest(raw)),
+            "append_hashed: hash is not SHA-256 of raw"
+        );
         if self.poisoned {
             return Err(StoreError::Io(std::io::Error::other(
                 "pack writer poisoned; reopen",
@@ -125,7 +143,6 @@ impl PackWriter {
                 "frame too large",
             ))
         })?;
-        let hash: [u8; 32] = stage!(ShaAppend, Sha256::digest(raw).into());
         let record_len = HEADER_LEN + u64::from(len);
         if self.offset > 0 && self.offset + record_len > self.limit {
             self.rotate(tx)?;

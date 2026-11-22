@@ -113,7 +113,7 @@ impl BodyStore {
             };
             (blob, true)
         } else {
-            let blob = self.packs.append(tx, raw)?;
+            let blob = self.packs.append_hashed(tx, raw, hash)?;
             stage!(
                 SqlBodies,
                 tx.execute(
