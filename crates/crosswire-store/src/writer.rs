@@ -889,7 +889,6 @@ fn insert_exchange(
     touched: &mut BTreeMap<u32, u64>,
 ) -> Result<(), StoreError> {
     let id = ex.id();
-    let mut json = stage!(Json, serde_json::to_value(ex))?;
     // A stored exchange is `committed`, unless its producer marked it
     // `error` (a relay that failed part way): that state is kept, so the
     // `state` filter and `Counts.error` find it.
@@ -898,24 +897,13 @@ fn insert_exchange(
     } else {
         ExchangeState::Committed
     };
-    stage!(
-        Json,
-        serde_json::to_value(state)
-            .map_err(StoreError::from)
-            .and_then(|v| set_field(&mut json, "/state", v))
-    )?;
+    let mut hashes: [Option<[u8; 32]>; 2] = [None, None];
     let sides = [
-        (BodySide::Req, Some(ex.request()), "/request/body"),
-        (BodySide::Resp, ex.response(), "/response/body"),
+        (BodySide::Req, Some(ex.request())),
+        (BodySide::Resp, ex.response()),
     ];
-    for (side, msg, key) in sides {
-        let Some(Body::Inline {
-            bytes,
-            truncated_at,
-            capture_dropped,
-            relay,
-        }) = msg.map(Message::body)
-        else {
+    for (slot, (side, msg)) in hashes.iter_mut().zip(sides) {
+        let Some(Body::Inline { bytes, .. }) = msg.map(Message::body) else {
             continue;
         };
         let hash: [u8; 32] = match bodies.put(tx, id, side, bytes)? {
@@ -928,20 +916,7 @@ fn insert_exchange(
                 blob.hash
             }
         };
-        // The JSON keeps a reference; the bytes live in `bodies` and packs.
-        // The capture bookkeeping travels with it.
-        stage!(
-            Json,
-            serde_json::to_value(Body::Blob {
-                hash,
-                len: bytes.len() as u64,
-                truncated_at: *truncated_at,
-                capture_dropped: *capture_dropped,
-                relay: *relay,
-            })
-            .map_err(StoreError::from)
-            .and_then(|blob| set_field(&mut json, key, blob))
-        )?;
+        *slot = Some(hash);
     }
     let (method, path) = request_line(ex.request());
     let host = request_host(ex.request());
@@ -954,7 +929,7 @@ fn insert_exchange(
         serde_json::to_string(ex.tags())?
     };
     let created = i64::try_from(id.timestamp_ms()).unwrap_or(i64::MAX);
-    let json = stage!(Json, serde_json::to_string(&json))?;
+    let json = stage!(Json, stored_json(ex, state, hashes))?;
     stage!(
         SqlExchange,
         tx.execute(
@@ -993,6 +968,58 @@ fn insert_exchange(
     Ok(())
 }
 
+/// The `exchanges.json` text of `ex`: the exchange with `state`, and each
+/// inline body replaced by a [`Body::Blob`] reference carrying `hashes`
+/// (request, response) and the capture bookkeeping. The bytes live in
+/// `bodies` and packs.
+///
+/// The bodies are swapped on a clone (`Bytes` clones are reference counts)
+/// before serialising, so no body is ever base64-encoded here. The text goes
+/// through `to_value` then `to_string` (sorted object keys), as 0.1.1 did,
+/// so it is byte-identical to what 0.1.1 stored (see `json_reference`).
+fn stored_json(
+    ex: &Exchange,
+    state: ExchangeState,
+    hashes: [Option<[u8; 32]>; 2],
+) -> Result<String, StoreError> {
+    let mut stored = ex.clone();
+    stored.set_state(state);
+    if let Some(blob) = blob_ref(ex.request().body(), hashes[0]) {
+        stored.set_request(ex.request().clone().with_body(blob));
+    }
+    if let Some(resp) = ex.response() {
+        if let Some(blob) = blob_ref(resp.body(), hashes[1]) {
+            stored.set_response(resp.clone().with_body(blob));
+        }
+    }
+    let value = serde_json::to_value(&stored)?;
+    Ok(serde_json::to_string(&value)?)
+}
+
+/// The [`Body::Blob`] that replaces an inline `body` stored under `hash`,
+/// or `None` if the body is not inline (it is serialised as it is).
+fn blob_ref(body: &Body, hash: Option<[u8; 32]>) -> Option<Body> {
+    let (
+        Body::Inline {
+            bytes,
+            truncated_at,
+            capture_dropped,
+            relay,
+        },
+        Some(hash),
+    ) = (body, hash)
+    else {
+        return None;
+    };
+    Some(Body::Blob {
+        hash,
+        len: bytes.len() as u64,
+        truncated_at: *truncated_at,
+        capture_dropped: *capture_dropped,
+        relay: *relay,
+    })
+}
+
 /// A body's length for the `resp_len` column: the relayed length when the
 /// capture is not the whole body, else the stored length.
 fn body_len(body: &Body) -> u64 {
@@ -1002,19 +1029,6 @@ fn body_len(body: &Body) -> u64 {
         Body::Blob { len, .. } => *len,
         _ => 0,
     }
-}
-
-/// Replaces the value at `pointer` (which must exist) without indexing panics.
-fn set_field(
-    json: &mut serde_json::Value,
-    pointer: &str,
-    value: serde_json::Value,
-) -> Result<(), StoreError> {
-    let slot = json
-        .pointer_mut(pointer)
-        .ok_or_else(|| StoreError::Corrupt(format!("exchange json has no {pointer}")))?;
-    *slot = value;
-    Ok(())
 }
 
 /// The kebab-case wire name of a unit enum value.
@@ -1096,4 +1110,201 @@ fn status_code(m: &Message) -> Option<i64> {
         .parse::<u16>()
         .ok()
         .map(i64::from)
+}
+
+/// The 0.1.1 row-JSON builder, kept verbatim as the reference the new
+/// [`stored_json`] must match byte for byte.
+#[cfg(test)]
+mod json_reference {
+    use super::{stored_json, Body, ExchangeState, Message, StoreError};
+    use bytes::Bytes;
+    use crosswire_core::Span;
+    use crosswire_model::{
+        Capture, ConnectionInfo, Diff, Exchange, Fidelity, FramingRecord, Head, HeadSpans,
+        HeaderSpanRecord, MessageKind, StartLineSpans, HTTP1_PARSER_VERSION,
+    };
+    use sha2::{Digest, Sha256};
+    use ulid::Ulid;
+
+    /// Replaces the value at `pointer` (which must exist) without indexing panics.
+    fn set_field(
+        json: &mut serde_json::Value,
+        pointer: &str,
+        value: serde_json::Value,
+    ) -> Result<(), StoreError> {
+        let slot = json
+            .pointer_mut(pointer)
+            .ok_or_else(|| StoreError::Corrupt(format!("exchange json has no {pointer}")))?;
+        *slot = value;
+        Ok(())
+    }
+
+    /// 0.1.1's `insert_exchange` JSON steps: `to_value(ex)`, then `/state`,
+    /// then each inline body swapped for its `Blob` reference.
+    fn reference(
+        ex: &Exchange,
+        state: ExchangeState,
+        hashes: [Option<[u8; 32]>; 2],
+    ) -> Result<String, StoreError> {
+        let mut json = serde_json::to_value(ex)?;
+        serde_json::to_value(state)
+            .map_err(StoreError::from)
+            .and_then(|v| set_field(&mut json, "/state", v))?;
+        let sides = [
+            (Some(ex.request()), "/request/body", hashes[0]),
+            (ex.response(), "/response/body", hashes[1]),
+        ];
+        for (msg, key, hash) in sides {
+            let Some(Body::Inline {
+                bytes,
+                truncated_at,
+                capture_dropped,
+                relay,
+            }) = msg.map(Message::body)
+            else {
+                continue;
+            };
+            let hash = hash.expect("an inline body has a hash");
+            serde_json::to_value(Body::Blob {
+                hash,
+                len: bytes.len() as u64,
+                truncated_at: *truncated_at,
+                capture_dropped: *capture_dropped,
+                relay: *relay,
+            })
+            .map_err(StoreError::from)
+            .and_then(|blob| set_field(&mut json, key, blob))?;
+        }
+        Ok(serde_json::to_string(&json)?)
+    }
+
+    fn normalized(body: Body) -> Message {
+        Message::new(
+            MessageKind::Normalized,
+            Fidelity::Normalized,
+            Head::Normalized {
+                map: vec![
+                    ("Host".to_owned(), b"a.test".to_vec()),
+                    ("X-B".to_owned(), b"\x00\xff".to_vec()),
+                ],
+            },
+            FramingRecord::ContentLength { len: 3 },
+            body,
+            ConnectionInfo::new("a.test", 443).with_sni("a.test"),
+        )
+    }
+
+    fn http1(body: Body) -> Message {
+        let head = b"POST /login?x=1 HTTP/1.1\r\nHost: Shop.Example.TEST\r\n\r\n";
+        Message::new(
+            MessageKind::Http1Raw,
+            Fidelity::Raw,
+            Head::Http1Raw {
+                bytes: Bytes::from_static(head),
+                spans: HeadSpans::new(
+                    StartLineSpans::Request {
+                        method: Span::new(0, 4),
+                        target: Span::new(5, 15),
+                        version: Span::new(16, 24),
+                    },
+                    vec![HeaderSpanRecord::new(
+                        Span::new(26, 30),
+                        Span::new(32, 49),
+                        Span::new(26, 49),
+                    )],
+                    FramingRecord::None,
+                ),
+                parser_version: HTTP1_PARSER_VERSION,
+            },
+            FramingRecord::None,
+            body,
+            ConnectionInfo::new("203.0.113.9", 80),
+        )
+    }
+
+    fn inline(n: usize, fill: u8) -> Body {
+        Body::inline(Bytes::from(vec![fill; n]))
+    }
+
+    fn capture(n: u64) -> Capture {
+        Capture {
+            len: n,
+            sha256: [0xab; 32],
+        }
+    }
+
+    /// The corpus: every body shape the writer swaps, and every
+    /// non-body field that rides along.
+    fn corpus() -> Vec<Exchange> {
+        let mut out = Vec::new();
+        let id = |n: u128| Ulid::from(n << 80 | n);
+        // Inline 1 B request, 16 KiB response (inline) and 16 KiB + 1 (pack).
+        let mut ex = Exchange::with_id(id(1), normalized(inline(1, b'a')));
+        ex.set_response(normalized(inline(16 * 1024, b'b')));
+        out.push(ex);
+        let mut ex = Exchange::with_id(id(2), http1(inline(16 * 1024, b'c')));
+        ex.set_response(http1(Body::Inline {
+            bytes: Bytes::from(vec![b'd'; 16 * 1024 + 1]),
+            truncated_at: Some(16 * 1024 + 1),
+            capture_dropped: true,
+            relay: Some(capture(1 << 20)),
+        }));
+        ex.set_state(ExchangeState::Error);
+        ex.add_tag("login");
+        ex.add_tag("x");
+        ex.add_tag("login");
+        ex.set_notes("a \"note\" with \u{e9}");
+        out.push(ex);
+        // Interim responses and diffs; a request with no body.
+        let req = normalized(Body::None).with_diffs(vec![Diff::new(
+            crosswire_core::ChangeOp::Replace,
+            Span::new(0, 3),
+            Bytes::from_static(b"old"),
+            Bytes::from_static(b"new"),
+            crosswire_core::ChangeReason::MatchReplace { rule: "r".into() },
+        )]);
+        let mut ex = Exchange::with_id(id(3), req);
+        ex.set_response(
+            http1(inline(5, b'e')).with_interim(vec![Bytes::from_static(b"HTTP/1.1 100 Continue\r\n\r\n")]),
+        );
+        out.push(ex);
+        // No response at all.
+        out.push(Exchange::with_id(id(4), http1(inline(70_000, b'f'))));
+        // An already-stored blob body is serialised as it is.
+        let mut ex = Exchange::with_id(
+            id(5),
+            normalized(Body::Blob {
+                hash: [7; 32],
+                len: 9,
+                truncated_at: None,
+                capture_dropped: false,
+                relay: None,
+            }),
+        );
+        ex.set_response(normalized(Body::None));
+        out.push(ex);
+        out
+    }
+
+    fn hashes(ex: &Exchange) -> [Option<[u8; 32]>; 2] {
+        let h = |m: Option<&Message>| match m.map(Message::body) {
+            Some(Body::Inline { bytes, .. }) => Some(Sha256::digest(bytes).into()),
+            _ => None,
+        };
+        [h(Some(ex.request())), h(ex.response())]
+    }
+
+    #[test]
+    fn stored_json_is_byte_identical_to_0_1_1() {
+        for ex in corpus() {
+            for state in [ExchangeState::Committed, ExchangeState::Error] {
+                let h = hashes(&ex);
+                let new = stored_json(&ex, state, h).unwrap();
+                let old = reference(&ex, state, h).unwrap();
+                assert_eq!(new, old, "exchange {}", ex.id());
+                // Not one body byte reached the row.
+                assert!(!new.contains("\"type\":\"inline\""), "{new}");
+            }
+        }
+    }
 }
