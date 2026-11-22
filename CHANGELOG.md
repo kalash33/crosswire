@@ -7,18 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.1.2](https://github.com/kalash33/crosswire/compare/v0.1.1...v0.1.2) - 2026-11-22
-
-### Fixed
-
-- *(api)* reject non-canonical ULID text
-
-### Internal
-
-- *(deps)* upgrade rand to 0.10
+## [0.1.2](https://github.com/kalash33/crosswire/compare/v0.1.1...v0.1.2) - 2026-11-23
 
 ### Changed
 
+- Ingest is about three times faster at the product-spec §13 mix (60/30/9/1,
+  1% of bodies 1–8 MiB): a median of 924 exchanges/s before, 2,900–3,300/s
+  after (Apple M2, AC power; the target is 2,000/s). The writer no longer
+  builds and discards a base64 copy of every body, hashes each pack body once,
+  and closes a batch early when its queued bytes reach the new
+  `StoreConfig::batch_bytes_max` (default 32 MiB), so large bodies no longer
+  wait out the 250 ms batch timer. When and in what order anything becomes
+  durable is unchanged, and so is the on-disk format: projects written by
+  0.1.2 open with 0.1.1, and 0.1.0/0.1.1 projects open unchanged. See
+  ADR-0007.
+- The §13 ingest rate is now asserted by `just perf` on the reference machine
+  (median at least 2,000/s, every run at least 1,800/s).
 - Dependency refresh (minor and major upgrades that Dependabot does not take):
   - `ulid` 1.2.1 → 3.0.0 (`Ulid::new()` is now `Ulid::generate()`; the text
     form is unchanged).
@@ -35,6 +39,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     or API-shape change, and ids are still written the same way; 0.1.0 and
     0.1.1 projects open unchanged.
 
+### Fixed
+
+- The API, the journal reader and the `token` CLI reject non-canonical ULID
+  text (see Security).
+
 ### Security
 
 - The API, the journal reader and the `token` CLI now reject non-canonical
@@ -48,6 +57,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   code it never calls.
 - Root-certificate store changes now arrive as `webpki-roots` patch updates
   through Dependabot; see [Upstream trust store](SECURITY.md#upstream-trust-store).
+- `url` 2.5.9 for RUSTSEC-2026-0592 (lockfile only).
 
 ## [0.1.1](https://github.com/kalash33/crosswire/compare/v0.1.0...v0.1.1) - 2026-11-17
 
