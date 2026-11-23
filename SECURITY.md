@@ -24,6 +24,8 @@ Out of scope: findings in the *targets* you test with Crosswire, and intentional
 
 Crosswire verifies upstream TLS (Repeater and the proxy's upstream connections) against the Mozilla root list in the `webpki-roots` crate, compiled into the binary, not against the operating system's store. Changes to that list arrive as `webpki-roots` patch updates through Dependabot, which follow Mozilla's root additions and removals. After an upgrade, a site whose root was removed can therefore fail certificate verification. The `crates/crosswire-client/tests/roots.rs` anchor count changes in the same commit as such an update, after the upstream diff has been read.
 
+- 2026-11-23: webpki-roots 1.0.10 to 1.0.12 cut the set from 120 to 112 anchors, with no additions. Mozilla removed TLS trust from Buypass Class 2 and Class 3 Root CA (Buypass left the TLS market), Certigna Root CA (at Certigna's request; its TLS certificates had all expired), DigiCert Trusted Root G4 and QuoVadis Root CA 1 G3 and 3 G3 (DigiCert's root transition plan; these remain trusted for email only), and emSign Root CA - C1 and emSign ECC Root CA - C3 (dropped in webpki-roots 1.0.11; the release gives no reason, so none is claimed here).
+
 ## Verifying releases
 
 Each release archive (`crosswire-server-<target>.tar.xz`) carries a GitHub build-provenance attestation; the installer script and checksum files do not. Verify a download with:
